@@ -1,0 +1,65 @@
+module BreakerMachines
+  module Storage
+    class Base
+      @options: Hash[Symbol, untyped]
+
+      def initialize: (**untyped options) -> void
+
+      # Status management
+      def get_status: (String circuit_name) -> { status: (:open | :closed | :half_open), opened_at: Float? }?
+      def set_status: (String circuit_name, (:open | :closed | :half_open) status, ?Float? opened_at) -> void
+
+      # Metrics tracking
+      def record_success: (String circuit_name, Float duration) -> void
+      def record_failure: (String circuit_name, Float duration) -> void
+      def success_count: (String circuit_name, Integer window_seconds) -> Integer
+      def failure_count: (String circuit_name, Integer window_seconds) -> Integer
+
+      # Cleanup
+      def clear: (String circuit_name) -> void
+      def clear_all: () -> void
+    end
+
+    class Memory < Base
+      @circuits: Concurrent::Map[String, untyped]
+      @events: Concurrent::Map[String, Concurrent::Array[untyped]]
+      @event_logs: Concurrent::Map[String, Concurrent::Array[untyped]]
+      @max_events: Integer
+
+      def initialize: (**untyped options) -> void
+      def record_event_with_details: (String circuit_name, (:success | :failure | :state_change) type, Float duration, ?error: StandardError?, ?new_state: (:open | :closed | :half_open)?) -> void
+      def event_log: (String circuit_name, Integer limit) -> Array[event_record]
+
+      private
+
+      def record_event: (String circuit_name, (:success | :failure) type, Float duration) -> void
+      def count_events: (String circuit_name, (:success | :failure) type, Integer window_seconds) -> Integer
+      def monotonic_time: () -> Float
+    end
+
+    class BucketMemory < Base
+      @buckets: Concurrent::Map[String, untyped]
+      @bucket_duration: Integer
+      @bucket_count: Integer
+      @lock: Concurrent::ReentrantReadWriteLock
+      @last_cleanup: Concurrent::AtomicReference[Float]
+      @cleanup_interval: Integer
+
+      def record_event_with_details: (String circuit_name, (:success | :failure | :state_change) event_type, Float duration, ?Hash[Symbol, untyped] details) -> void
+      def event_log: (String circuit_name, ?Integer limit) -> Array[event_record]
+
+      private
+
+      def circuit_buckets: (String circuit_name) -> Hash[Symbol, untyped]
+      def current_bucket_index: () -> Integer
+      def bucket_indices_for_window: (Integer window_seconds) -> Array[Integer]
+      def cleanup_old_buckets: (Hash[Symbol, untyped] buckets) -> void
+      def maybe_cleanup_all_buckets: () -> void
+    end
+
+    class Null < Base
+      def record_event_with_details: (String circuit_name, Symbol event_type, Float duration, ?Hash[Symbol, untyped] metadata) -> void
+      def event_log: (String circuit_name, ?Integer limit) -> Array[untyped]
+    end
+  end
+end

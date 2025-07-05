@@ -1,0 +1,32 @@
+module BreakerMachines
+  class Console
+    @running: bool
+
+    def self.start: () -> void
+
+    def initialize: () -> void
+    def run: () -> void
+
+    private
+
+    def print_header: () -> void
+    def print_help: () -> void
+    def print_prompt: () -> void
+    def process_command: (String command) -> void
+
+    # Command methods
+    def list_circuits: () -> void
+    def show_stats: () -> void
+    def show_circuit: (String? name) -> void
+    def show_events: (String? name, Integer limit) -> void
+    def reset_circuit: (String? name) -> void
+    def force_open_circuit: (String? name) -> void
+    def force_close_circuit: (String? name) -> void
+    def generate_report: () -> void
+    def cleanup_registry: () -> void
+
+    # Utility methods
+    def colorize_state: (Symbol state) -> String
+    def colorize_event_type: (Symbol type) -> String
+  end
+end
