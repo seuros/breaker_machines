@@ -1,0 +1,46 @@
+module BreakerMachines
+  # Interface for objects that can record metrics
+  interface _MetricsRecorder
+    def record_success: (String circuit_name, Float duration) -> void
+    def record_failure: (String circuit_name, Float duration) -> void
+    def record_rejection: (String circuit_name) -> void
+  end
+
+  # Interface for storage backends
+  interface _StorageBackend
+    def get_status: (String circuit_name) -> status_record?
+    def set_status: (String circuit_name, circuit_state status, ?Float? opened_at) -> void
+    def record_success: (String circuit_name, Float duration) -> void
+    def record_failure: (String circuit_name, Float duration) -> void
+    def success_count: (String circuit_name, Integer window_seconds) -> Integer
+    def failure_count: (String circuit_name, Integer window_seconds) -> Integer
+    def clear: (String circuit_name) -> void
+    def clear_all: () -> void
+  end
+
+  # Interface for advanced storage backends with event logging
+  interface _AdvancedStorageBackend
+    def record_success: (String circuit_name, ?Float? duration) -> void
+    def record_failure: (String circuit_name, ?Float? duration) -> void
+    def success_count: (String circuit_name, ?Integer? window) -> Integer
+    def failure_count: (String circuit_name, ?Integer? window) -> Integer
+    def get_status: (String circuit_name) -> Hash[Symbol, untyped]?
+    def set_status: (String circuit_name, circuit_state status, ?Float? opened_at) -> void
+    def clear: (String circuit_name) -> void
+    def record_event_with_details: (String circuit_name, event_type event_type, Float duration, ?Hash[Symbol, untyped] details) -> void
+    def event_log: (String circuit_name, ?Integer limit) -> Array[event_record]
+  end
+
+  # Interface for circuit-like objects
+  interface _CircuitLike
+    def name: () -> String
+    def call: () { () -> untyped } -> untyped
+    def wrap: () { () -> untyped } -> untyped
+    def status_name: () -> circuit_state
+    def open?: () -> bool
+    def closed?: () -> bool
+    def half_open?: () -> bool
+    def reset: () -> bool
+    def stats: () -> Hash[Symbol, untyped]
+  end
+end

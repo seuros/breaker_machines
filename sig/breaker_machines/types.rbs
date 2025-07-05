@@ -1,0 +1,97 @@
+# Common type aliases used throughout BreakerMachines
+
+# External dependencies type declarations not included in their gems
+module Concurrent
+  class AtomicReference[T]
+    def initialize: (?T initial_value) -> void
+    def value: () -> T
+    def value=: (T value) -> T
+    def get: () -> T
+    def set: (T value) -> T
+  end
+
+  class AtomicFixnum
+    def initialize: (?Integer initial_value) -> void
+    def value: () -> Integer
+    def value=: (Integer value) -> Integer
+    def increment: (?Integer delta) -> Integer
+    def decrement: (?Integer delta) -> Integer
+  end
+
+  class ReentrantReadWriteLock
+    def initialize: () -> void
+    def with_read_lock: [T] () { () -> T } -> T
+    def with_write_lock: [T] () { () -> T } -> T
+  end
+end
+
+class WeakRef[T]
+  def initialize: (T object) -> void
+  def weakref_alive?: () -> bool
+  def __getobj__: () -> T
+end
+
+module Zeitwerk
+  class Loader
+    def push_dir: (String path) -> void
+    def setup: () -> void
+    def eager_load: () -> void
+  end
+end
+
+module BreakerMachines
+  # Circuit states
+  type circuit_state = :open | :closed | :half_open
+
+  # Event types
+  type event_type = :success | :failure | :state_change | :rejection
+
+  # Callback names
+  type callback_name = :on_open | :on_close | :on_half_open | :on_reject
+
+  # Storage backend symbols
+  type storage_backend = :memory | :bucket_memory | :null | :redis
+
+  # Generic callback proc
+  type callback_proc = Proc | nil
+
+  # Fallback can be a proc, array of procs/values, or any static value
+  type fallback_value = Proc | Array[Proc | untyped] | untyped
+
+  # Options hash for circuits
+  type circuit_options = {
+    failure_threshold: Integer?,
+    failure_window: Integer?,
+    success_threshold: Integer?,
+    timeout: Integer?,
+    reset_timeout: Integer?,
+    reset_timeout_jitter: Float?,
+    half_open_calls: Integer?,
+    storage: (Storage::Base | storage_backend | Class)?,
+    metrics: untyped,
+    fallback: fallback_value?,
+    on_open: callback_proc,
+    on_close: callback_proc,
+    on_half_open: callback_proc,
+    on_reject: callback_proc,
+    exceptions: Array[Class]?,
+    owner: untyped
+  }
+
+  # Event record structure
+  type event_record = {
+    timestamp: Float,
+    type: event_type,
+    duration: Float,
+    duration_ms: Float?,
+    error_class: String?,
+    new_state: circuit_state?,
+    details: Hash[Symbol, untyped]?
+  }
+
+  # Status record from storage
+  type status_record = {
+    status: circuit_state,
+    opened_at: Float?
+  }
+end

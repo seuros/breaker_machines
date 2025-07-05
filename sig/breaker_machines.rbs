@@ -1,0 +1,30 @@
+module BreakerMachines
+  VERSION: String
+
+  # Global configuration
+  extend ActiveSupport::Configurable
+
+  # Configuration accessors
+  self.@config: untyped
+  def self.config: () -> ActiveSupport::Configurable::Configuration
+  def self.default_storage: () -> (:memory | :bucket_memory | :null | untyped)
+  def self.default_storage=: (:memory | :bucket_memory | :null | untyped value) -> void
+  def self.default_timeout: () -> Integer?
+  def self.default_timeout=: (Integer? value) -> void
+  def self.default_reset_timeout: () -> Integer
+  def self.default_reset_timeout=: (Integer value) -> void
+  def self.default_failure_threshold: () -> Integer
+  def self.default_failure_threshold=: (Integer value) -> void
+  def self.log_events: () -> bool
+  def self.log_events=: (bool value) -> void
+
+  # Class methods
+  def self.configure: () { (untyped config) -> void } -> void
+  def self.setup_notifications: () -> void
+  def self.logger: () -> ActiveSupport::Logger?
+  def self.logger=: (ActiveSupport::Logger? logger) -> void
+  def self.instrument: (String event, ?Hash[Symbol, untyped] payload) -> void
+  def self.console: () -> void
+  def self.registry: () -> Registry
+  def self.loader: () -> Zeitwerk::Loader
+end

@@ -1,0 +1,77 @@
+plugins:
+  - rubocop-minitest
+  - rubocop-rake
+
+AllCops:
+  TargetRubyVersion: 3.2
+  NewCops: enable
+  SuggestExtensions: false
+  Exclude:
+    - 'vendor/**/*'
+    - 'test_*.rb'
+    - 'sig/**/*'
+
+# Gemspec
+Gemspec/DevelopmentDependencies:
+  Enabled: false # We prefer keeping development deps in gemspec
+
+# Layout
+Layout/LineLength:
+  Max: 120
+  Exclude:
+    - 'test/**/*'
+
+# Metrics - reasonable for a gem
+Metrics/ClassLength:
+  Max: 200
+  Exclude:
+    - 'test/**/*'
+    - 'lib/breaker_machines/console.rb' # Interactive console needs many methods
+
+Metrics/ModuleLength:
+  Max: 150
+  Exclude:
+    - 'test/**/*'
+
+Metrics/MethodLength:
+  Max: 20
+  Exclude:
+    - 'test/**/*'
+    - 'lib/breaker_machines/circuit/configuration.rb' # default_config method
+    - 'lib/breaker_machines/console.rb' # Console display methods need formatting
+
+Metrics/BlockLength:
+  Max: 30
+  Exclude:
+    - 'test/**/*'
+    - '**/*.gemspec'
+    - 'lib/breaker_machines/circuit/state_management.rb' # state machine definition
+
+Metrics/AbcSize:
+  Max: 20
+  Exclude:
+    - 'test/**/*'
+    - 'lib/breaker_machines/console.rb' # Complex console output formatting
+
+Metrics/CyclomaticComplexity:
+  Max: 10
+  Exclude:
+    - 'lib/breaker_machines/console.rb' # Command dispatch needs many branches
+
+Metrics/PerceivedComplexity:
+  Max: 10
+
+# Style
+Style/Documentation:
+  Exclude:
+    - 'test/**/*'
+
+Style/FormatStringToken:
+  Enabled: false # Console output uses printf for formatting
+
+# Test-specific
+Minitest/MultipleAssertions:
+  Enabled: false
+
+Minitest/AssertionInLifecycleHook:
+  Enabled: false

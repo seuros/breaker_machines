@@ -1,0 +1,30 @@
+module BreakerMachines
+  class Registry
+    include Singleton
+
+    @circuits: Concurrent::Map[Integer, WeakRef[Circuit]]
+    @mutex: Mutex
+    @registration_count: Integer
+    @cleanup_interval: Integer
+
+    def initialize: () -> void
+
+    # Circuit management
+    def register: (Circuit circuit) -> void
+    def unregister: (Circuit circuit) -> void
+    def all_circuits: () -> Array[Circuit]
+    def find_by_name: (Symbol name) -> Array[Circuit]
+
+    # Reporting
+    def stats_summary: () -> { total: Integer, by_state: Hash[Symbol, Integer], by_name: Hash[Symbol, Integer] }
+    def detailed_report: () -> Array[Hash[Symbol, untyped]]
+
+    # Maintenance
+    def clear: () -> void
+    def cleanup_dead_references: () -> void
+
+    private
+
+    def cleanup_dead_references_unsafe: () -> void
+  end
+end

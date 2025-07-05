@@ -1,0 +1,25 @@
+# Main entry point for BreakerMachines RBS types
+#
+# This file provides a complete type definition for the BreakerMachines gem,
+# a Ruby implementation of the Circuit Breaker pattern.
+#
+# Usage:
+#   class MyService
+#     include BreakerMachines::DSL
+#
+#     circuit :api_call do
+#       threshold failures: 5, within: 60
+#       reset_after 30
+#       fallback { |error| { error: "Service unavailable" } }
+#     end
+#
+#     def fetch_data
+#       circuit(:api_call).call do
+#         # Your API call here
+#       end
+#     end
+#   end
+
+# Import all type definitions
+use BreakerMachines::*
+use BreakerMachines::Storage::*

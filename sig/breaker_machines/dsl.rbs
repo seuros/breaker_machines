@@ -1,0 +1,50 @@
+module BreakerMachines
+  module DSL
+    extend ActiveSupport::Concern
+
+    @instance_registries: Concurrent::Map[Class, Concurrent::Array[WeakRef[untyped]]]
+
+    module ClassMethods
+      @circuits: Hash[Symbol, Hash[Symbol, untyped]]
+
+      def instance_registry: () -> Concurrent::Array[WeakRef[untyped]]
+      def cleanup_instance_registry: () -> void
+      def circuit: (Symbol name) ?{ (CircuitBuilder) -> void } -> Hash[Symbol, untyped]
+      def circuits: () -> Hash[Symbol, Hash[Symbol, untyped]]
+      def circuit_definitions: () -> Hash[Symbol, Hash[Symbol, untyped]]
+      def reset_all_circuits: () -> void
+      def circuit_stats: () -> Hash[Symbol, { total: Integer, by_state: Hash[Symbol, Integer] }]
+    end
+
+    def circuit: (Symbol name) -> Circuit
+    def circuit_instances: () -> Hash[Symbol, Circuit]
+    def circuits_summary: () -> Hash[Symbol, String]
+    def circuits_report: () -> Hash[Symbol, untyped]
+    def reset_all_circuits: () -> void
+
+    class CircuitBuilder
+      attr_reader config: Hash[Symbol, untyped]
+
+      def initialize: () -> void
+
+      # Configuration methods
+      def threshold: (?failures: Integer?, ?within: Integer, ?successes: Integer?) -> void
+      def reset_after: (Integer duration, ?jitter: Float?) -> void
+      def timeout: (Integer duration) -> void
+      def half_open_requests: (Integer count) -> void
+      def storage: ((:memory | :bucket_memory | :redis | Class | Storage::Base) backend, **untyped) -> void
+      def metrics: (?untyped recorder) ?{ () -> void } -> void
+      def fallback: (?untyped value) ?{ (StandardError) -> untyped } -> void
+      def on_open: () { () -> void } -> void
+      def on_close: () { () -> void } -> void
+      def on_half_open: () { () -> void } -> void
+      def on_reject: () { () -> void } -> void
+      def notify: (Symbol service, ?String? url, ?events: Array[Symbol], **untyped options) -> void
+      def handle: (*Class exceptions) -> void
+
+      # Advanced features
+      def backends: (Array[untyped] list) -> void
+      def parallel_calls: (Integer count, ?timeout: Integer?) -> void
+    end
+  end
+end

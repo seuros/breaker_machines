@@ -1,0 +1,24 @@
+module BreakerMachines
+  class Error < StandardError
+  end
+
+  class CircuitOpenError < Error
+    attr_reader circuit_name: String
+    attr_reader opened_at: Float?
+
+    def initialize: (String circuit_name, ?Float? opened_at) -> void
+  end
+
+  class CircuitTimeoutError < Error
+    attr_reader circuit_name: String
+    attr_reader timeout: Numeric
+
+    def initialize: (String circuit_name, Numeric timeout) -> void
+  end
+
+  class ConfigurationError < Error
+  end
+
+  class StorageError < Error
+  end
+end

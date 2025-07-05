@@ -1,0 +1,154 @@
+module BreakerMachines
+  class Circuit
+    include StateManagement
+    include Configuration
+    include Execution
+    include Introspection
+    include Callbacks
+
+    # Instance variables from Configuration module
+    @name: String
+    @config: Hash[Symbol, untyped]
+    @storage: _StorageBackend?
+    @metrics: _MetricsRecorder?
+    @opened_at: Concurrent::AtomicReference[Float?]
+    @half_open_attempts: Concurrent::AtomicFixnum
+    @half_open_successes: Concurrent::AtomicFixnum
+    @mutex: Concurrent::ReentrantReadWriteLock
+    @last_failure_at: Concurrent::AtomicReference[Float?]
+    @last_error: Concurrent::AtomicReference[StandardError?]
+
+    # State machine status (from StateManagement)
+    attr_reader status: (:open | :closed | :half_open)
+  end
+
+  module StateManagement
+    interface _StateManagementState
+      def status: () -> (:open | :closed | :half_open)
+      def status=: (:open | :closed | :half_open value) -> void
+      def status_name: () -> (:open | :closed | :half_open)
+      def open?: () -> bool
+      def closed?: () -> bool
+      def half_open?: () -> bool
+      def trip: () -> bool
+      def attempt_recovery: () -> bool
+      def reset: () -> bool
+      def force_open: () -> bool
+      def force_close: () -> bool
+    end
+
+    def self.included: (singleton(Circuit) base) -> void
+
+    private
+
+    def on_circuit_open: () -> void
+    def on_circuit_close: () -> void
+    def on_circuit_half_open: () -> void
+    def restore_status_from_storage: () -> void
+    def reset_timeout_elapsed?: () -> bool
+    def monotonic_time: () -> Float
+  end
+
+  module Configuration
+    extend ActiveSupport::Concern
+
+    interface _ConfigurationMethods
+      def name: () -> String
+      def config: () -> Hash[Symbol, untyped]
+      def opened_at: () -> Concurrent::AtomicReference[Float?]
+    end
+
+    type storage_type = Storage::Base | Storage::Memory | Storage::BucketMemory | Storage::Null
+    type metrics_type = untyped
+    type callback_type = Proc | nil
+    type fallback_type = Proc | Array[Proc | untyped] | untyped
+
+    type circuit_config = {
+      failure_threshold: Integer,
+      failure_window: Integer,
+      success_threshold: Integer,
+      timeout: Integer?,
+      reset_timeout: Integer,
+      reset_timeout_jitter: Float,
+      half_open_calls: Integer,
+      storage: storage_type?,
+      metrics: metrics_type?,
+      fallback: fallback_type?,
+      on_open: callback_type,
+      on_close: callback_type,
+      on_half_open: callback_type,
+      on_reject: callback_type,
+      exceptions: Array[Class],
+      owner: untyped
+    }
+
+    def initialize: (String name, ?circuit_config options) -> void
+
+    private
+
+    def default_config: () -> circuit_config
+    def create_default_storage: () -> storage_type
+  end
+
+  module Execution
+    def call: [T] () { () -> T } -> untyped
+    def wrap: [T] () { () -> T } -> untyped
+
+    private
+
+    def handle_open_status: () { () -> untyped } -> untyped
+    def handle_half_open_status: () { () -> untyped } -> untyped
+    def handle_closed_status: () { () -> untyped } -> untyped
+    def execute_call: () { () -> untyped } -> untyped
+    def reject_call: () -> untyped
+    def handle_success: () -> void
+    def handle_failure: () -> void
+    def failure_threshold_exceeded?: () -> bool
+    def success_threshold_reached?: () -> bool
+    def record_success: (Float duration) -> void
+    def record_failure: (Float duration, ?StandardError? error) -> void
+  end
+
+  module Introspection
+    type stats_hash = {
+      state: (:open | :closed | :half_open),
+      failure_count: Integer,
+      success_count: Integer,
+      last_failure_at: Float?,
+      opened_at: Float?,
+      half_open_attempts: Integer,
+      half_open_successes: Integer
+    }
+
+    type error_info = {
+      class: String,
+      message: String,
+      occurred_at: Float
+    }
+
+    type circuit_hash = {
+      name: String,
+      state: (:open | :closed | :half_open),
+      stats: stats_hash,
+      config: Hash[Symbol, untyped],
+      event_log: Array[untyped],
+      last_error: error_info?
+    }
+
+    def stats: () -> stats_hash
+    def configuration: () -> Hash[Symbol, untyped]
+    def event_log: (?limit: Integer) -> Array[untyped]?
+    def last_error: () -> StandardError?
+    def to_h: () -> circuit_hash
+    def summary: () -> String
+    def last_error_info: () -> error_info?
+  end
+
+  module Callbacks
+    private
+
+    def invoke_callback: (Symbol callback_name) -> void
+    def invoke_fallback: (StandardError error) -> untyped
+    def invoke_single_fallback: (Proc | untyped fallback, StandardError error) -> untyped
+  end
+end
