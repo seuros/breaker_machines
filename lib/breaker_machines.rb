@@ -25,7 +25,7 @@ module BreakerMachines
 
   config_accessor :default_storage, default: :bucket_memory
   config_accessor :default_timeout, default: nil
-  config_accessor :default_reset_timeout, default: 60
+  config_accessor :default_reset_timeout, default: 60.seconds
   config_accessor :default_failure_threshold, default: 5
   config_accessor :log_events, default: true
   config_accessor :fiber_safe, default: false

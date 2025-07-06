@@ -13,8 +13,8 @@ class PaymentService
   include BreakerMachines::DSL
 
   circuit :stripe do
-    threshold failures: 3, within: 60
-    reset_after 30
+    threshold failures: 3, within: 1.minute
+    reset_after 30.seconds
     fallback { { error: "Payment queued for later" } }
   end
 
@@ -32,8 +32,8 @@ class AIService
   include BreakerMachines::DSL
 
   circuit :openai, fiber_safe: true do
-    threshold failures: 2, within: 30
-    timeout 5  # ACTUALLY SAFE! Uses Async::Task, not Thread#kill
+    threshold failures: 2, within: 30.seconds
+    timeout 5.seconds  # ACTUALLY SAFE! Uses Async::Task, not Thread#kill
     fallback { { error: "AI is contemplating existence, try again" } }
   end
 
@@ -269,6 +269,50 @@ Where:
 
 **Corporate Architect Translation**: "It's complex because we can bill more hours explaining it."
 
+### Advanced Configuration Options
+
+#### Error Rate Thresholds (New!)
+Instead of absolute failure counts, use percentage-based thresholds:
+
+```ruby
+circuit :high_traffic_api do
+  # Opens when 50% of calls fail, but only after minimum 10 calls
+  threshold failure_rate: 0.5, minimum_calls: 10, within: 60
+  reset_after 30
+end
+```
+
+This prevents false positives in low-traffic scenarios while adapting to varying load.
+
+#### Bulkheading - Resource Isolation (New!)
+Limit concurrent calls to prevent resource exhaustion:
+
+```ruby
+circuit :limited_resource do
+  max_concurrent 50  # Only 50 concurrent calls allowed
+  threshold failures: 5, within: 30
+  
+  fallback { { error: "System at capacity", retry_after: 5 } }
+end
+```
+
+Calls exceeding the limit are immediately rejected with `CircuitBulkheadError`.
+
+#### Cache Storage Backend (New!)
+Use Rails cache for distributed circuit state:
+
+```ruby
+circuit :distributed_service do
+  storage :cache  # Uses Rails.cache (Redis, Memcached, etc.)
+  threshold failures: 3, within: 60
+end
+
+# Or with custom cache store
+circuit :custom_cache do
+  storage :cache, cache_store: MyCustomCache.new
+end
+```
+
 ### Real Implementation Examples
 
 ```ruby
@@ -371,6 +415,61 @@ class FleetCoordinator
   end
 end
 ```
+
+### Fallback Chain Pattern
+Multiple fallbacks provide defense in depth - if one fallback fails, the next takes over:
+
+```ruby
+class ResilientService
+  include BreakerMachines::DSL
+  
+  circuit :external_api do
+    threshold failures: 3, within: 30
+    
+    # Fallbacks are tried in order until one succeeds
+    fallback { fetch_from_cache }      # Try cache first
+    fallback { fetch_from_replica }    # Then try replica
+    fallback { return_degraded_data }  # Last resort
+  end
+  
+  def get_data
+    circuit(:external_api).wrap do
+      ExternalAPI.fetch_data
+    end
+  end
+  
+  private
+  
+  def fetch_from_cache
+    cache = Rails.cache.read("api_data")
+    raise "Cache miss" if cache.nil?
+    cache
+  end
+  
+  def fetch_from_replica
+    # This might also fail if replica is down
+    ReplicaAPI.fetch_data
+  end
+  
+  def return_degraded_data
+    # This should never fail - return minimal safe response
+    { status: "degraded", data: [] }
+  end
+end
+```
+
+**How Fallback Chains Work:**
+1. When the circuit is open or the protected call fails, fallbacks are invoked
+2. Each fallback is called with the original error as an argument
+3. If a fallback raises an exception, the next fallback in the chain is tried
+4. If all fallbacks fail, the last exception is propagated
+5. The first successful fallback's return value is used
+
+**Best Practices:**
+- Order fallbacks from most preferred to least preferred
+- Ensure the last fallback never fails (return static/degraded response)
+- Each fallback can access the original error for context
+- Keep fallbacks simple - they shouldn't trigger more circuit breakers
 
 ### The Half-Open Dance
 The delicate ballet of service recovery:
@@ -955,6 +1054,39 @@ end
 
 **Corporate Monitoring Strategy**: "We'll check the logs... eventually"
 **Reality**: 47GB of "Retrying..." messages and no actual insights
+
+### Enhanced Registry API (New!)
+Programmatically control and monitor all circuits:
+
+```ruby
+# Get registry instance
+registry = BreakerMachines.registry
+
+# Find specific circuit
+circuit = registry.find(:payment_api)
+
+# Force circuit states (useful for testing/emergencies)
+registry.force_open(:flaky_service)   # Immediate protection
+registry.force_close(:fixed_service)  # Resume traffic
+registry.reset(:recovered_service)    # Clear failure history
+
+# Get comprehensive stats
+stats = registry.all_stats
+# => {
+#   summary: { total: 15, by_state: { closed: 12, open: 2, half_open: 1 } },
+#   circuits: [...detailed circuit metrics...],
+#   health: {
+#     open_count: 2,
+#     closed_count: 12,
+#     half_open_count: 1,
+#     total_failures: 145,
+#     total_successes: 9823
+#   }
+# }
+
+# Find all circuits by name pattern
+payment_circuits = registry.find_by_name(:payment_api)
+```
 
 ### Real-Time Circuit Intelligence Dashboard
 ```ruby

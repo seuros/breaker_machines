@@ -19,29 +19,44 @@ module BreakerMachines
         wrap(&)
       end
 
-      def wrap(&block)
-        @mutex.with_read_lock do
-          case status_name
-          when :open
-            handle_open_status(&block)
-          when :half_open
-            handle_half_open_status(&block)
-          when :closed
-            handle_closed_status(&block)
+      def wrap(&)
+        # Apply bulkheading if configured
+        if @semaphore
+          acquired = @semaphore.try_acquire
+          unless acquired
+            # Reject immediately if we can't acquire semaphore
+            return reject_call_bulkhead
           end
+
+          begin
+            execute_with_state_check(&)
+          ensure
+            @semaphore.release
+          end
+        else
+          execute_with_state_check(&)
         end
       end
 
       private
 
-      def handle_open_status(&)
-        if reset_timeout_elapsed?
+      def execute_with_state_check(&block)
+        # Check if we need to transition from open to half-open first
+        if open? && reset_timeout_elapsed?
           @mutex.with_write_lock do
-            attempt_recovery if open?
+            attempt_recovery if open? # Double-check after acquiring lock
           end
-          handle_half_open_status(&)
-        else
-          reject_call
+        end
+
+        @mutex.with_read_lock do
+          case status_name
+          when :open
+            reject_call
+          when :half_open
+            handle_half_open_status(&block)
+          when :closed
+            handle_closed_status(&block)
+          end
         end
       end
 
@@ -140,6 +155,16 @@ module BreakerMachines
         invoke_fallback(BreakerMachines::CircuitOpenError.new(@name, @opened_at.value))
       end
 
+      def reject_call_bulkhead
+        @metrics&.record_rejection(@name)
+        invoke_callback(:on_reject)
+
+        error = BreakerMachines::CircuitBulkheadError.new(@name, @config[:max_concurrent])
+        raise error unless @config[:fallback]
+
+        invoke_fallback(error)
+      end
+
       def handle_success
         @mutex.with_write_lock do
           if half_open?
@@ -174,8 +199,24 @@ module BreakerMachines
       end
 
       def failure_threshold_exceeded?
-        recent_failures = @storage.failure_count(@name, @config[:failure_window])
-        recent_failures >= @config[:failure_threshold]
+        if @config[:use_rate_threshold]
+          # Rate-based threshold
+          window = @config[:failure_window]
+          failures = @storage.failure_count(@name, window)
+          successes = @storage.success_count(@name, window)
+          total_calls = failures + successes
+
+          # Check minimum calls requirement
+          return false if total_calls < @config[:minimum_calls]
+
+          # Calculate failure rate
+          failure_rate = failures.to_f / total_calls
+          failure_rate >= @config[:failure_rate]
+        else
+          # Absolute count threshold (existing behavior)
+          recent_failures = @storage.failure_count(@name, @config[:failure_window])
+          recent_failures >= @config[:failure_threshold]
+        end
       end
 
       def success_threshold_reached?

@@ -156,10 +156,10 @@ module BreakerMachines
       def initialize
         @config = {
           failure_threshold: 5,
-          failure_window: 60,
+          failure_window: 60.seconds,
           success_threshold: 1,
           timeout: nil,
-          reset_timeout: 60,
+          reset_timeout: 60.seconds,
           half_open_calls: 1,
           exceptions: [StandardError],
           storage: nil,
@@ -174,8 +174,18 @@ module BreakerMachines
         }
       end
 
-      def threshold(failures: nil, within: 60, successes: nil)
-        @config[:failure_threshold] = failures if failures
+      def threshold(failures: nil, failure_rate: nil, minimum_calls: nil, within: 60.seconds, successes: nil)
+        if failure_rate
+          # Rate-based threshold
+          @config[:failure_rate] = failure_rate
+          @config[:minimum_calls] = minimum_calls || 5
+          @config[:use_rate_threshold] = true
+        elsif failures
+          # Absolute count threshold (existing behavior)
+          @config[:failure_threshold] = failures
+          @config[:use_rate_threshold] = false
+        end
+
         @config[:failure_window] = within.to_i
         @config[:success_threshold] = successes if successes
       end
@@ -199,6 +209,8 @@ module BreakerMachines
                               Storage::Memory.new(**)
                             when :bucket_memory
                               Storage::BucketMemory.new(**)
+                            when :cache
+                              Storage::Cache.new(**)
                             when :redis
                               Storage::Redis.new(**)
                             when Class
@@ -258,6 +270,10 @@ module BreakerMachines
 
       def fiber_safe(enabled = true)
         @config[:fiber_safe] = enabled
+      end
+
+      def max_concurrent(limit)
+        @config[:max_concurrent] = limit
       end
 
       # Advanced features
