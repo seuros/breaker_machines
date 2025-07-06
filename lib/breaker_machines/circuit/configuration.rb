@@ -25,6 +25,9 @@ module BreakerMachines
         @last_failure_at = Concurrent::AtomicReference.new(nil)
         @last_error = Concurrent::AtomicReference.new(nil)
 
+        # Initialize semaphore for bulkheading if max_concurrent is set
+        @semaphore = (Concurrent::Semaphore.new(@config[:max_concurrent]) if @config[:max_concurrent])
+
         super() # Initialize state machine
         restore_status_from_storage if @storage
 
@@ -51,7 +54,13 @@ module BreakerMachines
           on_half_open: nil,
           on_reject: nil,
           exceptions: [StandardError],
-          fiber_safe: BreakerMachines.config.fiber_safe
+          fiber_safe: BreakerMachines.config.fiber_safe,
+          # Rate-based threshold options
+          use_rate_threshold: false,
+          failure_rate: nil,
+          minimum_calls: 5,
+          # Bulkheading options
+          max_concurrent: nil
         }
       end
 

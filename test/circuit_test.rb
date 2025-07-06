@@ -48,6 +48,43 @@ class TestCircuit < ActiveSupport::TestCase
     refute_predicate @circuit, :closed?
   end
 
+  def test_error_rate_threshold
+    # Create circuit with rate-based threshold
+    rate_circuit = BreakerMachines::Circuit.new(:rate_test, {
+                                                  use_rate_threshold: true,
+                                                  failure_rate: 0.5,
+                                                  minimum_calls: 10,
+                                                  failure_window: 60,
+                                                  reset_timeout: 1,
+                                                  reset_timeout_jitter: 0
+                                                })
+
+    # Make less than minimum calls - circuit should stay closed
+    4.times do
+      rate_circuit.wrap { 'success' }
+    rescue StandardError
+      nil
+    end
+
+    4.times { assert_raises(RuntimeError) { rate_circuit.wrap { raise 'error' } } }
+
+    assert_predicate rate_circuit, :closed?
+
+    # Make 2 more calls to reach minimum (10 total: 6 success, 4 failures = 40% failure rate)
+    2.times { rate_circuit.wrap { 'success' } }
+
+    # Still below 50% failure rate
+    assert_predicate rate_circuit, :closed?
+
+    # One more failure brings us to 5/11 = 45.5% - still below threshold
+    assert_raises(RuntimeError) { rate_circuit.wrap { raise 'error' } }
+    assert_predicate rate_circuit, :closed?
+
+    # Another failure: 6/12 = 50% - should trip
+    assert_raises(RuntimeError) { rate_circuit.wrap { raise 'error' } }
+    assert_predicate rate_circuit, :open?
+  end
+
   def test_open_circuit_rejects_calls_immediately
     # Open the circuit
     3.times do

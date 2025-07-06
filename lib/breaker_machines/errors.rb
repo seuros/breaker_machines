@@ -27,4 +27,15 @@ module BreakerMachines
 
   class ConfigurationError < Error; end
   class StorageError < Error; end
+
+  # Raised when circuit rejects call due to bulkhead limit
+  class CircuitBulkheadError < Error
+    attr_reader :circuit_name, :max_concurrent
+
+    def initialize(circuit_name, max_concurrent)
+      @circuit_name = circuit_name
+      @max_concurrent = max_concurrent
+      super("Circuit '#{circuit_name}' rejected call: max concurrent limit of #{max_concurrent} reached")
+    end
+  end
 end

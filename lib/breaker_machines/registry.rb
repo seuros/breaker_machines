@@ -53,6 +53,38 @@ module BreakerMachines
       all_circuits.select { |circuit| circuit.name == name }
     end
 
+    # Find first circuit by name
+    def find(name)
+      find_by_name(name).first
+    end
+
+    # Force open a circuit by name
+    def force_open(name)
+      circuits = find_by_name(name)
+      return false if circuits.empty?
+
+      circuits.each(&:force_open)
+      true
+    end
+
+    # Force close a circuit by name
+    def force_close(name)
+      circuits = find_by_name(name)
+      return false if circuits.empty?
+
+      circuits.each(&:force_close)
+      true
+    end
+
+    # Reset a circuit by name
+    def reset(name)
+      circuits = find_by_name(name)
+      return false if circuits.empty?
+
+      circuits.each(&:reset)
+      true
+    end
+
     # Get summary statistics
     def stats_summary
       circuits = all_circuits
@@ -60,6 +92,23 @@ module BreakerMachines
         total: circuits.size,
         by_state: circuits.group_by(&:status_name).transform_values(&:count),
         by_name: circuits.group_by(&:name).transform_values(&:count)
+      }
+    end
+
+    # Get all stats with detailed metrics
+    def all_stats
+      circuits = all_circuits
+
+      {
+        summary: stats_summary,
+        circuits: circuits.map { |c| c.stats },
+        health: {
+          open_count: circuits.count(&:open?),
+          closed_count: circuits.count(&:closed?),
+          half_open_count: circuits.count(&:half_open?),
+          total_failures: circuits.sum { |c| c.stats[:failure_count] },
+          total_successes: circuits.sum { |c| c.stats[:success_count] }
+        }
       }
     end
 
