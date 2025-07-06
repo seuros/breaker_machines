@@ -13,3 +13,6 @@ gem 'rbs', '~> 3.0'
 gem 'rubocop', '~> 1.77'
 gem 'rubocop-minitest', '~> 0.30'
 gem 'rubocop-rake', '~> 0.6'
+
+# Optional dependency for fiber-safe mode tests
+gem 'async', '~> 2.0'
