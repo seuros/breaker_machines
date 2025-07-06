@@ -270,6 +270,26 @@ module BreakerMachines
         @config[:on_reject] = block
       end
 
+      # Configure hedged requests
+      def hedged(&)
+        if block_given?
+          hedged_builder = HedgedBuilder.new(@config)
+          hedged_builder.instance_eval(&)
+        else
+          @config[:hedged_requests] = true
+        end
+      end
+
+      # Configure multiple backends
+      def backends(*backend_list)
+        @config[:backends] = backend_list.flatten
+      end
+
+      # Configure parallel fallback execution
+      def parallel_fallback(fallback_list)
+        @config[:fallback] = ParallelFallbackWrapper.new(fallback_list)
+      end
+
       def notify(service, url = nil, events: %i[open close], **options)
         notification = {
           via: service,
@@ -294,10 +314,6 @@ module BreakerMachines
       end
 
       # Advanced features
-      def backends(list)
-        @config[:backends] = list
-      end
-
       def parallel_calls(count, timeout: nil)
         @config[:parallel_calls] = count
         @config[:parallel_timeout] = timeout
@@ -331,6 +347,37 @@ module BreakerMachines
 
         raise BreakerMachines::ConfigurationError,
               "jitter must be between 0.0 and 1.0 (0% to 100%), got: #{jitter.inspect}"
+      end
+    end
+
+    # Builder for hedged request configuration
+    class HedgedBuilder
+      def initialize(config)
+        @config = config
+        @config[:hedged_requests] = true
+      end
+
+      def delay(milliseconds)
+        @config[:hedging_delay] = milliseconds
+      end
+
+      def max_requests(count)
+        @config[:max_hedged_requests] = count
+      end
+    end
+
+    # Wrapper to indicate parallel execution for fallbacks
+    class ParallelFallbackWrapper
+      attr_reader :fallbacks
+
+      def initialize(fallbacks)
+        @fallbacks = fallbacks
+      end
+
+      def call(error)
+        # This will be handled by the circuit's fallback mechanism
+        # to execute fallbacks in parallel
+        raise NotImplementedError, 'ParallelFallbackWrapper should be handled by Circuit'
       end
     end
   end

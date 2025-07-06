@@ -60,7 +60,12 @@ module BreakerMachines
           failure_rate: nil,
           minimum_calls: 5,
           # Bulkheading options
-          max_concurrent: nil
+          max_concurrent: nil,
+          # Hedged request options
+          hedged_requests: false,
+          hedging_delay: 50, # milliseconds
+          max_hedged_requests: 2,
+          backends: nil
         }
       end
 

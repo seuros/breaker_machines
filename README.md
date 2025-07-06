@@ -703,6 +703,195 @@ class SidekiqWorker
 end
 ```
 
+## Hedged Requests: Fighting Latency Like a Time Traveler
+
+In the year 2025, waiting for slow services is considered a war crime. Enter hedged requests - the art of sending duplicate requests to multiple backends and taking the first response that arrives.
+
+### Basic Hedged Requests
+
+When one request isn't fast enough, send two:
+
+```ruby
+class FastAPIClient
+  include BreakerMachines::DSL
+
+  circuit :api_call do
+    threshold failures: 3, within: 60
+    
+    # Enable hedged requests
+    hedged do
+      delay 50        # Send second request after 50ms
+      max_requests 2  # Maximum 2 concurrent requests
+    end
+  end
+
+  def fetch_data(id)
+    circuit(:api_call).wrap do
+      # If first request takes > 50ms, a second request starts
+      # First successful response wins
+      api.get("/data/#{id}")
+    end
+  end
+end
+```
+
+### Multiple Backend Hedging
+
+When you have redundant backends, use them all:
+
+```ruby
+class MultiRegionService
+  include BreakerMachines::DSL
+
+  circuit :distributed_api do
+    threshold failures: 5, within: 120
+    
+    # Multiple backends for redundancy
+    backends [
+      -> { fetch_from_us_east },
+      -> { fetch_from_us_west },
+      -> { fetch_from_eu_central }
+    ]
+    
+    hedged do
+      delay 30         # Start next backend after 30ms
+      max_requests 2   # Max 2 concurrent attempts
+    end
+  end
+
+  def get_user_data
+    circuit(:distributed_api).wrap { 'ignored' }
+  end
+
+  private
+
+  def fetch_from_us_east
+    HTTParty.get("https://us-east.api.com/user", timeout: 2)
+  end
+
+  def fetch_from_us_west
+    HTTParty.get("https://us-west.api.com/user", timeout: 2)
+  end
+
+  def fetch_from_eu_central
+    HTTParty.get("https://eu-central.api.com/user", timeout: 2)
+  end
+end
+```
+
+### Parallel Fallbacks: When Everything Fails, Fail Faster
+
+Execute multiple fallback strategies in parallel:
+
+```ruby
+class ResilientDataService
+  include BreakerMachines::DSL
+
+  circuit :primary_database do
+    threshold failures: 2, within: 30
+    
+    # Try multiple fallbacks simultaneously
+    parallel_fallback [
+      -> { fetch_from_cache },
+      -> { fetch_from_replica },
+      -> { fetch_from_backup_region }
+    ]
+  end
+
+  def get_critical_data(key)
+    circuit(:primary_database).wrap do
+      primary_db.fetch(key, timeout: 1)
+    end
+  end
+
+  private
+
+  def fetch_from_cache
+    Rails.cache.fetch("data:#{key}")
+  end
+
+  def fetch_from_replica
+    replica_db.fetch(key, timeout: 2)
+  end
+
+  def fetch_from_backup_region
+    backup_api.get("/data/#{key}", timeout: 3)
+  end
+end
+```
+
+### Fiber-Safe Hedging with Async
+
+For the truly enlightened using Ruby 3+ with Async:
+
+```ruby
+class AsyncSpeedDemon
+  include BreakerMachines::DSL
+
+  circuit :blazing_fast do
+    fiber_safe true
+    
+    hedged do
+      delay 10         # 10ms is an eternity in fiber time
+      max_requests 3
+    end
+    
+    backends [
+      -> { async_fetch_primary },
+      -> { async_fetch_secondary },
+      -> { async_fetch_tertiary }
+    ]
+  end
+
+  def fetch_with_speed
+    Async do
+      circuit(:blazing_fast).wrap { 'ignored' }
+    end.wait
+  end
+
+  private
+
+  def async_fetch_primary
+    Async::HTTP::Internet.new.get("https://primary.api.com/data").read
+  end
+  
+  def async_fetch_secondary
+    Async::HTTP::Internet.new.get("https://secondary.api.com/data").read
+  end
+  
+  def async_fetch_tertiary
+    Async::HTTP::Internet.new.get("https://tertiary.api.com/data").read
+  end
+end
+```
+
+### Hedging + Bulkheading: The Ultimate Combo
+
+Combine hedged requests with bulkheading for maximum resilience:
+
+```ruby
+class UltraResilientService
+  include BreakerMachines::DSL
+
+  circuit :protected_api do
+    threshold failures: 5, within: 60
+    max_concurrent 10  # Bulkhead limit
+    
+    hedged do
+      delay 100
+      max_requests 2
+    end
+    
+    backends [
+      -> { primary_service.call },
+      -> { backup_service.call }
+    ]
+    
+    fallback { { status: 'degraded', data: cached_response } }
+  end
+end
+```
+
 ## Production Deployment: Don't Be Like DynamoDB
 
 **Enterprise Deployment Strategy**: "YOLO push to prod at 4:59 PM Friday"

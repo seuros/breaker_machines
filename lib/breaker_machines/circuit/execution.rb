@@ -10,7 +10,9 @@ module BreakerMachines
       # Lazy load async support only when needed
       def self.load_async_support
         require 'breaker_machines/async_support'
+        require 'breaker_machines/hedged_async_support'
         Circuit.include(BreakerMachines::AsyncSupport)
+        Circuit.include(BreakerMachines::HedgedAsyncSupport)
       rescue LoadError => e
         if e.message.include?('async')
           raise LoadError, "The 'async' gem is required for fiber_safe mode. Add `gem 'async'` to your Gemfile."
@@ -104,8 +106,12 @@ module BreakerMachines
             )
           end
 
-          # Execute normally without forceful timeout
-          result = block.call
+          # Execute with hedged requests if enabled
+          result = if @config[:hedged_requests] || @config[:backends]
+                     execute_hedged(&block)
+                   else
+                     block.call
+                   end
 
           record_success(monotonic_time - start_time)
           handle_success
