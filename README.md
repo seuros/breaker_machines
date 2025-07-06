@@ -298,6 +298,8 @@ end
 
 Calls exceeding the limit are immediately rejected with `CircuitBulkheadError`.
 
+**Important**: Bulkhead rejections (capacity limit) do NOT count as failures toward opening the circuit. They're a separate protection mechanism - the circuit tracks actual service failures, while bulkheading prevents overload.
+
 #### Cache Storage Backend (New!)
 Use Rails cache for distributed circuit state:
 

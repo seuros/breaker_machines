@@ -6,8 +6,14 @@ require 'breaker_machines'
 require 'minitest/autorun'
 require 'active_support/test_case'
 
+# Require async for fiber tests
+require 'async'
+
 # Suppress notifications during tests unless explicitly testing them
 BreakerMachines.config.log_events = false
+
+# Disable fiber_safe by default during tests
+BreakerMachines.config.fiber_safe = false
 
 # Load dummy app models in dependency order
 require_relative 'dummy/app/models/spaceflight_systems'

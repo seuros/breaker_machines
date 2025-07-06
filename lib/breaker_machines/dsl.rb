@@ -177,29 +177,45 @@ module BreakerMachines
       def threshold(failures: nil, failure_rate: nil, minimum_calls: nil, within: 60.seconds, successes: nil)
         if failure_rate
           # Rate-based threshold
+          validate_failure_rate!(failure_rate)
+          validate_positive_integer!(:minimum_calls, minimum_calls) if minimum_calls
+
           @config[:failure_rate] = failure_rate
           @config[:minimum_calls] = minimum_calls || 5
           @config[:use_rate_threshold] = true
         elsif failures
           # Absolute count threshold (existing behavior)
+          validate_positive_integer!(:failures, failures)
           @config[:failure_threshold] = failures
           @config[:use_rate_threshold] = false
         end
 
+        validate_positive_integer!(:within, within.to_i)
         @config[:failure_window] = within.to_i
-        @config[:success_threshold] = successes if successes
+
+        return unless successes
+
+        validate_positive_integer!(:successes, successes)
+        @config[:success_threshold] = successes
       end
 
       def reset_after(duration, jitter: nil)
+        validate_positive_integer!(:duration, duration.to_i)
         @config[:reset_timeout] = duration.to_i
-        @config[:reset_timeout_jitter] = jitter if jitter
+
+        return unless jitter
+
+        validate_jitter!(jitter)
+        @config[:reset_timeout_jitter] = jitter
       end
 
       def timeout(duration)
+        validate_non_negative_integer!(:timeout, duration.to_i)
         @config[:timeout] = duration.to_i
       end
 
       def half_open_requests(count)
+        validate_positive_integer!(:half_open_requests, count)
         @config[:half_open_calls] = count
       end
 
@@ -273,6 +289,7 @@ module BreakerMachines
       end
 
       def max_concurrent(limit)
+        validate_positive_integer!(:max_concurrent, limit)
         @config[:max_concurrent] = limit
       end
 
@@ -284,6 +301,36 @@ module BreakerMachines
       def parallel_calls(count, timeout: nil)
         @config[:parallel_calls] = count
         @config[:parallel_timeout] = timeout
+      end
+
+      private
+
+      def validate_positive_integer!(name, value)
+        return if value.is_a?(Integer) && value.positive?
+
+        raise BreakerMachines::ConfigurationError,
+              "#{name} must be a positive integer, got: #{value.inspect}"
+      end
+
+      def validate_non_negative_integer!(name, value)
+        return if value.is_a?(Integer) && value >= 0
+
+        raise BreakerMachines::ConfigurationError,
+              "#{name} must be a non-negative integer, got: #{value.inspect}"
+      end
+
+      def validate_failure_rate!(rate)
+        return if rate.is_a?(Numeric) && rate >= 0.0 && rate <= 1.0
+
+        raise BreakerMachines::ConfigurationError,
+              "failure_rate must be between 0.0 and 1.0, got: #{rate.inspect}"
+      end
+
+      def validate_jitter!(jitter)
+        return if jitter.is_a?(Numeric) && jitter >= 0.0 && jitter <= 1.0
+
+        raise BreakerMachines::ConfigurationError,
+              "jitter must be between 0.0 and 1.0 (0% to 100%), got: #{jitter.inspect}"
       end
     end
   end

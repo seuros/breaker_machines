@@ -9,10 +9,14 @@ module BreakerMachines
 
       # Lazy load async support only when needed
       def self.load_async_support
-        require 'async'
-        require 'async/task'
-      rescue LoadError
-        raise LoadError, "The 'async' gem is required for fiber_safe mode. Add `gem 'async'` to your Gemfile."
+        require 'breaker_machines/async_support'
+        Circuit.include(BreakerMachines::AsyncSupport)
+      rescue LoadError => e
+        if e.message.include?('async')
+          raise LoadError, "The 'async' gem is required for fiber_safe mode. Add `gem 'async'` to your Gemfile."
+        end
+
+        raise
       end
 
       def call(&)
@@ -77,7 +81,11 @@ module BreakerMachines
 
       def execute_call(&block)
         # Use async version if fiber_safe is enabled
-        return execute_call_async(&block) if @config[:fiber_safe]
+        if @config[:fiber_safe]
+          # Ensure async is loaded and included
+          Execution.load_async_support unless respond_to?(:execute_call_async)
+          return execute_call_async(&block)
+        end
 
         start_time = monotonic_time
 
@@ -108,33 +116,6 @@ module BreakerMachines
           raise unless @config[:fallback]
 
           invoke_fallback(e)
-        end
-      end
-
-      def execute_call_async(&)
-        # Ensure async is loaded
-        Execution.load_async_support unless defined?(::Async)
-
-        start_time = monotonic_time
-
-        begin
-          result = if @config[:timeout]
-                     # Use safe, cooperative timeout from async gem
-                     ::Async::Task.current.with_timeout(@config[:timeout], &)
-                   else
-                     yield
-                   end
-
-          record_success(monotonic_time - start_time)
-          handle_success
-          result
-        rescue ::Async::TimeoutError, *@config[:exceptions] => e
-          # Handle async timeout or configured exceptions as failures
-          record_failure(monotonic_time - start_time, e)
-          handle_failure
-          raise unless @config[:fallback]
-
-          invoke_fallback_async(e)
         end
       end
 

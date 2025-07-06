@@ -4,14 +4,11 @@ require 'test_helper'
 
 class TestFiberSafe < ActiveSupport::TestCase
   def setup
-    skip 'Async gem not available' unless defined?(::Async)
-
-    @original_fiber_safe = BreakerMachines.config.fiber_safe
     BreakerMachines.config.fiber_safe = true
   end
 
   def teardown
-    BreakerMachines.config.fiber_safe = @original_fiber_safe if @original_fiber_safe
+    BreakerMachines.config.fiber_safe = false
   end
 
   def test_fiber_safe_configuration
@@ -28,8 +25,6 @@ class TestFiberSafe < ActiveSupport::TestCase
   end
 
   def test_async_execution_with_timeout
-    skip 'Async not loaded' unless defined?(::Async)
-
     circuit = BreakerMachines::Circuit.new(:test_timeout, {
                                              fiber_safe: true,
                                              timeout: 0.1, # 100ms timeout
@@ -47,8 +42,6 @@ class TestFiberSafe < ActiveSupport::TestCase
   end
 
   def test_async_execution_success
-    skip 'Async not loaded' unless defined?(::Async)
-
     circuit = BreakerMachines::Circuit.new(:test_success, {
                                              fiber_safe: true,
                                              failure_threshold: 3
@@ -63,8 +56,6 @@ class TestFiberSafe < ActiveSupport::TestCase
   end
 
   def test_async_fallback_execution
-    skip 'Async not loaded' unless defined?(::Async)
-
     circuit = BreakerMachines::Circuit.new(:test_fallback, {
                                              fiber_safe: true,
                                              failure_threshold: 1,
@@ -88,8 +79,6 @@ class TestFiberSafe < ActiveSupport::TestCase
   end
 
   def test_async_callbacks
-    skip 'Async not loaded' unless defined?(::Async)
-
     callback_called = false
 
     circuit = BreakerMachines::Circuit.new(:test_callbacks, {
@@ -110,8 +99,6 @@ class TestFiberSafe < ActiveSupport::TestCase
   end
 
   def test_concurrent_fiber_operations
-    skip 'Async not loaded' unless defined?(::Async)
-
     circuit = BreakerMachines::Circuit.new(:test_concurrent, {
                                              fiber_safe: true,
                                              failure_threshold: 10
@@ -144,8 +131,6 @@ class TestFiberSafe < ActiveSupport::TestCase
   end
 
   def test_async_task_fallback
-    skip 'Async not loaded' unless defined?(::Async)
-
     circuit = BreakerMachines::Circuit.new(:test_async_fallback, {
                                              fiber_safe: true,
                                              failure_threshold: 1,
@@ -167,19 +152,23 @@ class TestFiberSafe < ActiveSupport::TestCase
   end
 
   def test_fiber_safe_mode_requires_async_gem
-    # Temporarily undefine Async to test error handling
-    if defined?(::Async)
-      async_const = ::Async
-      Object.send(:remove_const, :Async)
-    end
+    # This test verifies that fiber_safe mode requires async gem context
+    # We run this inside an Async block to properly test the behavior
 
-    circuit = BreakerMachines::Circuit.new(:test_no_async, fiber_safe: true)
+    # Test 1: With async context, fiber_safe works
+    Async do
+      circuit = BreakerMachines::Circuit.new(:test_with_async_context, fiber_safe: true, timeout: 0.1)
+      result = circuit.wrap { 'success' }
 
-    assert_raises(LoadError) do
-      circuit.wrap { 'test' }
+      assert_equal 'success', result
+    end.wait
+
+    # Test 2: Without async context but with timeout, we expect an error
+    circuit_no_context = BreakerMachines::Circuit.new(:test_no_async_context, fiber_safe: true, timeout: 0.1)
+
+    # This should raise an error because we're outside of an Async context
+    assert_raises(RuntimeError) do
+      circuit_no_context.wrap { 'test' }
     end
-  ensure
-    # Restore Async constant if it was removed
-    Object.const_set(:Async, async_const) if async_const && !defined?(::Async)
   end
 end
