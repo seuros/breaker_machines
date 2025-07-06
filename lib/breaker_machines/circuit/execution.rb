@@ -20,22 +20,7 @@ module BreakerMachines
       end
 
       def wrap(&)
-        # Apply bulkheading if configured
-        if @semaphore
-          acquired = @semaphore.try_acquire
-          unless acquired
-            # Reject immediately if we can't acquire semaphore
-            return reject_call_bulkhead
-          end
-
-          begin
-            execute_with_state_check(&)
-          ensure
-            @semaphore.release
-          end
-        else
-          execute_with_state_check(&)
-        end
+        execute_with_state_check(&)
       end
 
       private
@@ -48,15 +33,28 @@ module BreakerMachines
           end
         end
 
-        @mutex.with_read_lock do
-          case status_name
-          when :open
-            reject_call
-          when :half_open
-            handle_half_open_status(&block)
-          when :closed
-            handle_closed_status(&block)
+        # Apply bulkheading first, outside of any locks
+        if @semaphore
+          acquired = @semaphore.try_acquire
+          unless acquired
+            # Reject immediately if we can't acquire semaphore
+            return reject_call_bulkhead
           end
+        end
+
+        begin
+          @mutex.with_read_lock do
+            case status_name
+            when :open
+              reject_call
+            when :half_open
+              handle_half_open_status(&block)
+            when :closed
+              handle_closed_status(&block)
+            end
+          end
+        ensure
+          @semaphore&.release if @semaphore && acquired
         end
       end
 
@@ -130,14 +128,8 @@ module BreakerMachines
           record_success(monotonic_time - start_time)
           handle_success
           result
-        rescue ::Async::TimeoutError => e
-          # Handle async timeout as a failure
-          record_failure(monotonic_time - start_time, e)
-          handle_failure
-          raise unless @config[:fallback]
-
-          invoke_fallback_async(e)
-        rescue *@config[:exceptions] => e
+        rescue ::Async::TimeoutError, *@config[:exceptions] => e
+          # Handle async timeout or configured exceptions as failures
           record_failure(monotonic_time - start_time, e)
           handle_failure
           raise unless @config[:fallback]
@@ -166,6 +158,8 @@ module BreakerMachines
       end
 
       def handle_success
+        return unless half_open?
+
         @mutex.with_write_lock do
           if half_open?
             # Check if all allowed half-open calls have succeeded
@@ -187,6 +181,8 @@ module BreakerMachines
       end
 
       def handle_failure
+        return unless closed? || half_open?
+
         @mutex.with_write_lock do
           if closed? && failure_threshold_exceeded?
             trip

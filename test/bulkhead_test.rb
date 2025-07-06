@@ -4,7 +4,6 @@ require 'test_helper'
 
 class TestBulkhead < ActiveSupport::TestCase
   def test_max_concurrent_limits_simultaneous_calls
-    skip 'Deadlock issue with ReentrantReadWriteLock - needs investigation'
     circuit = BreakerMachines::Circuit.new(:bulkhead_test, {
                                              max_concurrent: 2
                                            })

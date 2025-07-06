@@ -268,7 +268,7 @@ module BreakerMachines
         @config[:exceptions] = exceptions
       end
 
-      def fiber_safe(enabled = true)
+      def fiber_safe(enabled: true)
         @config[:fiber_safe] = enabled
       end
 
