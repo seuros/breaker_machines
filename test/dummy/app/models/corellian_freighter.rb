@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-# Test cargo ship inherits base circuits and adds cargo systems
-class TestCargoShip < BaseSpaceship
+# Corellian Freighter - versatile cargo transport
+class CorellianFreighter < BaseSpaceship
   circuit :cargo_bay do
     threshold failures: 10, within: 300
     reset_after 120

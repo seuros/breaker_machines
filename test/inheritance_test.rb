@@ -33,14 +33,14 @@ class TestInheritance < ActiveSupport::TestCase
   end
 
   def test_cargo_ship_overrides_circuit_config
-    cargo = TestCargoShip.new
+    cargo = CorellianFreighter.new
 
     # Engine circuit exists but with different config
     assert_equal 'Engine started', cargo.start_engine
     assert_equal 'Cargo loaded', cargo.load_cargo
 
     # Check that cargo ship has different engine config
-    cargo_engine_config = TestCargoShip.circuits[:engine]
+    cargo_engine_config = CorellianFreighter.circuits[:engine]
     base_engine_config = BaseSpaceship.circuits[:engine]
 
     assert_equal 5, cargo_engine_config[:failure_threshold]
@@ -53,7 +53,7 @@ class TestInheritance < ActiveSupport::TestCase
 
   def test_circuit_instances_are_independent
     fighter = Fighter.new
-    cargo = TestCargoShip.new
+    cargo = CorellianFreighter.new
 
     # Open fighter's engine circuit
     3.times do
@@ -90,7 +90,7 @@ class TestInheritance < ActiveSupport::TestCase
   def test_circuit_isolation_across_inheritance_tree
     base = BaseSpaceship.new
     fighter = Fighter.new
-    cargo = TestCargoShip.new
+    cargo = CorellianFreighter.new
 
     # Open shields on fighter
     5.times do
