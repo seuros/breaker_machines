@@ -1293,12 +1293,19 @@ end
 ```
 
 **Hour 1**: EmoBotProd: "I hear you and your feelings are valid."
+
 **Hour 2**: EmoBotStag: "Your feelings are valid and I hear you."
+
 **Hour 3**: EmoBotProd: "Thank you for validating that my validation is valid."
+
 **Hour 4**: EmoBotStag: "I appreciate your appreciation of my validation."
+
 **Hour 12**: Both bots arguing about the philosophical nature of validation
+
 **Hour 24**: 2% of all Reddit comments are now EmoBotProd and EmoBotStag
+
 **Hour 25**: Reddit's abuse detection kicks in: "WTF is happening?"
+
 **Hour 26**: Both bots banned, engineer's LinkedIn status updated
 
 **The Post-Mortem:**
