@@ -17,6 +17,28 @@ module BreakerMachines
       ::Async::TimeoutError
     end
 
+    # Execute a call with async support (fiber-safe mode)
+    def execute_call_async(&)
+      start_time = monotonic_time
+
+      begin
+        result = execute_with_async_timeout(@config[:timeout], &)
+
+        record_success(monotonic_time - start_time)
+        handle_success
+        result
+      rescue StandardError => e
+        # Re-raise if it's not an async timeout or configured exception
+        raise unless e.is_a?(async_timeout_error_class) || @config[:exceptions].any? { |klass| e.is_a?(klass) }
+
+        record_failure(monotonic_time - start_time, e)
+        handle_failure
+        raise unless @config[:fallback]
+
+        invoke_fallback_with_async(e)
+      end
+    end
+
     # Execute a block with optional timeout using Async
     def execute_with_async_timeout(timeout, &)
       if timeout

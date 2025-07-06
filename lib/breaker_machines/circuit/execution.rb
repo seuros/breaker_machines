@@ -81,7 +81,11 @@ module BreakerMachines
 
       def execute_call(&block)
         # Use async version if fiber_safe is enabled
-        return execute_call_async(&block) if @config[:fiber_safe]
+        if @config[:fiber_safe]
+          # Ensure async is loaded and included
+          Execution.load_async_support unless respond_to?(:execute_call_async)
+          return execute_call_async(&block)
+        end
 
         start_time = monotonic_time
 
@@ -112,33 +116,6 @@ module BreakerMachines
           raise unless @config[:fallback]
 
           invoke_fallback(e)
-        end
-      end
-
-      def execute_call_async(&)
-        # Ensure async is loaded and included
-        Execution.load_async_support unless respond_to?(:execute_with_async_timeout)
-
-        start_time = monotonic_time
-
-        begin
-          result = execute_with_async_timeout(@config[:timeout], &)
-
-          record_success(monotonic_time - start_time)
-          handle_success
-          result
-        rescue StandardError => e
-          # Check if it's an async timeout error or one of our configured exceptions
-          if (respond_to?(:async_timeout_error_class) && e.is_a?(async_timeout_error_class)) ||
-             @config[:exceptions].any? { |klass| e.is_a?(klass) }
-            record_failure(monotonic_time - start_time, e)
-            handle_failure
-            raise unless @config[:fallback]
-
-            invoke_fallback_with_async(e)
-          else
-            raise
-          end
         end
       end
 
