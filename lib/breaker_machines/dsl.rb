@@ -67,6 +67,36 @@ module BreakerMachines
         end
       end
 
+      # Define reusable circuit templates
+      def circuit_template(name, &block)
+        @circuit_templates ||= {}
+
+        if block_given?
+          builder = CircuitBuilder.new
+          builder.instance_eval(&block)
+          @circuit_templates[name] = builder.config
+        end
+
+        @circuit_templates[name]
+      end
+
+      # Get all circuit templates
+      def circuit_templates
+        # Start with parent templates if available
+        base_templates = if superclass.respond_to?(:circuit_templates)
+                           superclass.circuit_templates.deep_dup
+                         else
+                           {}
+                         end
+
+        # Merge with our own templates
+        if @circuit_templates
+          base_templates.merge(@circuit_templates)
+        else
+          base_templates
+        end
+      end
+
       # Get circuit definitions without sensitive data
       def circuit_definitions
         circuits.transform_values { |config| config.except(:owner, :storage, :metrics) }
@@ -129,6 +159,70 @@ module BreakerMachines
       @circuit_instances[name] ||= Circuit.new(name, self.class.circuits[name].merge(owner: self))
     end
 
+    # Create a dynamic circuit breaker with inline configuration
+    # Options:
+    #   global: true - Store circuit globally, preventing memory leaks in long-lived objects
+    #   global: false - Store circuit locally in this instance (default, backward compatible)
+    def dynamic_circuit(name, template: nil, global: false, &config_block)
+      # Start with template config if provided
+      base_config = if template && self.class.circuit_templates[template]
+                      self.class.circuit_templates[template].deep_dup
+                    else
+                      default_circuit_config
+                    end
+
+      # Apply additional configuration if block provided
+      if config_block
+        builder = CircuitBuilder.new
+        builder.instance_variable_set(:@config, base_config.deep_dup)
+        builder.instance_eval(&config_block)
+        base_config = builder.config
+      end
+
+      if global
+        # Use global registry to prevent memory leaks
+        BreakerMachines.registry.get_or_create_dynamic_circuit(name, self, base_config)
+      else
+        # Local storage (backward compatible)
+        @circuit_instances ||= {}
+        @circuit_instances[name] ||= Circuit.new(name, base_config.merge(owner: self))
+      end
+    end
+
+    # Apply a template to an existing or new circuit
+    def apply_template(circuit_name, template_name)
+      template_config = self.class.circuit_templates[template_name]
+      raise ArgumentError, "Template '#{template_name}' not found" unless template_config
+
+      @circuit_instances ||= {}
+      @circuit_instances[circuit_name] = Circuit.new(circuit_name, template_config.merge(owner: self))
+    end
+
+    private
+
+    def default_circuit_config
+      {
+        failure_threshold: 5,
+        failure_window: 60,
+        success_threshold: 1,
+        timeout: nil,
+        reset_timeout: 60,
+        half_open_calls: 1,
+        exceptions: [StandardError],
+        storage: nil,
+        metrics: nil,
+        fallback: nil,
+        on_open: nil,
+        on_close: nil,
+        on_half_open: nil,
+        on_reject: nil,
+        notifications: [],
+        fiber_safe: BreakerMachines.config.fiber_safe
+      }
+    end
+
+    public
+
     # Get all circuit instances for this object
     def circuit_instances
       @circuit_instances || {}
@@ -147,6 +241,21 @@ module BreakerMachines
     # Reset all circuits for this instance
     def reset_all_circuits
       circuit_instances.each_value(&:reset)
+    end
+
+    # Remove a global dynamic circuit by name
+    def remove_dynamic_circuit(name)
+      BreakerMachines.registry.remove_dynamic_circuit(name)
+    end
+
+    # Get all dynamic circuit names from global registry
+    def dynamic_circuit_names
+      BreakerMachines.registry.dynamic_circuit_names
+    end
+
+    # Cleanup stale dynamic circuits (global)
+    def cleanup_stale_dynamic_circuits(max_age_seconds = 3600)
+      BreakerMachines.registry.cleanup_stale_dynamic_circuits(max_age_seconds)
     end
 
     # DSL builder for configuring circuit breakers with a fluent interface

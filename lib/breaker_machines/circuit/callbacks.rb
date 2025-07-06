@@ -16,7 +16,13 @@ module BreakerMachines
         return unless callback.is_a?(Proc)
 
         if @config[:owner]
-          @config[:owner].instance_exec(&callback)
+          owner = resolve_owner
+          if owner
+            owner.instance_exec(&callback)
+          else
+            # Owner has been garbage collected, execute callback without context
+            callback.call
+          end
         else
           callback.call
         end
@@ -28,7 +34,13 @@ module BreakerMachines
           invoke_parallel_fallbacks(@config[:fallback].fallbacks, error)
         when Proc
           if @config[:owner]
-            @config[:owner].instance_exec(error, &@config[:fallback])
+            owner = resolve_owner
+            if owner
+              owner.instance_exec(error, &@config[:fallback])
+            else
+              # Owner has been garbage collected, execute fallback without context
+              @config[:fallback].call(error)
+            end
           else
             @config[:fallback].call(error)
           end
@@ -51,12 +63,30 @@ module BreakerMachines
         case fallback
         when Proc
           if @config[:owner]
-            @config[:owner].instance_exec(error, &fallback)
+            owner = resolve_owner
+            if owner
+              owner.instance_exec(error, &fallback)
+            else
+              fallback.call(error)
+            end
           else
             fallback.call(error)
           end
         else
           fallback
+        end
+      end
+
+      # Safely resolve owner from WeakRef if applicable
+      def resolve_owner
+        owner = @config[:owner]
+        return owner unless owner.is_a?(WeakRef)
+
+        begin
+          owner.__getobj__
+        rescue WeakRef::RefError
+          # Owner has been garbage collected
+          nil
         end
       end
 

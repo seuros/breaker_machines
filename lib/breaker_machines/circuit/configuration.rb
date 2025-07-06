@@ -31,8 +31,8 @@ module BreakerMachines
         super() # Initialize state machine
         restore_status_from_storage if @storage
 
-        # Register with global registry
-        BreakerMachines::Registry.instance.register(self)
+        # Register with global registry unless auto_register is disabled
+        BreakerMachines::Registry.instance.register(self) unless @config[:auto_register] == false
       end
 
       private

@@ -10,6 +10,7 @@ module BreakerMachines
 
     def initialize
       @circuits = Concurrent::Map.new
+      @named_circuits = Concurrent::Map.new # For dynamic circuits by name
       @mutex = Mutex.new
       @registration_count = 0
       @cleanup_interval = 100 # Clean up every N registrations
@@ -117,10 +118,104 @@ module BreakerMachines
       all_circuits.map(&:to_h)
     end
 
+    # Get or create a globally managed dynamic circuit
+    def get_or_create_dynamic_circuit(name, owner, config)
+      @mutex.synchronize do
+        # Check if circuit already exists and is still alive
+        if @named_circuits.key?(name)
+          weak_ref = @named_circuits[name]
+          begin
+            existing_circuit = weak_ref.__getobj__
+            return existing_circuit if existing_circuit
+          rescue WeakRef::RefError
+            # Circuit was garbage collected, remove the stale reference
+            @named_circuits.delete(name)
+          end
+        end
+
+        # Create new circuit with weak owner reference
+        # Don't auto-register to avoid deadlock
+        weak_owner = owner.is_a?(WeakRef) ? owner : WeakRef.new(owner)
+        circuit_config = config.merge(owner: weak_owner, auto_register: false)
+        new_circuit = Circuit.new(name, circuit_config)
+
+        # Manually register the circuit (we're already in sync block)
+        @circuits[new_circuit] = WeakRef.new(new_circuit)
+        @named_circuits[name] = WeakRef.new(new_circuit)
+
+        new_circuit
+      end
+    end
+
+    # Remove a dynamic circuit by name
+    def remove_dynamic_circuit(name)
+      @mutex.synchronize do
+        if @named_circuits.key?(name)
+          weak_ref = @named_circuits.delete(name)
+          begin
+            circuit = weak_ref.__getobj__
+            @circuits.delete(circuit) if circuit
+            true
+          rescue WeakRef::RefError
+            false
+          end
+        else
+          false
+        end
+      end
+    end
+
+    # Get all dynamic circuit names
+    def dynamic_circuit_names
+      @mutex.synchronize do
+        alive_names = []
+        @named_circuits.each_pair do |name, weak_ref|
+          weak_ref.__getobj__
+          alive_names << name
+        rescue WeakRef::RefError
+          @named_circuits.delete(name)
+        end
+        alive_names
+      end
+    end
+
+    # Cleanup stale dynamic circuits older than given age
+    def cleanup_stale_dynamic_circuits(max_age_seconds = 3600)
+      @mutex.synchronize do
+        cutoff_time = Time.now - max_age_seconds
+        stale_names = []
+
+        @named_circuits.each_pair do |name, weak_ref|
+          circuit = weak_ref.__getobj__
+          # Check if circuit has a last_activity_time and it's stale
+          if circuit.respond_to?(:last_activity_time) &&
+             circuit.last_activity_time &&
+             circuit.last_activity_time < cutoff_time
+            stale_names << name
+          end
+        rescue WeakRef::RefError
+          stale_names << name
+        end
+
+        stale_names.each do |name|
+          weak_ref = @named_circuits.delete(name)
+          begin
+            circuit = weak_ref.__getobj__
+            @circuits.delete(circuit) if circuit
+          rescue WeakRef::RefError
+            # Already gone
+          end
+        end
+
+        stale_names.size
+      end
+    end
+
     # Clear all circuits (useful for testing)
     def clear
       @mutex.synchronize do
         @circuits.clear
+        @named_circuits.clear
       end
     end
 
