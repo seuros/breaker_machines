@@ -87,8 +87,8 @@ class TestRegistry < ActiveSupport::TestCase
   end
 
   def test_all_stats_returns_comprehensive_metrics
-    circuit1 = BreakerMachines::Circuit.new(:api_1, {})
-    circuit2 = BreakerMachines::Circuit.new(:api_2, {})
+    circuit1 = BreakerMachines::Circuit.new(:api_one, {})
+    circuit2 = BreakerMachines::Circuit.new(:api_two, {})
 
     # Generate some activity
     circuit1.wrap { 'success' }

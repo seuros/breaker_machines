@@ -10,16 +10,16 @@ class TestNullStorage < ActiveSupport::TestCase
 
   def test_record_success_is_noop
     # Should not raise any errors
-    @storage.record_success(@circuit_name, 0.5)
-
-    assert true
+    assert_nothing_raised do
+      @storage.record_success(@circuit_name, 0.5)
+    end
   end
 
   def test_record_failure_is_noop
     # Should not raise any errors
-    @storage.record_failure(@circuit_name, 0.1)
-
-    assert true
+    assert_nothing_raised do
+      @storage.record_failure(@circuit_name, 0.1)
+    end
   end
 
   def test_counts_always_return_zero
@@ -43,9 +43,9 @@ class TestNullStorage < ActiveSupport::TestCase
   end
 
   def test_clear_is_noop
-    @storage.clear(@circuit_name)
-
-    assert true
+    assert_nothing_raised do
+      @storage.clear(@circuit_name)
+    end
   end
 
   def test_event_log_returns_empty_array
@@ -54,9 +54,9 @@ class TestNullStorage < ActiveSupport::TestCase
   end
 
   def test_record_event_with_details_is_noop
-    @storage.record_event_with_details(@circuit_name, :failure, 0.5, error: 'Test error')
-
-    assert true
+    assert_nothing_raised do
+      @storage.record_event_with_details(@circuit_name, :failure, 0.5, error: 'Test error')
+    end
   end
 
   def test_circuit_with_null_storage_works

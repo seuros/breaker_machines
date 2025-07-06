@@ -59,7 +59,7 @@ module BreakerMachines
     end
 
     # Force open a circuit by name
-    def force_open(name)
+    def force_open(name) # rubocop:disable Naming/PredicateMethod
       circuits = find_by_name(name)
       return false if circuits.empty?
 
@@ -68,7 +68,7 @@ module BreakerMachines
     end
 
     # Force close a circuit by name
-    def force_close(name)
+    def force_close(name) # rubocop:disable Naming/PredicateMethod
       circuits = find_by_name(name)
       return false if circuits.empty?
 
@@ -77,7 +77,7 @@ module BreakerMachines
     end
 
     # Reset a circuit by name
-    def reset(name)
+    def reset(name) # rubocop:disable Naming/PredicateMethod
       circuits = find_by_name(name)
       return false if circuits.empty?
 
@@ -101,7 +101,7 @@ module BreakerMachines
 
       {
         summary: stats_summary,
-        circuits: circuits.map { |c| c.stats },
+        circuits: circuits.map(&:stats),
         health: {
           open_count: circuits.count(&:open?),
           closed_count: circuits.count(&:closed?),
