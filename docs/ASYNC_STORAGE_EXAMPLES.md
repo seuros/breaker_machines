@@ -1,10 +1,64 @@
 # Async Storage Examples for BreakerMachines
 
-When using BreakerMachines in `fiber_safe` mode with Fiber-based servers like Falcon, you'll want storage backends that don't block the event loop. Here are examples of how to implement async-compatible storage.
+When using BreakerMachines in [Async Mode](ASYNC.md) with Fiber-based servers like Falcon, you'll want storage backends that don't block the event loop. Here are examples of how to implement async-compatible storage.
 
 ## Async Redis Storage
 
-This example uses the `async-redis` gem for non-blocking Redis operations:
+This example uses the `async-redis` gem for non-blocking Redis operations. For a broader understanding of storage options, including synchronous ones, refer to the [Persistence Options](PERSISTENCE.md) guide.
+
+### Simple Async Redis Storage
+
+For basic failure tracking and circuit state management:
+
+```ruby
+require 'async/redis'
+
+class AsyncRedisStorage < BreakerMachines::Storage::Base
+  def initialize
+    @client = Async::Redis::Client.new
+  end
+
+  def record_failure(circuit_name, timestamp = Time.now)
+    Async do
+      @client.hincrby("circuit:#{circuit_name}", 'failures', 1)
+      @client.hset("circuit:#{circuit_name}", 'last_failure', timestamp.to_i)
+    end
+  end
+
+  def failure_count(circuit_name, window:)
+    Async do
+      last_failure = @client.hget("circuit:#{circuit_name}", 'last_failure')
+      return 0 unless last_failure
+      
+      return 0 if Time.at(last_failure.to_i) < window.ago
+      
+      @client.hget("circuit:#{circuit_name}", 'failures').to_i
+    end.wait
+  end
+
+  def get_state(circuit_name)
+    Async do
+      @client.hget("circuit:#{circuit_name}", 'state') || 'closed'
+    end.wait
+  end
+
+  def set_state(circuit_name, state)
+    Async do
+      @client.hset("circuit:#{circuit_name}", 'state', state.to_s)
+    end
+  end
+end
+
+# Configure to use async storage
+BreakerMachines.configure do |config|
+  config.fiber_safe = true
+  config.default_storage = AsyncRedisStorage.new
+end
+```
+
+### Production Async Redis Storage
+
+This more comprehensive example includes all the features needed for production use:
 
 ```ruby
 # Gemfile
@@ -155,7 +209,7 @@ run lambda { |env|
 
 ## Async PostgreSQL Storage
 
-Using the `async-postgres` gem:
+Using the `async-postgres` gem. For a broader understanding of storage options, including synchronous ones, refer to the [Persistence Options](PERSISTENCE.md) guide.
 
 ```ruby
 # Gemfile
@@ -294,6 +348,8 @@ end
 
 ## Best Practices
 
+For comprehensive monitoring and debugging of your circuit breakers, especially in async environments, refer to the [Observability Guide](OBSERVABILITY.md).
+
 1. **Always use `.wait` on async operations** when you need the result immediately
 2. **Batch operations** where possible to reduce round trips
 3. **Use connection pooling** for better performance under load
@@ -302,6 +358,8 @@ end
 
 ## Performance Considerations
 
+For more details on monitoring and optimizing performance, see the [Observability Guide](OBSERVABILITY.md).
+
 In fiber_safe mode with async storage:
 - Multiple circuits can check their state concurrently without blocking
 - Storage operations yield to the scheduler during I/O
@@ -309,3 +367,10 @@ In fiber_safe mode with async storage:
 - You can safely use timeouts without the dangers of Thread#kill
 
 This makes BreakerMachines ideal for high-concurrency Fiber-based applications!
+
+## Next Steps
+
+- Learn more about [Async Mode](ASYNC.md) and its benefits
+- Explore [Persistence Options](PERSISTENCE.md) for various storage backends
+- Set up [Observability](OBSERVABILITY.md) to monitor your async circuits
+- Review [Testing Patterns](TESTING.md) for async circuit testing

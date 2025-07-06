@@ -10,6 +10,7 @@ loader.inflector.inflect('dsl' => 'DSL')
 loader.ignore("#{__dir__}/breaker_machines/errors.rb")
 loader.ignore("#{__dir__}/breaker_machines/console.rb")
 loader.ignore("#{__dir__}/breaker_machines/async_support.rb")
+loader.ignore("#{__dir__}/breaker_machines/hedged_async_support.rb")
 loader.setup
 
 # BreakerMachines provides a thread-safe implementation of the Circuit Breaker pattern

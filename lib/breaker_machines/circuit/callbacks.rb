@@ -16,7 +16,13 @@ module BreakerMachines
         return unless callback.is_a?(Proc)
 
         if @config[:owner]
-          @config[:owner].instance_exec(&callback)
+          owner = resolve_owner
+          if owner
+            owner.instance_exec(&callback)
+          else
+            # Owner has been garbage collected, execute callback without context
+            callback.call
+          end
         else
           callback.call
         end
@@ -24,9 +30,17 @@ module BreakerMachines
 
       def invoke_fallback(error)
         case @config[:fallback]
+        when BreakerMachines::DSL::ParallelFallbackWrapper
+          invoke_parallel_fallbacks(@config[:fallback].fallbacks, error)
         when Proc
           if @config[:owner]
-            @config[:owner].instance_exec(error, &@config[:fallback])
+            owner = resolve_owner
+            if owner
+              owner.instance_exec(error, &@config[:fallback])
+            else
+              # Owner has been garbage collected, execute fallback without context
+              @config[:fallback].call(error)
+            end
           else
             @config[:fallback].call(error)
           end
@@ -49,12 +63,76 @@ module BreakerMachines
         case fallback
         when Proc
           if @config[:owner]
-            @config[:owner].instance_exec(error, &fallback)
+            owner = resolve_owner
+            if owner
+              owner.instance_exec(error, &fallback)
+            else
+              fallback.call(error)
+            end
           else
             fallback.call(error)
           end
         else
           fallback
+        end
+      end
+
+      # Safely resolve owner from WeakRef if applicable
+      def resolve_owner
+        owner = @config[:owner]
+        return owner unless owner.is_a?(WeakRef)
+
+        begin
+          owner.__getobj__
+        rescue WeakRef::RefError
+          # Owner has been garbage collected
+          nil
+        end
+      end
+
+      def invoke_parallel_fallbacks(fallbacks, error)
+        return fallbacks.first if fallbacks.size == 1
+
+        if @config[:fiber_safe] && respond_to?(:execute_parallel_fallbacks_async)
+          execute_parallel_fallbacks_async(fallbacks)
+        else
+          execute_parallel_fallbacks_sync(fallbacks, error)
+        end
+      end
+
+      def execute_parallel_fallbacks_sync(fallbacks, error)
+        result_queue = Queue.new
+        error_queue = Queue.new
+        threads = fallbacks.map do |fallback|
+          Thread.new do
+            result = if fallback.is_a?(Proc)
+                       if fallback.arity == 1
+                         fallback.call(error)
+                       else
+                         fallback.call
+                       end
+                     else
+                       fallback
+                     end
+            result_queue << result
+          rescue StandardError => e
+            error_queue << e
+          end
+        end
+
+        # Wait for first successful result
+        begin
+          Timeout.timeout(5) do # reasonable timeout for fallbacks
+            loop do
+              return result_queue.pop unless result_queue.empty?
+
+              raise error_queue.pop if error_queue.size >= fallbacks.size
+
+              sleep 0.001
+            end
+          end
+        ensure
+          threads.each(&:kill)
         end
       end
     end

@@ -3,7 +3,6 @@
 # This file contains all async-related functionality for fiber-safe mode
 # It is only loaded when fiber_safe mode is enabled
 
-gem 'async', '~> 2.25'
 require 'async'
 require 'async/task'
 
@@ -22,7 +21,12 @@ module BreakerMachines
       start_time = monotonic_time
 
       begin
-        result = execute_with_async_timeout(@config[:timeout], &)
+        # Execute with hedged requests if enabled
+        result = if @config[:hedged_requests] || @config[:backends]
+                   execute_hedged(&)
+                 else
+                   execute_with_async_timeout(@config[:timeout], &)
+                 end
 
         record_success(monotonic_time - start_time)
         handle_success
@@ -52,6 +56,8 @@ module BreakerMachines
     # Invoke fallback in async context
     def invoke_fallback_with_async(error)
       case @config[:fallback]
+      when BreakerMachines::DSL::ParallelFallbackWrapper
+        invoke_parallel_fallbacks(@config[:fallback].fallbacks, error)
       when Proc
         result = if @config[:owner]
                    @config[:owner].instance_exec(error, &@config[:fallback])
