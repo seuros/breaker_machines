@@ -16,3 +16,5 @@ gem 'rubocop-rake', '~> 0.6'
 
 # Optional dependency for fiber-safe mode tests
 gem 'async', '~> 2.0'
+
+gem 'railties', '~> 8.0'

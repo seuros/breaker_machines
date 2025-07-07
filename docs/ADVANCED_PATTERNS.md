@@ -572,6 +572,231 @@ class WorkflowService
 end
 ```
 
+## Preventing Retry Hell in AI Services
+
+Modern AI applications face a unique challenge: expensive API calls combined with traditional retry logic create catastrophic failure cascades. Here's a real-world pattern that has destroyed startups:
+
+### The Problem: Naive Retry Implementation
+
+```ruby
+class AiResponder
+  def handle(text)
+    response = call_llm(text)
+
+    save_response!(response)         # ✅ DB save succeeds
+    send_notification!(response)     # 💥 SMTP crashes
+  rescue => e
+    puts "Something broke: #{e.message}, retrying..."
+    retry
+  end
+
+  def call_llm(text)
+    # Each call costs $0.04
+    expensive_ai_api.complete(text)
+  end
+
+  def save_response!(text)
+    DB.save!(text)  # Works first time
+  end
+
+  def send_notification!(text)
+    raise Net::SMTPFatalError, "Mailer exploded"
+  end
+end
+```
+
+### What Actually Happens
+
+When you call `handle("Generate a report")`:
+
+1. ✅ LLM API call → costs $0.04
+2. ✅ Database save → succeeds
+3. 💥 Email notification → fails
+4. 🔄 Retry triggered...
+5. ✅ LLM API call AGAIN → another $0.04
+6. 💥 Database save → duplicate key error
+7. 🔄 Retry again...
+8. 💀 Infinite loop of expensive API calls
+
+**Result**: One email failure causes infinite AI API calls, duplicate database entries, and burns through your API credits.
+
+### The Circuit Breaker Solution
+
+```ruby
+class AiResponder
+  include BreakerMachines::DSL
+
+  circuit :llm_api do
+    threshold failures: 2, within: 1.minute
+    reset_after 2.minutes
+    
+    fallback do |error|
+      { response: "AI service temporarily unavailable. Your request has been queued.", 
+        queued: true }
+    end
+  end
+
+  circuit :database do
+    threshold failures: 3, within: 30.seconds
+    reset_after 60.seconds
+    
+    fallback do |error|
+      Rails.logger.error "Database circuit open: #{error.message}"
+      { saved: false, error: "Unable to persist response" }
+    end
+    
+    # Handle specific database errors
+    handle ActiveRecord::RecordNotUnique,
+           ActiveRecord::ConnectionTimeoutError,
+           PG::ConnectionBad
+  end
+
+  circuit :notifications do
+    threshold failures: 1, within: 1.minute
+    reset_after 30.seconds
+    
+    fallback do |error|
+      Rails.logger.info "Email circuit open, queueing notification"
+      NotificationQueue.push(response) # Queue for later
+      { notified: false, queued: true }
+    end
+    
+    handle Net::SMTPFatalError,
+           Net::SMTPServerBusy,
+           Net::ReadTimeout
+  end
+
+  def handle(text)
+    # Fail fast if critical services are down
+    if circuit(:database).open?
+      return { 
+        error: "Service temporarily unavailable",
+        reason: "Cannot persist responses at this time"
+      }
+    end
+
+    # Only call expensive AI if we can handle the response
+    response = circuit(:llm_api).wrap do
+      call_llm(text)
+    end
+
+    # Don't retry the entire chain - isolate each operation
+    saved = circuit(:database).wrap do
+      save_response!(response)
+    end
+
+    # Non-critical operation in separate circuit
+    circuit(:notifications).wrap do
+      send_notification!(response) if saved
+    end
+
+    response
+  end
+
+  private
+
+  def call_llm(text)
+    # This only gets called if circuit is closed
+    expensive_ai_api.complete(text)
+  end
+
+  def save_response!(response)
+    DB.save!(response)
+    true
+  end
+
+  def send_notification!(response)
+    EmailService.deliver(response)
+  end
+end
+```
+
+### The Power of Early Circuit Checking
+
+```ruby
+class SmartAiResponder
+  include BreakerMachines::DSL
+
+  circuit :openai do
+    threshold failures: 3, within: 2.minutes
+    reset_after 5.minutes
+    # ... configuration
+  end
+
+  def handle_request(user_input)
+    # Check BEFORE expensive operations
+    if circuit(:openai).open?
+      return cached_response || { 
+        error: "AI service is currently recovering",
+        retry_after: circuit(:openai).time_until_half_open
+      }
+    end
+
+    # Check dependent services
+    if circuit(:database).open? || circuit(:redis).open?
+      return {
+        error: "Required services unavailable",
+        degraded: true
+      }
+    end
+
+    # Now safe to proceed with expensive operation
+    circuit(:openai).wrap do
+      generate_ai_response(user_input)
+    end
+  end
+end
+```
+
+### Real-World Impact
+
+Without circuit breakers, a simple notification failure can:
+- Burn thousands in API credits
+- Create duplicate database records
+- Exhaust thread pools
+- Fill logs with retry noise
+- Take down your entire service
+
+With circuit breakers:
+- **Isolated failures** - Email issues don't affect AI calls
+- **Cost control** - Stop calling expensive APIs when downstream fails
+- **Graceful degradation** - Return cached or queued responses
+- **Fast recovery** - Services come back online independently
+
+### Key Patterns for AI Services
+
+1. **Check circuits before expensive calls**
+   ```ruby
+   return fallback_response if circuit(:openai).open?
+   ```
+
+2. **Separate circuits for different concerns**
+   - AI API calls (expensive, rate-limited)
+   - Database operations (critical)
+   - Notifications (nice-to-have)
+   - Cache operations (performance)
+
+3. **Implement cost-aware fallbacks**
+   ```ruby
+   fallback do |error|
+     # Don't regenerate - return cached or generic response
+     Cache.get("last_known_good") || generic_response
+   end
+   ```
+
+4. **Monitor circuit states in dashboards**
+   ```ruby
+   def health_check
+     {
+       ai_available: !circuit(:openai).open?,
+       database_healthy: !circuit(:database).open?,
+       degraded_mode: any_circuit_open?
+     }
+   end
+   ```
+
+This pattern has saved companies from the "$30,000 retry hell" that has killed multiple startups. See [Horror Stories](HORROR_STORIES.md) for real examples.
+
 ## Next Steps
 
 - Learn about [Persistence Options](PERSISTENCE.md) for distributed circuit state
