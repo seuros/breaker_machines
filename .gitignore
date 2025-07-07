@@ -11,3 +11,4 @@
 /rbs_collection.yaml
 /rbs_collection.lock.yaml
 /.gem_rbs_collection/
+Gemfile.lock
