@@ -285,7 +285,8 @@ RSpec.describe "async circuits", :async do
     Class.new do
       include BreakerMachines::DSL
       
-      circuit :async_api, fiber_safe: true do
+      circuit :async_api do
+        fiber_safe true
         threshold failures: 2, within: 30
         timeout 3
         fallback { "async fallback" }

@@ -39,7 +39,8 @@ end
 ### Per-Circuit Configuration
 
 ```ruby
-circuit :async_api, fiber_safe: true do
+circuit :async_api do
+  fiber_safe true
   threshold failures: 3, within: 60
   timeout 5  # Safe cooperative timeout!
   reset_after 30
@@ -51,7 +52,8 @@ end
 In `fiber_safe` mode, timeouts are implemented using `Async::Task.current.with_timeout`, which is safe and cooperative:
 
 ```ruby
-circuit :slow_api, fiber_safe: true do
+circuit :slow_api do
+  fiber_safe true
   timeout 3  # Uses Async::Task timeout
   threshold failures: 2, within: 30
 end
@@ -76,7 +78,8 @@ Unlike Ruby's dangerous `Timeout.timeout`, cooperative timeouts:
 class AIService
   include BreakerMachines::DSL
 
-  circuit :gpt4, fiber_safe: true do
+  circuit :gpt4 do
+    fiber_safe true
     threshold failures: 2, within: 30
     timeout 10  # Cooperative timeout - won't corrupt state!
 
@@ -119,7 +122,8 @@ end
 class AsyncAPIClient
   include BreakerMachines::DSL
 
-  circuit :external_api, fiber_safe: true do
+  circuit :external_api do
+    fiber_safe true
     threshold failures: 5, within: 2.minutes
     timeout 5
     
@@ -153,7 +157,8 @@ end
 class AsyncDatabaseService
   include BreakerMachines::DSL
 
-  circuit :postgres, fiber_safe: true do
+  circuit :postgres do
+    fiber_safe true
     threshold failures: 3, within: 30.seconds
     timeout 5  # Database query timeout
     
@@ -189,7 +194,8 @@ For true non-blocking operation, use async-compatible storage backends. See [Asy
 When both `fiber_safe` and hedged requests are enabled, requests run concurrently using fibers:
 
 ```ruby
-circuit :fast_api, fiber_safe: true do
+circuit :fast_api do
+  fiber_safe true
   threshold failures: 3, within: 1.minute
   
   hedged do
@@ -285,7 +291,8 @@ For comprehensive performance monitoring and observability in async mode, refer 
 # Falcon automatically manages fiber pool
 # But you can tune circuit breaker concurrency:
 
-circuit :high_throughput, fiber_safe: true do
+circuit :high_throughput do
+  fiber_safe true
   max_concurrent 100  # Limit concurrent fibers
   threshold failures: 10, within: 30.seconds
 end
@@ -296,7 +303,8 @@ end
 Fibers are lightweight but not free. Monitor memory usage:
 
 ```ruby
-circuit :memory_aware, fiber_safe: true do
+circuit :memory_aware do
+  fiber_safe true
   before_call do
     if GC.stat[:heap_live_slots] > 1_000_000
       GC.start

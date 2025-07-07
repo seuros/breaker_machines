@@ -215,7 +215,8 @@ BreakerMachines.configure do |config|
 end
 
 # Or per-circuit
-circuit :async_service, fiber_safe: true do
+circuit :async_service do
+  fiber_safe true
   threshold failures: 3, within: 60
   timeout 5  # Safe cooperative timeout with Async::Task
 end

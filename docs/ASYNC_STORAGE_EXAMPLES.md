@@ -167,7 +167,8 @@ end
 class MyAPI
   include BreakerMachines::DSL
 
-  circuit :external_api, fiber_safe: true do
+  circuit :external_api do
+    fiber_safe true
     threshold failures: 5, within: 60
     reset_after 30
     timeout 3  # Safe cooperative timeout in fiber mode!

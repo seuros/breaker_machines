@@ -413,7 +413,7 @@ module BreakerMachines
         @config[:exceptions] = exceptions
       end
 
-      def fiber_safe(enabled: true)
+      def fiber_safe(enabled = true) # rubocop:disable Style/OptionalBooleanParameter
         @config[:fiber_safe] = enabled
       end
 
