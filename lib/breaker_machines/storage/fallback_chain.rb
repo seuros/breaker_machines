@@ -1,0 +1,227 @@
+# frozen_string_literal: true
+
+module BreakerMachines
+  module Storage
+    # Apocalypse-resistant storage backend that tries multiple storage backends in sequence
+    # Falls back to the next storage backend when the current one times out or fails
+    #
+    # NOTE: For DRb (distributed Ruby) environments, only :cache backend with external
+    # cache stores (Redis, Memcached) will work properly. Memory-based backends (:memory,
+    # :bucket_memory) are incompatible with DRb as they don't share state between processes.
+    class FallbackChain < Base
+      attr_reader :storage_configs, :storage_instances, :unhealthy_until, :circuit_breaker_threshold, :circuit_breaker_timeout
+
+      def initialize(storage_configs, **)
+        super(**)
+        @storage_configs = normalize_storage_configs(storage_configs)
+        @storage_instances = {}
+        @unhealthy_until = {}
+        @circuit_breaker_threshold = 3 # After 3 failures, mark backend as unhealthy
+        @circuit_breaker_timeout = 30 # Keep marked as unhealthy for 30 seconds
+        validate_configs!
+      end
+
+      def get_status(circuit_name)
+        execute_with_fallback(:get_status, circuit_name)
+      end
+
+      def set_status(circuit_name, status, opened_at = nil)
+        execute_with_fallback(:set_status, circuit_name, status, opened_at)
+      end
+
+      def record_success(circuit_name, duration)
+        execute_with_fallback(:record_success, circuit_name, duration)
+      end
+
+      def record_failure(circuit_name, duration)
+        execute_with_fallback(:record_failure, circuit_name, duration)
+      end
+
+      def success_count(circuit_name, window_seconds)
+        execute_with_fallback(:success_count, circuit_name, window_seconds)
+      end
+
+      def failure_count(circuit_name, window_seconds)
+        execute_with_fallback(:failure_count, circuit_name, window_seconds)
+      end
+
+      def clear(circuit_name)
+        execute_with_fallback(:clear, circuit_name)
+      end
+
+      def clear_all
+        execute_with_fallback(:clear_all)
+      end
+
+      def record_event_with_details(circuit_name, type, duration, error: nil, new_state: nil)
+        execute_with_fallback(:record_event_with_details, circuit_name, type, duration, error: error,
+                                                                                        new_state: new_state)
+      end
+
+      def event_log(circuit_name, limit)
+        execute_with_fallback(:event_log, circuit_name, limit)
+      end
+
+      def with_timeout(_timeout_ms)
+        # FallbackChain doesn't use timeout directly - each backend handles its own
+        yield
+      end
+
+      def cleanup!
+        storage_instances.each_value do |instance|
+          instance.clear_all if instance.respond_to?(:clear_all)
+        end
+        storage_instances.clear
+        @backend_failures&.clear
+        unhealthy_until.clear
+      end
+
+      private
+
+      def execute_with_fallback(method, *args, **kwargs)
+        storage_configs.each_with_index do |config, index|
+          next if backend_unhealthy?(config[:backend])
+
+          begin
+            backend = get_backend_instance(config[:backend])
+            started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+            result = backend.with_timeout(config[:timeout]) do
+              if kwargs.any?
+                backend.send(method, *args, **kwargs)
+              else
+                backend.send(method, *args)
+              end
+            end
+
+            # Success - reset failure count and return result
+            reset_backend_failures(config[:backend])
+            return result
+          rescue BreakerMachines::StorageTimeoutError, BreakerMachines::StorageError, StandardError => e
+            duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at) * 1000).round(2)
+
+            # Record the failure
+            record_backend_failure(config[:backend], e, duration_ms)
+
+            # Emit notification about the fallback
+            emit_fallback_notification(config[:backend], e, duration_ms, index)
+
+            # If this is the last backend, re-raise the error
+            raise e if index == storage_configs.size - 1
+
+            # Continue to next backend
+            next
+          end
+        end
+
+        # If we get here, all backends were unhealthy
+        raise BreakerMachines::StorageError, 'All storage backends are unhealthy'
+      end
+
+      def get_backend_instance(backend_type)
+        storage_instances[backend_type] ||= create_backend_instance(backend_type)
+      end
+
+      def create_backend_instance(backend_type)
+        case backend_type
+        when :memory
+          Memory.new
+        when :bucket_memory
+          BucketMemory.new
+        when :cache
+          Cache.new
+        when :null
+          Null.new
+        else
+          # Allow custom backend classes
+          raise ConfigurationError, "Unknown storage backend: #{backend_type}" unless backend_type.is_a?(Class)
+
+          backend_type.new
+
+        end
+      end
+
+      def backend_unhealthy?(backend_type)
+        unhealthy_until_time = unhealthy_until[backend_type]
+        return false unless unhealthy_until_time
+
+        if Process.clock_gettime(Process::CLOCK_MONOTONIC) > unhealthy_until_time
+          unhealthy_until.delete(backend_type)
+          false
+        else
+          true
+        end
+      end
+
+      def record_backend_failure(backend_type, error, duration_ms)
+        @backend_failures ||= {}
+        @backend_failures[backend_type] ||= []
+        @backend_failures[backend_type] << {
+          error: error,
+          duration_ms: duration_ms,
+          timestamp: Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        }
+
+        # Keep only recent failures (last 60 seconds)
+        cutoff = Process.clock_gettime(Process::CLOCK_MONOTONIC) - 60
+        @backend_failures[backend_type].reject! { |f| f[:timestamp] < cutoff }
+
+        # Mark as unhealthy if too many failures
+        return unless @backend_failures[backend_type].size >= circuit_breaker_threshold
+
+        unhealthy_until[backend_type] = Process.clock_gettime(Process::CLOCK_MONOTONIC) + circuit_breaker_timeout
+      rescue StandardError => e
+        # Don't let failure recording cause the whole chain to hang
+        Rails.logger&.error("FallbackChain: Failed to record backend failure: #{e.message}")
+      end
+
+      def reset_backend_failures(backend_type)
+        @backend_failures&.delete(backend_type)
+        unhealthy_until.delete(backend_type)
+      end
+
+      def emit_fallback_notification(backend_type, error, duration_ms, backend_index)
+        ActiveSupport::Notifications.instrument(
+          'storage_fallback.breaker_machines',
+          backend: backend_type,
+          error_class: error.class.name,
+          error_message: error.message,
+          duration_ms: duration_ms,
+          backend_index: backend_index,
+          next_backend: storage_configs[backend_index + 1]&.dig(:backend)
+        )
+      end
+
+      def normalize_storage_configs(configs)
+        return configs if configs.is_a?(Array)
+
+        # Convert hash format to array format
+        unless configs.is_a?(Hash)
+          raise ConfigurationError, "Storage configs must be Array or Hash, got: #{configs.class}"
+        end
+
+        configs.map do |_key, value|
+          if value.is_a?(Hash)
+            value
+          else
+            { backend: value, timeout: 5 }
+          end
+        end
+      end
+
+      def validate_configs!
+        raise ConfigurationError, 'Storage configs cannot be empty' if storage_configs.empty?
+
+        storage_configs.each_with_index do |config, index|
+          unless config.is_a?(Hash) && config[:backend] && config[:timeout]
+            raise ConfigurationError, "Invalid storage config at index #{index}: #{config}"
+          end
+
+          unless config[:timeout].is_a?(Numeric) && config[:timeout].positive?
+            raise ConfigurationError, "Timeout must be a positive number, got: #{config[:timeout]}"
+          end
+        end
+      end
+    end
+  end
+end

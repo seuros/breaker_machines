@@ -15,31 +15,31 @@ BreakerMachines leverages `ActiveSupport::Notifications` to emit events for all 
 ActiveSupport::Notifications.subscribe(/^breaker_machines\./) do |name, start, finish, id, payload|
   event_type = name.split('.').last
   circuit_name = payload[:circuit]
-  
+
   case event_type
   when 'opened'
     # Circuit opened (started rejecting requests)
     StatsD.increment("circuit.opened", tags: ["circuit:#{circuit_name}"])
     AlertManager.trigger(:circuit_open, circuit: circuit_name)
-    
+
   when 'closed'
     # Circuit closed (recovered)
     StatsD.increment("circuit.closed", tags: ["circuit:#{circuit_name}"])
     AlertManager.resolve(:circuit_open, circuit: circuit_name)
-    
+
   when 'half_opened'
     # Circuit testing recovery
     StatsD.increment("circuit.half_opened", tags: ["circuit:#{circuit_name}"])
-    
+
   when 'rejected'
     # Request rejected by open circuit
     StatsD.increment("circuit.rejected", tags: ["circuit:#{circuit_name}"])
-    
+
   when 'success'
     # Successful call through circuit
     duration = (finish - start) * 1000  # Convert to milliseconds
     StatsD.timing("circuit.success", duration, tags: ["circuit:#{circuit_name}"])
-    
+
   when 'failure'
     # Failed call (counts toward opening)
     StatsD.increment("circuit.failure", tags: ["circuit:#{circuit_name}"])
@@ -56,13 +56,13 @@ ActiveSupport::Notifications.subscribe("breaker_machines.bulkhead_rejected") do 
   circuit_name = payload[:circuit]
   current_count = payload[:current_count]
   max_concurrent = payload[:max_concurrent]
-  
+
   StatsD.gauge("circuit.concurrent", current_count, tags: ["circuit:#{circuit_name}"])
   StatsD.increment("circuit.bulkhead_rejected", tags: ["circuit:#{circuit_name}"])
-  
+
   # Alert if consistently at capacity
   if current_count >= max_concurrent
-    AlertManager.warning(:at_capacity, 
+    AlertManager.warning(:at_capacity,
       circuit: circuit_name,
       message: "Circuit at capacity: #{current_count}/#{max_concurrent}"
     )
@@ -80,40 +80,40 @@ class InstrumentedService
 
   circuit :api do
     threshold failures: 3, within: 1.minute
-    
+
     # Wrap the execution with custom instrumentation
     around_execution do |block|
       start_time = Time.now
       result = nil
-      
+
       begin
         # Track concurrent executions
         StatsD.increment("api.calls.started")
         Metrics.gauge("api.concurrent_calls", current_concurrent_calls)
-        
+
         result = block.call
-        
+
         # Track success metrics
         duration = Time.now - start_time
         StatsD.timing("api.call_duration", duration * 1000)
         StatsD.increment("api.calls.success")
-        
+
         result
       rescue => e
         # Track failure metrics
         duration = Time.now - start_time
         StatsD.timing("api.call_duration", duration * 1000)
         StatsD.increment("api.calls.failure", tags: ["error:#{e.class}"])
-        
+
         raise
       ensure
         StatsD.increment("api.calls.completed")
       end
     end
   end
-  
+
   private
-  
+
   def current_concurrent_calls
     # Your implementation to track concurrent calls
   end
@@ -131,7 +131,7 @@ class ContextualCircuit
       # Add context to metrics
       request_id = Thread.current[:request_id]
       user_id = Thread.current[:user_id]
-      
+
       StatsD.increment("circuit.success",
         tags: [
           "circuit:contextual",
@@ -140,7 +140,7 @@ class ContextualCircuit
         ]
       )
     end
-    
+
     on_failure do |error|
       # Log with full context
       Rails.logger.error({
@@ -194,24 +194,24 @@ prometheus.register(CIRCUIT_DURATION)
 # Subscribe to events
 ActiveSupport::Notifications.subscribe(/^breaker_machines\./) do |name, start, finish, id, payload|
   circuit_name = payload[:circuit]
-  
+
   case name
   when 'breaker_machines.success'
     CIRCUIT_REQUESTS.increment(labels: { circuit_name: circuit_name, result: 'success' })
     CIRCUIT_DURATION.observe(finish - start, labels: { circuit_name: circuit_name })
-    
+
   when 'breaker_machines.failure'
     CIRCUIT_REQUESTS.increment(labels: { circuit_name: circuit_name, result: 'failure' })
-    
+
   when 'breaker_machines.rejected'
     CIRCUIT_REQUESTS.increment(labels: { circuit_name: circuit_name, result: 'rejected' })
-    
+
   when 'breaker_machines.opened'
     CIRCUIT_STATE.set(2, labels: { circuit_name: circuit_name })  # 2 = open
-    
+
   when 'breaker_machines.closed'
     CIRCUIT_STATE.set(0, labels: { circuit_name: circuit_name })  # 0 = closed
-    
+
   when 'breaker_machines.half_opened'
     CIRCUIT_STATE.set(1, labels: { circuit_name: circuit_name })  # 1 = half_open
   end
@@ -280,9 +280,9 @@ class HealthController < ApplicationController
         }
       }
     end
-    
+
     overall_healthy = circuits.all? { |c| c[:healthy] }
-    
+
     render json: {
       healthy: overall_healthy,
       circuits: circuits,
@@ -327,7 +327,7 @@ class PagerDutyNotifier
   def self.setup
     ActiveSupport::Notifications.subscribe("breaker_machines.opened") do |_, _, _, _, payload|
       circuit_name = payload[:circuit]
-      
+
       # Only alert for critical circuits
       if critical_circuit?(circuit_name)
         PagerDuty.trigger(
@@ -342,10 +342,10 @@ class PagerDutyNotifier
         )
       end
     end
-    
+
     ActiveSupport::Notifications.subscribe("breaker_machines.closed") do |_, _, _, _, payload|
       circuit_name = payload[:circuit]
-      
+
       if critical_circuit?(circuit_name)
         PagerDuty.resolve(
           service_key: ENV['PAGERDUTY_SERVICE_KEY'],
@@ -354,7 +354,7 @@ class PagerDutyNotifier
       end
     end
   end
-  
+
   def self.critical_circuit?(name)
     %i[payment auth primary_database].include?(name.to_sym)
   end
@@ -368,7 +368,7 @@ class SlackNotifier
   def self.setup
     ActiveSupport::Notifications.subscribe("breaker_machines.opened") do |_, _, _, _, payload|
       circuit_name = payload[:circuit]
-      
+
       notify(
         channel: "#alerts",
         color: "danger",
@@ -381,7 +381,7 @@ class SlackNotifier
       )
     end
   end
-  
+
   def self.notify(message)
     # Your Slack notification implementation
   end
@@ -405,11 +405,11 @@ class NewRelicInstrumented
         "Custom/CircuitBreaker/#{circuit_name}/calls",
         1
       )
-      
+
       segment = NewRelic::Agent::Tracer.start_segment(
         name: "CircuitBreaker/#{circuit_name}"
       )
-      
+
       begin
         result = block.call
         NewRelic::Agent.record_metric(
@@ -429,9 +429,9 @@ class NewRelicInstrumented
       end
     end
   end
-  
+
   private
-  
+
   def circuit_name
     'external_api'
   end
@@ -458,22 +458,22 @@ class CircuitInspector
       puts "=" * 50
     end
   end
-  
+
   def self.trace(circuit_name)
     original_logger = BreakerMachines.logger
-    
+
     # Create detailed logger
     BreakerMachines.logger = Logger.new($stdout).tap do |logger|
       logger.level = Logger::DEBUG
     end
-    
+
     # Subscribe to all events for this circuit
     ActiveSupport::Notifications.subscribe(/^breaker_machines\./) do |name, _, _, _, payload|
       next unless payload[:circuit] == circuit_name
-      
+
       puts "[#{Time.now.iso8601}] #{name}: #{payload.inspect}"
     end
-    
+
     yield
   ensure
     BreakerMachines.logger = original_logger

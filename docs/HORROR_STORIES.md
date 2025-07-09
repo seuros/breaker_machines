@@ -4,9 +4,9 @@ Real production failures from 2023-2024 and the lessons learned. These are actua
 
 ## The DoorDash Misconfigured Circuit Breaker Cascade (2023)
 
-**Company**: DoorDash  
-**Impact**: Wide blast radius outage affecting multiple unrelated services  
-**Root Cause**: Misconfigured circuit breaker amplified a simple database maintenance issue  
+**Company**: DoorDash
+**Impact**: Wide blast radius outage affecting multiple unrelated services
+**Root Cause**: Misconfigured circuit breaker amplified a simple database maintenance issue
 
 ### What Happened
 
@@ -25,7 +25,7 @@ What started as routine database maintenance became a company-wide outage due to
 circuit :database do
   threshold failures: 10, within: 30.seconds  # Too sensitive!
   reset_after 1.minute
-  
+
   # FATAL FLAW: Applied globally across unrelated services
   on_open do
     # This stopped ALL inter-service communication
@@ -48,7 +48,7 @@ circuit :database_queries do
   # More tolerant threshold
   threshold failure_rate: 0.5, minimum_calls: 20, within: 2.minutes
   reset_after 5.minutes
-  
+
   # Graceful degradation, not service shutdown
   fallback do |error|
     Rails.cache.fetch("database_fallback", expires_in: 10.minutes) do
@@ -61,7 +61,7 @@ end
 circuit :analytics_queries do
   threshold failures: 20, within: 5.minutes  # More tolerant for non-critical
   reset_after 2.minutes
-  
+
   fallback { nil }  # Analytics can fail, orders cannot
 end
 ```
@@ -72,9 +72,9 @@ end
 
 ## The $30,000 AI Retry Hell That Killed a Startup (2024)
 
-**Company**: Unnamed #buildinpublic startup  
-**Impact**: $30,000 in OpenAI credits burned in 8-12 hours, company folded  
-**Cause**: Retry loops with AI API calls + resource-intensive Docker containers  
+**Company**: Unnamed #buildinpublic startup
+**Impact**: $30,000 in OpenAI credits burned in 8-12 hours, company folded
+**Cause**: Retry loops with AI API calls + resource-intensive Docker containers
 
 ### The Perfect Storm: Mark's $30,000 Flight
 
@@ -89,27 +89,27 @@ def generate_cv(user_id, cv_data):
     # Step 1: Check user has credits (but don't deduct yet!)
     if not user_has_credits(user_id):
         return {"error": "No credits remaining"}
-    
+
     # Step 2: Call OpenAI to generate optimized CV
     ai_cv = openai_client.complete(
         prompt=build_cv_prompt(cv_data),
         model="gpt-4-turbo",
         max_tokens=4000  # ~$0.08 per call (2k in + 2k out)
     )
-    
+
     # Step 3: Spin up PDF generator (Docker container, 2GB RAM)
     pdf_service = create_pdf_container()  # ← This is where it fails!
     pdf = pdf_service.generate_cv(ai_cv)
-    
+
     # Step 4: Save PDF
     cv_url = save_to_s3(pdf)
-    
+
     # Step 5: Email the CV
     send_cv_email(user_id, cv_url)
-    
+
     # Step 6: NOW deduct credit after everything worked
     deduct_user_credit(user_id)  # ← Never reaches here!
-    
+
     return {"success": True, "cv_url": cv_url}
 
 # The Celery task with infinite retry
@@ -143,7 +143,7 @@ The fatal flaw in the architecture:
 ```
 User clicks "Generate CV"
 → Check user has 1 free credit ✓
-→ OpenAI API call ($0.08) ✓ 
+→ OpenAI API call ($0.08) ✓
 → Try to spin up PDF Docker container (2GB)
 → Container crashes - out of memory! 💥
 → Email never sent
@@ -240,50 +240,50 @@ While Mark's app was in Python, here's how BreakerMachines would have prevented 
 ```ruby
 class CVGenerator
   include BreakerMachines::DSL
-  
+
   circuit :database do
     threshold failures: 3, within: 30.seconds
     reset_after 1.minute
-    
+
     fallback do
       # DO NOT continue if we can't track credits!
       { error: "System temporarily unavailable", retry_later: true }
     end
   end
-  
+
   circuit :openai do
     threshold failures: 3, within: 1.minute
     reset_after 5.minutes
-    
+
     fallback do
       { error: "AI service temporarily unavailable", queued: true }
     end
   end
-  
+
   circuit :pdf_generator do
     threshold failures: 2, within: 1.minute
     reset_after 2.minutes
-    
+
     fallback do
       { error: "PDF generation queued", status: "pending" }
     end
   end
-  
+
   def generate_cv(user_id, cv_data)
     # CRITICAL: Check all circuits BEFORE expensive operations
     return { error: "Service unavailable" } if circuit(:database).open?
     return { error: "PDF generation unavailable" } if circuit(:pdf_generator).open?
-    
+
     # CRITICAL: Deduct credit FIRST
     circuit(:database).wrap do
       unless deduct_user_credit(user_id)
         return { error: "No credits available" }
       end
     end
-    
+
     # Use idempotency key to prevent duplicate API calls
     idempotency_key = "cv_#{user_id}_#{cv_data.hash}"
-    
+
     begin
       # Check cache first
       ai_cv = Rails.cache.fetch(idempotency_key, expires_in: 1.hour) do
@@ -291,15 +291,15 @@ class CVGenerator
           openai_client.generate_cv(cv_data)  # Only called if not cached
         end
       end
-      
+
       pdf_url = circuit(:pdf_generator).wrap do
         generate_and_upload_pdf(ai_cv)
       end
-      
+
       circuit(:email).wrap do
         send_cv_email(user_id, pdf_url)
       end
-      
+
       { success: true, cv_url: pdf_url }
     rescue => e
       # Only refund if we haven't started processing
@@ -377,9 +377,9 @@ Mark went quiet for a week. His haters had a field day:
 
 Then, the plot twist. Two weeks later:
 
-> "Excited to announce I'm building AgenticCommerce - AI agents for e-commerce! 
+> "Excited to announce I'm building AgenticCommerce - AI agents for e-commerce!
 >
-> Learned so much from CVGenius. Already have $50k in pre-seed funding! 
+> Learned so much from CVGenius. Already have $50k in pre-seed funding!
 >
 > Comment 'AGENT' for early access. Let's scale together 🚀 #buildinpublic"
 
@@ -406,7 +406,7 @@ The haters were already preparing: "Same time next week?"
 7. **Some people never learn** - They just find new grant money to burn
 8. **Your haters are your best QA team** - They'll find every way to break you
 
-**This is why BreakerMachines exists** - Because in the age of AI APIs, retry loops don't just waste time, they burn money at a rate that turns one user's refresh button into a company's funeral. 
+**This is why BreakerMachines exists** - Because in the age of AI APIs, retry loops don't just waste time, they burn money at a rate that turns one user's refresh button into a company's funeral.
 
 And for the Marks of the world who refuse to learn: Maybe the third time won't be the charm when you're paying $0.04 per retry out of your own pocket.
 
@@ -414,9 +414,9 @@ And for the Marks of the world who refuse to learn: Maybe the third time won't b
 
 ## Cloudflare's Physical Circuit Breaker Nightmare (November 2023)
 
-**Company**: Cloudflare  
-**Impact**: 56-hour control plane outage affecting global infrastructure  
-**Cause**: Actual electrical circuit breakers failed, not software ones  
+**Company**: Cloudflare
+**Impact**: 56-hour control plane outage affecting global infrastructure
+**Cause**: Actual electrical circuit breakers failed, not software ones
 
 ### The Incident Timeline
 
@@ -440,7 +440,7 @@ class CloudflareControlPlane
   circuit :primary_datacenter do
     threshold failures: 3, within: 60.seconds
     reset_after 30.seconds
-    
+
     fallback do
       # Automatic failover to secondary region
       redirect_traffic_to_backup_region
@@ -450,7 +450,7 @@ class CloudflareControlPlane
   circuit :monitoring_systems do
     threshold failures: 5, within: 2.minutes
     reset_after 1.minute
-    
+
     fallback do
       # Use backup monitoring during primary failure
       backup_monitoring_dashboard
@@ -465,9 +465,9 @@ end
 
 ## Spotify's Popcount Service Cascade (2013 - Still Relevant)
 
-**Company**: Spotify  
-**Impact**: Hours of music playback issues across Europe  
-**Cause**: Desktop client retry behavior bypassed circuit breakers  
+**Company**: Spotify
+**Impact**: Hours of music playback issues across Europe
+**Cause**: Desktop client retry behavior bypassed circuit breakers
 
 ### The Architecture
 
@@ -502,7 +502,7 @@ class SpotifyDesktopClient
   circuit :popcount_service do
     threshold failures: 3, within: 30.seconds
     reset_after 2.minutes
-    
+
     fallback do |error|
       # Graceful degradation - show playlist without subscriber count
       Rails.logger.warn "Popcount unavailable: #{error.message}"
@@ -524,9 +524,9 @@ end
 
 ## AWS ECS Deployment Circuit Breaker Anti-Pattern (2024)
 
-**Company**: Amazon Web Services  
-**Impact**: Deployment failures causing service unavailability  
-**Cause**: Circuit breaker preventing recovery attempts  
+**Company**: Amazon Web Services
+**Impact**: Deployment failures causing service unavailability
+**Cause**: Circuit breaker preventing recovery attempts
 
 ### The Problem
 
@@ -543,7 +543,7 @@ class ECSDeploymentBreaker
     if last_three_deployments_failed?
       raise "Deployment circuit breaker triggered - no new deployments allowed"
     end
-    
+
     perform_deployment(service_config)
   end
 end
@@ -558,14 +558,14 @@ class SmartDeploymentBreaker
   circuit :deployment_health do
     threshold failure_rate: 0.8, minimum_calls: 3, within: 10.minutes
     reset_after 5.minutes
-    
+
     fallback do |error|
       # Allow manual override for emergency deployments
       if emergency_deployment?
         Rails.logger.warn "Emergency deployment override activated"
         return perform_deployment_with_monitoring
       end
-      
+
       # Otherwise, pause automated deployments
       schedule_manual_review
     end
@@ -579,9 +579,9 @@ end
 
 ## The Netflix Hystrix Scale Reality Check
 
-**Company**: Netflix  
-**Finding**: Circuit breakers work, but configuration is everything  
-**Impact**: Prevented cascading failures but revealed tuning challenges  
+**Company**: Netflix
+**Finding**: Circuit breakers work, but configuration is everything
+**Impact**: Prevented cascading failures but revealed tuning challenges
 
 ### The Real-World Data
 
@@ -603,7 +603,7 @@ circuit :video_metadata do
   # Started with liberal configuration
   threshold failures: 50, within: 10.seconds  # Too permissive
   reset_after 30.seconds
-  
+
   # Tuned down after observing production traffic
   threshold failure_rate: 0.2, minimum_calls: 20, within: 1.minute
   reset_after 1.minute
@@ -657,7 +657,7 @@ end
 circuit :slow_service do
   threshold failures: 2, within: 10.seconds
   reset_after 5.seconds
-  
+
   fallback { "Everything is fine!" }  # Lies!
 end
 
@@ -665,12 +665,12 @@ end
 circuit :slow_service do
   threshold failures: 2, within: 10.seconds
   reset_after 5.seconds
-  
+
   on_open do
     AlertManager.critical("Service degraded - investigate immediately")
     Metrics.increment("circuit.opened.slow_service")
   end
-  
+
   fallback do |error|
     Rails.logger.error "Service unavailable: #{error.message}"
     { error: "Service temporarily unavailable", retry_after: 30 }
@@ -684,7 +684,7 @@ end
 
 ### Real ROI Data from 2023-2024
 
-| Incident Type | Without Circuit Breakers | With Proper Circuit Breakers | 
+| Incident Type | Without Circuit Breakers | With Proper Circuit Breakers |
 |---------------|---------------------------|-------------------------------|
 | DoorDash-style cascade | 4-hour full outage | 10-minute degradation |
 | Database timeout storms | 2-hour recovery time | 30-second recovery |
@@ -703,11 +703,11 @@ end
 
 ### Configuration Lessons
 - [ ] **Don't use the same thresholds everywhere** - Critical vs non-critical services need different tolerances
-- [ ] **Start permissive, tune down** - Begin with liberal thresholds and tighten based on real data  
+- [ ] **Start permissive, tune down** - Begin with liberal thresholds and tighten based on real data
 - [ ] **Add jitter to reset times** - Prevent thundering herd recovery attempts
 - [ ] **Test failure scenarios** - Circuit breakers you haven't tested will fail when you need them
 
-### Monitoring Lessons  
+### Monitoring Lessons
 - [ ] **Alert on circuit opens** - Especially for critical services
 - [ ] **Track recovery times** - How long until circuits close?
 - [ ] **Monitor fallback usage** - Are your degraded responses good enough?

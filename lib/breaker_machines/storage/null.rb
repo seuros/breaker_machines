@@ -40,6 +40,15 @@ module BreakerMachines
       def record_event_with_details(_circuit_name, _event_type, _duration, _metadata = {})
         # No-op
       end
+
+      def clear_all
+        # No-op
+      end
+
+      def with_timeout(_timeout_ms)
+        # Null storage always succeeds instantly - perfect for fail-open scenarios
+        yield
+      end
     end
   end
 end

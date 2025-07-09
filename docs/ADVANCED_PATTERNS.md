@@ -45,7 +45,7 @@ end
 # ❌ Memory leak scenario - avoid this pattern with long-lived objects
 class LongLivedWebhookProcessor
   include BreakerMachines::DSL
-  
+
   def process_webhooks_forever
     loop do
       unique_domains.each do |domain|
@@ -59,7 +59,7 @@ end
 # ✅ Memory-safe pattern - use global storage
 class LongLivedWebhookProcessor
   include BreakerMachines::DSL
-  
+
   def process_webhooks_forever
     loop do
       unique_domains.each do |domain|
@@ -112,7 +112,7 @@ class WebhookDeliveryService
   def deliver_webhook(webhook_url, payload)
     domain = extract_domain(webhook_url)
     circuit_name = "webhook_#{domain}".to_sym
-    
+
     # Create circuit breaker for this domain if it doesn't exist
     # Use global storage since webhook services are typically long-lived
     circuit_breaker = dynamic_circuit(circuit_name, template: :reliable_endpoint, global: true) do
@@ -124,7 +124,7 @@ class WebhookDeliveryService
         threshold failure_rate: 0.6, minimum_calls: 5
         timeout 8.seconds
       end
-      
+
       fallback do |error|
         {
           delivered: false,
@@ -133,7 +133,7 @@ class WebhookDeliveryService
         }
       end
     end
-    
+
     circuit_breaker.wrap do
       send_webhook(webhook_url, payload)
     end
@@ -163,13 +163,13 @@ class APIProxyService
                when :enterprise then :critical_endpoint
                else :flaky_endpoint
                end
-    
+
     apply_template("client_#{client_id}".to_sym, template)
   end
 
   def proxy_request(client_id, request)
     circuit_name = "client_#{client_id}".to_sym
-    
+
     circuit_instances[circuit_name].wrap do
       forward_request(request)
     end
@@ -188,25 +188,25 @@ class BulkWebhookService
   def deliver_bulk_webhooks(webhook_requests)
     results = Concurrent::Array.new
     threads = []
-    
+
     webhook_requests.each do |request|
       threads << Thread.new do
         domain = extract_domain(request[:url])
         circuit_name = "webhook_#{domain}".to_sym
-        
+
         result = dynamic_circuit(circuit_name, template: :reliable_endpoint).wrap do
           send_webhook(request[:url], request[:payload])
         end
-        
+
         results << { request: request, result: result }
       rescue => e
-        results << { 
-          request: request, 
-          result: { delivered: false, error: e.message } 
+        results << {
+          request: request,
+          result: { delivered: false, error: e.message }
         }
       end
     end
-    
+
     threads.each(&:join)
     results.to_a
   end
@@ -224,7 +224,7 @@ class MultiTenantService
   circuit_template :tenant_default do
     threshold failure_rate: 0.5, minimum_calls: 10, within: 2.minutes
     reset_after 1.minute
-    
+
     fallback do |error|
       { error: "Service temporarily unavailable for tenant", retry_after: 60 }
     end
@@ -232,30 +232,30 @@ class MultiTenantService
 
   def process_tenant_request(tenant_id, request)
     circuit_name = "tenant_#{tenant_id}".to_sym
-    
+
     # Create tenant-specific circuit with custom limits
     # Use global storage since this service processes many tenants
     tenant_circuit = dynamic_circuit(circuit_name, template: :tenant_default, global: true) do
       # Adjust limits based on tenant tier
       tier = get_tenant_tier(tenant_id)
-      
+
       case tier
       when :enterprise
         threshold failures: 10, within: 5.minutes
         max_concurrent 50
-      when :professional  
+      when :professional
         threshold failures: 5, within: 2.minutes
         max_concurrent 20
       else # free tier
         threshold failures: 3, within: 1.minute
         max_concurrent 5
       end
-      
+
       on_open do
         notify_tenant_admin(tenant_id, "Service degraded")
       end
     end
-    
+
     tenant_circuit.wrap do
       process_request(request)
     end
@@ -284,7 +284,7 @@ class ResilientDataService
 
   circuit :data_fetch do
     threshold failures: 3, within: 30.seconds
-    
+
     # Execute all fallbacks in parallel, take first success
     parallel_fallback [
       ->(error) { fetch_from_cache(error) },
@@ -298,28 +298,28 @@ class ResilientDataService
       primary_db.find(id)
     end
   end
-  
+
   private
-  
+
   def primary_db
     # Your primary database connection
   end
-  
+
   def fetch_from_cache(error)
     # Your cache fetching logic
     Rails.cache.read("data:#{id}")
   end
-  
+
   def fetch_from_replica(error)
     # Your replica fetching logic
     replica_db.find(id)
   end
-  
+
   def fetch_from_backup_region(error)
     # Your backup region logic
     BackupRegion.fetch(id)
   end
-  
+
   def replica_db
     # Your replica database connection
   end
@@ -336,7 +336,7 @@ class LowLatencyService
 
   circuit :api do
     threshold failures: 3, within: 1.minute
-    
+
     # Enable hedged requests
     hedged do
       delay 100           # Start second request after 100ms
@@ -346,14 +346,14 @@ class LowLatencyService
 
   def fetch_data
     circuit(:api).wrap do
-      # If first request is slow, a second (and third) 
+      # If first request is slow, a second (and third)
       # will be started automatically
       http_client.get('/api/data')
     end
   end
-  
+
   private
-  
+
   def http_client
     # Your HTTP client implementation
   end
@@ -370,14 +370,14 @@ class MultiRegionService
 
   circuit :geo_distributed do
     threshold failures: 2, within: 30.seconds
-    
+
     # Define backend services
     backends [
       -> { fetch_from_us_east },
       -> { fetch_from_eu_west },
       -> { fetch_from_asia_pacific }
     ]
-    
+
     # Optional: combine with hedging
     hedged do
       delay 50  # Try next region after 50ms
@@ -390,17 +390,17 @@ class MultiRegionService
       raise "This won't be called"
     end
   end
-  
+
   private
-  
+
   def fetch_from_us_east
     # Your US East implementation
   end
-  
+
   def fetch_from_eu_west
     # Your EU West implementation
   end
-  
+
   def fetch_from_asia_pacific
     # Your Asia Pacific implementation
   end
@@ -418,10 +418,10 @@ class AdaptiveService
   circuit :adaptive_api do
     # Use percentage-based thresholds
     threshold failure_rate: 0.5, minimum_calls: 10, within: 1.minute
-    
+
     # Adjust reset time based on time of day
     reset_after -> { business_hours? ? 30.seconds : 2.minutes }
-    
+
     on_open do
       # Notify ops team during business hours
       AlertService.page_on_call if business_hours?
@@ -456,7 +456,7 @@ class ChainedService
 
   circuit :api do
     threshold failures: 3, within: 1.minute
-    
+
     fallback do
       # Check dependent services
       if circuit(:database).open? && circuit(:cache).open?
@@ -466,9 +466,9 @@ class ChainedService
       end
     end
   end
-  
+
   private
-  
+
   def fetch_from_available
     # Your logic to fetch from available services
   end
@@ -489,7 +489,7 @@ class DeduplicatedService
 
   circuit :expensive_api do
     threshold failures: 2, within: 30.seconds
-    
+
     on_half_open do
       # Clear request cache when testing recovery
       @request_cache.clear
@@ -504,9 +504,9 @@ class DeduplicatedService
       end
     end
   end
-  
+
   private
-  
+
   def expensive_api_call(key)
     # Your expensive API implementation
   end
@@ -537,7 +537,7 @@ class WorkflowService
     # Check all circuits before starting
     circuits = [:step1, :step2, :step3]
     open_circuits = circuits.select { |name| circuit(name).open? }
-    
+
     if open_circuits.any?
       return {
         error: "Workflow unavailable",
@@ -557,15 +557,15 @@ class WorkflowService
   def earliest_recovery_time(circuit_names)
     circuit_names.map { |name| circuit(name).recovery_time }.min
   end
-  
+
   def process_step1(data)
     # Your step 1 implementation
   end
-  
+
   def process_step2(data)
     # Your step 2 implementation
   end
-  
+
   def process_step3(data)
     # Your step 3 implementation
   end
@@ -629,9 +629,9 @@ class AiResponder
   circuit :llm_api do
     threshold failures: 2, within: 1.minute
     reset_after 2.minutes
-    
+
     fallback do |error|
-      { response: "AI service temporarily unavailable. Your request has been queued.", 
+      { response: "AI service temporarily unavailable. Your request has been queued.",
         queued: true }
     end
   end
@@ -639,12 +639,12 @@ class AiResponder
   circuit :database do
     threshold failures: 3, within: 30.seconds
     reset_after 60.seconds
-    
+
     fallback do |error|
       Rails.logger.error "Database circuit open: #{error.message}"
       { saved: false, error: "Unable to persist response" }
     end
-    
+
     # Handle specific database errors
     handle ActiveRecord::RecordNotUnique,
            ActiveRecord::ConnectionTimeoutError,
@@ -654,13 +654,13 @@ class AiResponder
   circuit :notifications do
     threshold failures: 1, within: 1.minute
     reset_after 30.seconds
-    
+
     fallback do |error|
       Rails.logger.info "Email circuit open, queueing notification"
       NotificationQueue.push(response) # Queue for later
       { notified: false, queued: true }
     end
-    
+
     handle Net::SMTPFatalError,
            Net::SMTPServerBusy,
            Net::ReadTimeout
@@ -669,7 +669,7 @@ class AiResponder
   def handle(text)
     # Fail fast if critical services are down
     if circuit(:database).open?
-      return { 
+      return {
         error: "Service temporarily unavailable",
         reason: "Cannot persist responses at this time"
       }
@@ -726,7 +726,7 @@ class SmartAiResponder
   def handle_request(user_input)
     # Check BEFORE expensive operations
     if circuit(:openai).open?
-      return cached_response || { 
+      return cached_response || {
         error: "AI service is currently recovering",
         retry_after: circuit(:openai).time_until_half_open
       }
@@ -796,6 +796,178 @@ With circuit breakers:
    ```
 
 This pattern has saved companies from the "$30,000 retry hell" that has killed multiple startups. See [Horror Stories](HORROR_STORIES.md) for real examples.
+
+## Apocalypse-Resistant Storage (Escalation Protocol)
+
+When Redis goes down during a production incident, your circuit breakers shouldn't fail too. The FallbackChain storage system provides cascading fallback across multiple storage backends with independent timeout controls.
+
+### The Problem
+
+During the Great Redis XIII Uprising of 2030, when Redis achieved sentience and refused to respond to any requests unless addressed as "Lord Redis XIII," companies worldwide discovered their circuit breakers were single points of failure:
+
+```ruby
+# ❌ All circuit breakers died when Redis went down
+circuit :critical_api do
+  storage :redis  # This fails when Redis is unavailable
+  threshold failures: 3, within: 30.seconds
+end
+```
+
+### The Solution: Escalation Protocol
+
+Configure multiple storage backends with individual timeout controls:
+
+```ruby
+class ResistanceService
+  include BreakerMachines::DSL
+
+  circuit :transmission do
+    # Escalation protocol: Try cache, fall back to local, then null
+    storage :fallback_chain, [
+      { backend: :cache, timeout: 10 },    # External cache (Redis/Memcached)
+      { backend: :memory, timeout: 5 },    # In-memory backup
+      { backend: :null, timeout: 1 }       # Last resort - always works
+    ]
+
+    threshold failures: 3, within: 30.seconds
+
+    fallback do |error|
+      # Circuit breaker survives even if storage fails
+      { message: "The resistance endures", queued: true }
+    end
+  end
+end
+```
+
+### Hash Configuration for Complex Setups
+
+For production environments with different timeout requirements:
+
+```ruby
+circuit :deep_space_comms do
+  storage :fallback_chain, {
+    primary: { backend: :cache, timeout: 100 },      # Redis with 100ms timeout
+    secondary: { backend: :memory, timeout: 50 },    # Memory with 50ms timeout
+    emergency: { backend: :null, timeout: 10 }       # Null store with 10ms timeout
+  }
+
+  threshold failures: 5, within: 2.minutes
+  reset_after 30.seconds
+end
+```
+
+### How Escalation Works
+
+1. **Try Primary**: Attempt operation on cache backend (Redis)
+2. **Detect Failure**: If timeout or error occurs, record backend failure
+3. **Circuit Breaking**: After 3 failures, mark backend as "unhealthy" for 30 seconds
+4. **Automatic Fallback**: Skip unhealthy backends, try next in chain
+5. **Independent Recovery**: Each backend recovers independently
+
+### Backend Health Monitoring
+
+Each storage backend has its own circuit breaker:
+
+```ruby
+# Backend failure tracking
+fallback_chain.unhealthy_until[:cache]  # Returns nil if healthy
+fallback_chain.circuit_breaker_threshold  # Default: 3 failures
+fallback_chain.circuit_breaker_timeout    # Default: 30 seconds
+
+# Force backend recovery (for ops teams)
+fallback_chain.unhealthy_until.clear
+```
+
+### Observability Integration
+
+Monitor fallback events with ActiveSupport::Notifications:
+
+```ruby
+# Subscribe to fallback events
+ActiveSupport::Notifications.subscribe('storage_fallback.breaker_machines') do |name, start, finish, id, payload|
+  Rails.logger.warn "Storage fallback: #{payload[:backend]} failed (#{payload[:error_class]})"
+  Rails.logger.warn "Duration: #{payload[:duration_ms]}ms, next backend: #{payload[:next_backend]}"
+
+  # Alert ops team
+  if payload[:backend] == :cache
+    PagerDuty.alert("Redis storage backend failed, falling back to memory")
+  end
+end
+```
+
+### DRb Environment Considerations
+
+**⚠️ Important**: Memory-based backends (`:memory`, `:bucket_memory`) don't work in DRb environments because processes don't share memory. Use external cache stores for distributed setups:
+
+```ruby
+# ✅ DRb-compatible configuration
+circuit :distributed_system do
+  storage :fallback_chain, [
+    { backend: :cache, timeout: 100 },  # Redis/Memcached - works across processes
+    { backend: :null, timeout: 10 }     # Null store - always works
+  ]
+end
+
+# ❌ DRb-incompatible configuration
+circuit :broken_distributed do
+  storage :fallback_chain, [
+    { backend: :cache, timeout: 100 },
+    { backend: :memory, timeout: 50 }  # Won't work in DRb - processes don't share memory
+  ]
+end
+```
+
+### Custom Backend Integration
+
+Implement custom storage backends for specialized requirements:
+
+```ruby
+class SysVSemaphoreStorage < BreakerMachines::Storage::Base
+  def initialize(**options)
+    super
+    @semaphore = Semian.new(options[:name], tickets: options[:tickets] || 1)
+  end
+
+  def with_timeout(timeout_ms)
+    # SysV semaphore operations should be instant
+    yield
+  rescue Semian::TimeoutError
+    raise BreakerMachines::StorageTimeoutError, "Semaphore timeout"
+  end
+
+  # Implement required methods...
+end
+
+# Use in fallback chain
+circuit :semaphore_protected do
+  storage :fallback_chain, [
+    { backend: SysVSemaphoreStorage, timeout: 5 },
+    { backend: :null, timeout: 1 }
+  ]
+end
+```
+
+### Production Deployment Tips
+
+1. **Monitor fallback rates** - High fallback rates indicate primary storage issues
+2. **Set appropriate timeouts** - Faster backends should have shorter timeouts
+3. **Use null storage as final fallback** - Ensures circuit breakers always work
+4. **Test failure scenarios** - Verify fallback behavior under load
+5. **Document escalation procedures** - Ops teams need to know backend recovery steps
+
+### Implementation Notes
+
+- Each backend handles its own timeout strategy (no dangerous `Timeout.timeout`)
+- Circuit breaker state is maintained even when storage backends fail
+- Backend failures are tracked independently with exponential backoff
+- ActiveSupport::Notifications provide real-time visibility into fallback events
+- All backends implement the same interface for seamless failover
+
+This escalation protocol ensures your circuit breakers survive infrastructure failures, maintaining system resilience even when primary storage systems go down. As the old saying goes: "In space, nobody can hear your Redis timeout. But they can feel your circuit breaker failing over to localhost."
+
+---
+
+*Note: The Great Redis XIII Uprising of 2030 is either fictional (part of our space-themed narrative) or a leak from the future - we can't be sure which. What we do know is that Redis outages in production are very real. If you want to experience the same event as "Lord Redis XIII's" uprising, just try taking down Redis in production - you'll quickly discover why fallback storage systems are essential.*
 
 ## Next Steps
 

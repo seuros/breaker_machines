@@ -94,6 +94,13 @@ module BreakerMachines
         events.last(limit)
       end
 
+      def with_timeout(_timeout_ms)
+        # Rails cache operations should rely on their own underlying timeouts
+        # Using Ruby's Timeout.timeout is dangerous and can cause deadlocks
+        # For Redis cache stores, configure connect_timeout and read_timeout instead
+        yield
+      end
+
       private
 
       def increment_counter(key)

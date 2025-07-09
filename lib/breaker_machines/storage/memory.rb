@@ -6,6 +6,10 @@ require 'concurrent/array'
 module BreakerMachines
   module Storage
     # High-performance in-memory storage backend with thread-safe operations
+    #
+    # WARNING: This storage backend is NOT compatible with DRb (distributed Ruby)
+    # environments as memory is not shared between processes. Use Cache backend
+    # with an external cache store (Redis, Memcached) for distributed setups.
     class Memory < Base
       def initialize(**options)
         super
@@ -85,6 +89,12 @@ module BreakerMachines
         return [] unless events
 
         events.last(limit).map(&:dup)
+      end
+
+      def with_timeout(_timeout_ms)
+        # Memory operations should be instant, but we'll still respect the timeout
+        # This is more for consistency and to catch any potential deadlocks
+        yield
       end
 
       private

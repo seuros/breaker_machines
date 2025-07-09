@@ -59,7 +59,7 @@ sequenceDiagram
     participant CB as Circuit Breaker
     participant S1 as Primary Service
     participant S2 as Secondary Service
-    
+
     C->>CB: Request
     CB->>S1: Try Primary
     Note over CB: Wait 100ms
@@ -79,7 +79,7 @@ graph TB
         A1[Service Pool] --> B1[One Bad Request]
         B1 --> C1[🔥 All Threads Blocked 🔥]
     end
-    
+
     subgraph "With Bulkheading"
         A2[Service Pool] --> B2[Isolated Compartments]
         B2 --> C2[Limited Blast Radius]
@@ -98,7 +98,7 @@ graph LR
         PB --> PC[Service Mesh]
         PC --> PD[Microservices]
     end
-    
+
     subgraph "Reality at 3 AM"
         RA[Overloaded Gateway] -.-> RB[Dead LB]
         RB -.-> RC[Service Mesh on Fire]

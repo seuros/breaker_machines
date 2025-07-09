@@ -71,7 +71,7 @@ class ExternalAPIClient
   circuit :api do
     threshold failures: 5, within: 2.minutes
     reset_after 1.minute
-    
+
     fallback do |error|
       case error
       when Timeout::Error
@@ -102,7 +102,7 @@ class UserService
   circuit :database do
     threshold failures: 3, within: 30.seconds
     reset_after 45.seconds
-    
+
     fallback do
       # Return cached data or degraded response
       Rails.cache.read("users:fallback") || []
@@ -130,7 +130,7 @@ class WebhookService
     threshold failures: 3, within: 1.minute
     reset_after 30.seconds
     timeout 5.seconds
-    
+
     fallback do |error|
       { delivered: false, error: error.message, retry_later: true }
     end
@@ -139,7 +139,7 @@ class WebhookService
   def deliver_webhook(webhook_url, payload)
     domain = URI.parse(webhook_url).host
     circuit_name = "webhook_#{domain}".to_sym
-    
+
     # Create circuit breaker for this domain if it doesn't exist
     circuit_breaker = dynamic_circuit(circuit_name, template: :webhook_default) do
       # Custom configuration per domain
@@ -149,7 +149,7 @@ class WebhookService
         threshold failure_rate: 0.7, minimum_calls: 3
       end
     end
-    
+
     circuit_breaker.wrap do
       send_webhook(webhook_url, payload)
     end

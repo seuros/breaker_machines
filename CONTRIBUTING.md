@@ -21,7 +21,7 @@ Welcome to the Resistance! We appreciate your interest in making BreakerMachines
 
 ### On Examples & Metaphors
 
-I use spaceships in the documentation because circuit breakers are about preventing cascade failures—a concept immediately graspable when your warp drive explodes and you need to prevent it from taking out life support. The pattern remains identical whether you're protecting payment gateways, medical device APIs, or autonomous agent orchestration. 
+I use spaceships in the documentation because circuit breakers are about preventing cascade failures—a concept immediately graspable when your warp drive explodes and you need to prevent it from taking out life support. The pattern remains identical whether you're protecting payment gateways, medical device APIs, or autonomous agent orchestration.
 
 I've provided the architectural pattern. Implementation details for your specific domain are left as an exercise for the reader.
 
@@ -50,17 +50,17 @@ state_machine :status, initial: :closed do
   # - :closed (initial) - Circuit is functioning normally
   # - :open - Circuit has failed and is rejecting calls
   # - :half_open - Circuit is testing if the service has recovered
-  
+
   # Events that trigger state transitions:
   event :trip do
     transition closed: :open
     transition half_open: :open
   end
-  
+
   event :attempt_recovery do
     transition open: :half_open
   end
-  
+
   event :reset do
     transition [:open, :half_open] => :closed
   end

@@ -19,7 +19,7 @@ BreakerMachines.configure do |config|
   config.log_events = !Rails.env.test?
   config.default_reset_timeout = 60.seconds
   config.default_failure_threshold = 5
-  
+
   # Enable fiber_safe mode if using Falcon
   config.fiber_safe = defined?(Falcon)
 end
@@ -28,7 +28,7 @@ end
 ActiveSupport::Notifications.subscribe(/^breaker_machines\./) do |name, start, finish, id, payload|
   event_type = name.split('.').last
   circuit_name = payload[:circuit]
-  
+
   Rails.logger.tagged('CircuitBreaker', circuit_name) do
     case event_type
     when 'opened'
@@ -101,7 +101,7 @@ class Api::V1::BaseController < ApplicationController
   circuit :api_gateway do
     threshold failure_rate: 0.5, minimum_calls: 10, within: 1.minute
     reset_after 30.seconds
-    
+
     fallback do |error|
       render json: {
         error: "Service temporarily unavailable",
@@ -196,11 +196,11 @@ class PaymentProcessor
     threshold failures: 3, within: 1.minute
     reset_after 30.seconds
     storage :cache  # Share state across workers
-    
+
     fallback do |error|
       # Queue for retry
       PaymentRetryJob.perform_later(payment_id: @payment_id)
-      
+
       Payment.new(
         status: 'pending',
         queued_at: Time.current,
@@ -212,7 +212,7 @@ class PaymentProcessor
   circuit :fraud_check do
     threshold failures: 5, within: 2.minutes
     reset_after 1.minute
-    
+
     fallback do
       # Allow with manual review flag
       { risk_score: 'unknown', require_review: true }
@@ -222,17 +222,17 @@ class PaymentProcessor
   def process(payment_id)
     @payment_id = payment_id
     payment = Payment.find(payment_id)
-    
+
     # Check fraud first
     fraud_result = circuit(:fraud_check).wrap do
       FraudService.check(payment)
     end
-    
+
     if fraud_result[:risk_score] == 'high'
       payment.reject!("High fraud risk")
       return payment
     end
-    
+
     # Process payment
     circuit(:stripe).wrap do
       Stripe::Charge.create(
@@ -245,7 +245,7 @@ class PaymentProcessor
         }
       )
     end
-    
+
     payment.complete!
     payment
   end
@@ -264,7 +264,7 @@ class ApplicationJob < ActiveJob::Base
     threshold failures: 5, within: 5.minutes
     reset_after 2.minutes
     storage :cache  # Important for distributed job processing. See [Persistence Options](PERSISTENCE.md) for more details on storage backends.
-    
+
     fallback do
       # Re-enqueue the job
       retry_job wait: 5.minutes
@@ -293,7 +293,7 @@ class SidekiqCircuitMiddleware
     threshold failures: 10, within: 30.seconds
     reset_after 1.minute
     storage :memory  # Don't use Redis for Redis circuit!
-    
+
     fallback do
       # Log and skip
       Rails.logger.error "Redis circuit open - job skipped"
@@ -326,7 +326,7 @@ class SmartCacheStore
   circuit :cache_backend do
     threshold failures: 5, within: 30.seconds
     reset_after 45.seconds
-    
+
     fallback do |error|
       # Return nil on read, silently fail on write
       if error.message.include?('read')
@@ -353,7 +353,7 @@ class SmartCacheStore
   def fetch(key, options = {}, &block)
     cached = read(key)
     return cached if cached.present?
-    
+
     value = block.call
     write(key, value, options)
     value
@@ -404,7 +404,7 @@ class ApplicationCable::Channel < ActionCable::Channel::Base
   circuit :broadcast do
     threshold failures: 10, within: 1.minute
     reset_after 30.seconds
-    
+
     fallback do |error|
       # Log but don't crash the connection
       Rails.logger.error "Broadcast failed: #{error.message}"
@@ -417,9 +417,9 @@ class ApplicationCable::Channel < ActionCable::Channel::Base
       ActionCable.server.broadcast(channel_name, data)
     end
   end
-  
+
   private
-  
+
   def notify_user_of_degradation
     transmit(type: 'degraded', message: 'Some features may be delayed')
   end
@@ -435,7 +435,7 @@ class ApplicationMailer < ActionMailer::Base
   circuit :email_service do
     threshold failures: 3, within: 5.minutes
     reset_after 10.minutes
-    
+
     fallback do |error|
       # Queue for later delivery
       EmailRetryJob.perform_later(
@@ -443,7 +443,7 @@ class ApplicationMailer < ActionMailer::Base
         action: action_name,
         params: @params
       )
-      
+
       # Return fake message to prevent errors
       Mail::Message.new
     end
@@ -522,7 +522,7 @@ class HealthController < ApplicationController
     critical_open = BreakerMachines.registry.all.any? do |name, circuit|
       critical_circuits.include?(name) && circuit.open?
     end
-    
+
     critical_open ? 503 : 200
   end
 end
@@ -537,7 +537,7 @@ namespace :circuits do
   task status: :environment do
     puts "Circuit Breaker Status"
     puts "=" * 50
-    
+
     BreakerMachines.registry.all.each do |name, circuit|
       puts "#{name}:"
       puts "  State: #{circuit.state}"
@@ -546,7 +546,7 @@ namespace :circuits do
       puts ""
     end
   end
-  
+
   desc "Reset all circuits"
   task reset: :environment do
     BreakerMachines.registry.all.each do |name, circuit|
@@ -554,7 +554,7 @@ namespace :circuits do
       puts "Reset circuit: #{name}"
     end
   end
-  
+
   desc "Open a specific circuit"
   task :open, [:name] => :environment do |t, args|
     circuit = BreakerMachines.registry.get(args[:name])
@@ -577,12 +577,12 @@ module CircuitBreakerHelper
     circuit = BreakerMachines.registry.get(circuit_name)
     allow(circuit).to receive(:state).and_return(:open)
   end
-  
+
   def stub_circuit_closed(circuit_name)
     circuit = BreakerMachines.registry.get(circuit_name)
     allow(circuit).to receive(:state).and_return(:closed)
   end
-  
+
   def with_circuit_storage(storage_type)
     original = BreakerMachines.config.default_storage
     BreakerMachines.config.default_storage = storage_type
@@ -594,14 +594,14 @@ end
 
 RSpec.configure do |config|
   config.include CircuitBreakerHelper
-  
+
   config.before(:each) do
     # Always use memory storage in tests
     BreakerMachines.configure do |c|
       c.default_storage = :memory
       c.log_events = false
     end
-    
+
     # Reset all circuits
     BreakerMachines.registry.clear
   end

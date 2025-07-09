@@ -103,13 +103,13 @@ class AIService
       )
     end
   end
-  
+
   private
-  
+
   def api_key
     ENV['OPENAI_API_KEY']
   end
-  
+
   def openai
     @openai ||= OpenAI::Client.new(api_key: api_key)
   end
@@ -126,7 +126,7 @@ class AsyncAPIClient
     fiber_safe true
     threshold failures: 5, within: 2.minutes
     timeout 5
-    
+
     fallback do
       { status: 'degraded', data: cached_response }
     end
@@ -141,9 +141,9 @@ class AsyncAPIClient
       end
     end
   end
-  
+
   private
-  
+
   def cached_response
     # Your cache implementation
     Rails.cache.read('api:fallback:data') || {}
@@ -161,7 +161,7 @@ class AsyncDatabaseService
     fiber_safe true
     threshold failures: 3, within: 30.seconds
     timeout 5  # Database query timeout
-    
+
     fallback do
       # Return cached data during outage
       fetch_from_cache
@@ -176,9 +176,9 @@ class AsyncDatabaseService
       end
     end
   end
-  
+
   private
-  
+
   def fetch_from_cache
     # Your cache implementation
   end
@@ -197,7 +197,7 @@ When both `fiber_safe` and hedged requests are enabled, requests run concurrentl
 circuit :fast_api do
   fiber_safe true
   threshold failures: 3, within: 1.minute
-  
+
   hedged do
     delay 100        # Start backup request after 100ms
     max_requests 3   # Up to 3 concurrent requests
@@ -233,7 +233,7 @@ In your application:
 ```ruby
 class MyApp < Roda
   plugin :circuit_breaker
-  
+
   route do |r|
     r.get "api" do
       circuit(:external_api).wrap do
@@ -252,9 +252,9 @@ require 'async/rspec'
 
 RSpec.describe AsyncService do
   include Async::RSpec::Reactor
-  
+
   let(:service) { AsyncService.new }
-  
+
   it "handles circuit breaker in async context" do |reactor|
     # Force circuit open
     3.times do
@@ -262,15 +262,15 @@ RSpec.describe AsyncService do
         service.circuit(:api).wrap { raise "Error" }
       }.to raise_error("Error")
     end
-    
+
     # Circuit should be open
     expect(service.circuit(:api)).to be_open
-    
+
     # Should return fallback without blocking
     result = service.fetch_data
     expect(result).to eq({ status: 'degraded' })
   end
-  
+
   it "respects cooperative timeout" do |reactor|
     service.circuit(:slow_api).wrap do
       reactor.sleep(10) # Will timeout after 3 seconds

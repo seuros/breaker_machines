@@ -42,6 +42,11 @@ module BreakerMachines
       def clear_all
         raise NotImplementedError
       end
+
+      # Timeout handling - each backend must implement its own timeout strategy
+      def with_timeout(timeout_ms)
+        raise NotImplementedError, "#{self.class} must implement #with_timeout to handle #{timeout_ms}ms timeouts"
+      end
     end
   end
 end

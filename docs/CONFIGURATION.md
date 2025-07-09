@@ -22,13 +22,13 @@ end
 circuit :service_name do
   # Failure threshold configuration
   threshold failures: 3, within: 60  # 3 failures in 60 seconds
-  
+
   # Recovery settings
   reset_after 30  # Try recovery after 30 seconds
-  
+
   # Fallback value when circuit is open
   fallback { { error: "Service unavailable" } }
-  
+
   # Storage backend (optional, uses default if not specified)
   storage :memory  # or :cache, or custom storage instance
 end
@@ -58,7 +58,7 @@ Limit concurrent calls to prevent resource exhaustion:
 circuit :limited_resource do
   max_concurrent 50  # Only 50 concurrent calls allowed
   threshold failures: 5, within: 30
-  
+
   fallback { { error: "System at capacity", retry_after: 5 } }
 end
 ```
@@ -137,24 +137,24 @@ React to circuit state changes:
 ```ruby
 circuit :monitored_service do
   threshold failures: 3, within: 60
-  
+
   on_open do
     # Circuit has opened
     NotificationService.alert("Circuit opened!")
     Metrics.increment("circuit.opened")
   end
-  
+
   on_close do
     # Circuit has closed (recovered)
     NotificationService.info("Circuit recovered")
     Metrics.increment("circuit.closed")
   end
-  
+
   on_half_open do
     # Circuit is testing recovery
     Rails.logger.info("Testing circuit recovery")
   end
-  
+
   on_reject do
     # Request rejected (circuit open)
     Metrics.increment("circuit.rejected")
@@ -174,7 +174,7 @@ circuit :database do
     ActiveRecord::StatementTimeout,
     PG::ConnectionBad
   ]
-  
+
   threshold failures: 3, within: 30
 end
 ```
@@ -262,7 +262,7 @@ class APIGateway
     threshold failures: 5, within: 2.minutes
     reset_after 1.minute
     timeout 10.seconds
-    
+
     fallback do |error|
       { error: "External service unavailable", retry_after: 60 }
     end
@@ -282,7 +282,7 @@ class APIGateway
     reset_after 2.minutes
     timeout 15.seconds
     max_concurrent 10
-    
+
     on_open do
       AlertService.critical_circuit_open(circuit_name)
     end
@@ -304,7 +304,7 @@ api_circuit = dynamic_circuit(:payment_api, template: :external_api) do
   threshold failures: 3, within: 2.minutes
   timeout 8.seconds
   max_concurrent 10
-  
+
   # Add specific callbacks
   on_open do
     PaymentFailureNotifier.notify
@@ -349,11 +349,11 @@ class TieredService
                when :premium then :premium_tier
                else :base_service
                end
-    
+
     dynamic_circuit("tenant_#{tenant_id}".to_sym, template: template) do
       # Add tenant-specific configuration
       storage :cache, key_prefix: "tenant_#{tenant_id}"
-      
+
       on_open do
         TenantNotifier.circuit_opened(tenant_id)
       end
@@ -376,7 +376,7 @@ class WebhookService
       threshold failures: 3, within: 60
       fallback { { delivered: false, error: "Circuit open" } }
     end
-    
+
     circuit.wrap { send_webhook(payload) }
   end
 end
