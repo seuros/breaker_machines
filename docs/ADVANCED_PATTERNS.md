@@ -824,9 +824,9 @@ class ResistanceService
   circuit :transmission do
     # Escalation protocol: Try cache, fall back to local, then null
     storage :fallback_chain, [
-      { backend: :cache, timeout: 10 },    # External cache (Redis/Memcached)
-      { backend: :memory, timeout: 5 },    # In-memory backup
-      { backend: :null, timeout: 1 }       # Last resort - always works
+      { backend: :cache, timeout: 10 },       # External cache (Redis/Memcached) - 10ms
+      { backend: :activerecord, timeout: 100 }, # Database storage - 100ms
+      { backend: :null, timeout: 1 }          # Last resort - returns nil immediately
     ]
 
     threshold failures: 3, within: 30.seconds
@@ -846,9 +846,9 @@ For production environments with different timeout requirements:
 ```ruby
 circuit :deep_space_comms do
   storage :fallback_chain, {
-    primary: { backend: :cache, timeout: 100 },      # Redis with 100ms timeout
-    secondary: { backend: :memory, timeout: 50 },    # Memory with 50ms timeout
-    emergency: { backend: :null, timeout: 10 }       # Null store with 10ms timeout
+    primary: { backend: :cache, timeout: 10 },         # Redis - 10ms timeout
+    secondary: { backend: :activerecord, timeout: 100 }, # Database - 100ms timeout
+    emergency: { backend: :null, timeout: 1 }          # Null store - returns nil immediately
   }
 
   threshold failures: 5, within: 2.minutes
@@ -880,17 +880,93 @@ fallback_chain.unhealthy_until.clear
 
 ### Observability Integration
 
-Monitor fallback events with ActiveSupport::Notifications:
+The FallbackChain provides comprehensive instrumentation through ActiveSupport::Notifications. Subscribe to these events for monitoring, alerting, and metrics collection:
+
+#### Storage Operation Events
 
 ```ruby
-# Subscribe to fallback events
+# Individual backend operations (success)
+ActiveSupport::Notifications.subscribe('storage_operation.breaker_machines') do |name, start, finish, id, payload|
+  Rails.logger.info "Storage operation: #{payload[:operation]} on #{payload[:backend]} " \
+                    "completed in #{payload[:duration_ms]}ms (backend #{payload[:backend_index]})"
+end
+
+# Backend fallback events (failures)
 ActiveSupport::Notifications.subscribe('storage_fallback.breaker_machines') do |name, start, finish, id, payload|
   Rails.logger.warn "Storage fallback: #{payload[:backend]} failed (#{payload[:error_class]})"
   Rails.logger.warn "Duration: #{payload[:duration_ms]}ms, next backend: #{payload[:next_backend]}"
 
-  # Alert ops team
+  # Alert ops team for critical backend failures
   if payload[:backend] == :cache
-    PagerDuty.alert("Redis storage backend failed, falling back to memory")
+    AlertSystem.critical("Redis storage backend failed, falling back to database")
+  end
+end
+
+# Backend skipped due to health issues
+ActiveSupport::Notifications.subscribe('storage_backend_skipped.breaker_machines') do |name, start, finish, id, payload|
+  Rails.logger.warn "Skipping unhealthy backend #{payload[:backend]} for #{payload[:operation]} " \
+                    "(healthy again at: #{Time.at(payload[:unhealthy_until])})"
+end
+```
+
+#### Backend Health Events
+
+```ruby
+# Backend health state changes
+ActiveSupport::Notifications.subscribe('storage_backend_health.breaker_machines') do |name, start, finish, id, payload|
+  if payload[:new_state] == :unhealthy
+    Rails.logger.error "Backend #{payload[:backend]} marked unhealthy " \
+                      "(#{payload[:failure_count]}/#{payload[:threshold]} failures)"
+
+    # Set up monitoring alert
+    AlertSystem.backend_down(payload[:backend], payload[:recovery_time])
+  else
+    Rails.logger.info "Backend #{payload[:backend]} recovered and marked healthy"
+    AlertSystem.backend_recovered(payload[:backend])
+  end
+end
+```
+
+#### Chain-Level Events
+
+```ruby
+# Overall chain operation results
+ActiveSupport::Notifications.subscribe('storage_chain_operation.breaker_machines') do |name, start, finish, id, payload|
+  if payload[:success]
+    Rails.logger.info "Chain operation #{payload[:operation]} succeeded on #{payload[:successful_backend]} " \
+                     "after #{payload[:fallback_count]} attempts (#{payload[:duration_ms]}ms total)"
+  else
+    Rails.logger.error "Chain operation #{payload[:operation]} failed completely " \
+                      "after trying #{payload[:attempted_backends].join(', ')} " \
+                      "(#{payload[:duration_ms]}ms total)"
+
+    # Critical alert - all storage backends failed
+    AlertSystem.critical("Complete storage failure: all backends unavailable")
+  end
+end
+```
+
+#### Metrics Collection Example
+
+```ruby
+# Collect metrics for dashboard/monitoring
+ActiveSupport::Notifications.subscribe(/\.breaker_machines$/) do |name, start, finish, id, payload|
+  case name
+  when 'storage_operation.breaker_machines'
+    MetricsCollector.timing("breaker_machines.storage.operation.#{payload[:backend]}", payload[:duration_ms])
+    MetricsCollector.increment("breaker_machines.storage.success.#{payload[:backend]}")
+
+  when 'storage_fallback.breaker_machines'
+    MetricsCollector.increment("breaker_machines.storage.fallback.#{payload[:backend]}")
+    MetricsCollector.increment("breaker_machines.storage.error.#{payload[:error_class]}")
+
+  when 'storage_backend_health.breaker_machines'
+    MetricsCollector.gauge("breaker_machines.backend.health.#{payload[:backend]}",
+                          payload[:new_state] == :healthy ? 1 : 0)
+
+  when 'storage_chain_operation.breaker_machines'
+    MetricsCollector.timing("breaker_machines.chain.total_duration", payload[:duration_ms])
+    MetricsCollector.histogram("breaker_machines.chain.fallback_count", payload[:fallback_count])
   end
 end
 ```
