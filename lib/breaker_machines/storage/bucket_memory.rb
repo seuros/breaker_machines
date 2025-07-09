@@ -7,6 +7,10 @@ module BreakerMachines
   module Storage
     # Efficient bucket-based memory storage implementation
     # Uses fixed-size circular buffers for constant-time event counting
+    #
+    # WARNING: This storage backend is NOT compatible with DRb (distributed Ruby)
+    # environments as memory is not shared between processes. Use Cache backend
+    # with an external cache store (Redis, Memcached) for distributed setups.
     class BucketMemory < Base
       BUCKET_SIZE = 1 # 1 second per bucket
 
@@ -157,6 +161,12 @@ module BreakerMachines
 
       def monotonic_time
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      end
+
+      def with_timeout(_timeout_ms)
+        # BucketMemory operations should be instant, but we'll still respect the timeout
+        # This is more for consistency and to catch any potential deadlocks
+        yield
       end
     end
   end

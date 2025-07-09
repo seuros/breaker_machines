@@ -28,6 +28,16 @@ module BreakerMachines
   class ConfigurationError < Error; end
   class StorageError < Error; end
 
+  # Raised when storage backend operation times out
+  class StorageTimeoutError < StorageError
+    attr_reader :timeout_ms
+
+    def initialize(message, timeout_ms = nil)
+      @timeout_ms = timeout_ms
+      super(message)
+    end
+  end
+
   # Raised when circuit rejects call due to bulkhead limit
   class CircuitBulkheadError < Error
     attr_reader :circuit_name, :max_concurrent

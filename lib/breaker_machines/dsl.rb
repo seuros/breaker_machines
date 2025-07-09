@@ -328,18 +328,21 @@ module BreakerMachines
         @config[:half_open_calls] = count
       end
 
-      def storage(backend, **)
+      def storage(backend, **options)
         @config[:storage] = case backend
                             when :memory
-                              Storage::Memory.new(**)
+                              Storage::Memory.new(**options)
                             when :bucket_memory
-                              Storage::BucketMemory.new(**)
+                              Storage::BucketMemory.new(**options)
                             when :cache
-                              Storage::Cache.new(**)
-                            when :redis
-                              Storage::Redis.new(**)
+                              Storage::Cache.new(**options)
+                            when :null
+                              Storage::Null.new(**options)
+                            when :fallback_chain
+                              config = options.is_a?(Proc) ? options.call(timeout: 5) : options
+                              Storage::FallbackChain.new(config)
                             when Class
-                              backend.new(**)
+                              backend.new(**options)
                             else
                               backend
                             end

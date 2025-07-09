@@ -22,7 +22,7 @@ class ActiveSupport::TestCase
       config.default_storage = :memory
     end
   end
-  
+
   teardown do
     # Reset all circuits after each test
     BreakerMachines.registry.clear
@@ -38,7 +38,7 @@ module CircuitBreakerTestHelper
   def force_circuit_open(circuit_name, service = nil)
     circuit = service ? service.circuit(circuit_name) : BreakerMachines.registry.get(circuit_name)
     threshold = circuit.config[:failure_threshold]
-    
+
     threshold.times do
       begin
         circuit.wrap { raise StandardError, "Forced failure" }
@@ -47,32 +47,32 @@ module CircuitBreakerTestHelper
       end
     end
   end
-  
+
   def force_circuit_closed(circuit_name, service = nil)
     circuit = service ? service.circuit(circuit_name) : BreakerMachines.registry.get(circuit_name)
     circuit.instance_variable_get(:@state_machine).close!
   end
-  
+
   def force_circuit_half_open(circuit_name, service = nil)
     circuit = service ? service.circuit(circuit_name) : BreakerMachines.registry.get(circuit_name)
     circuit.instance_variable_get(:@state_machine).half_open!
   end
-  
+
   def assert_circuit_open(circuit_name, service = nil)
     circuit = service ? service.circuit(circuit_name) : BreakerMachines.registry.get(circuit_name)
     assert_equal :open, circuit.state, "Expected circuit #{circuit_name} to be open"
   end
-  
+
   def assert_circuit_closed(circuit_name, service = nil)
     circuit = service ? service.circuit(circuit_name) : BreakerMachines.registry.get(circuit_name)
     assert_equal :closed, circuit.state, "Expected circuit #{circuit_name} to be closed"
   end
-  
+
   def assert_circuit_half_open(circuit_name, service = nil)
     circuit = service ? service.circuit(circuit_name) : BreakerMachines.registry.get(circuit_name)
     assert_equal :half_open, circuit.state, "Expected circuit #{circuit_name} to be half-open"
   end
-  
+
   def circuit_failure_count(circuit_name, service = nil)
     circuit = service ? service.circuit(circuit_name) : BreakerMachines.registry.get(circuit_name)
     circuit.failure_count
@@ -106,23 +106,23 @@ class PaymentServiceTest < ActiveSupport::TestCase
 
   test "returns fallback when circuit is open" do
     force_circuit_open(:stripe, @service)
-    
+
     result = @service.charge(100)
     assert_equal({ error: "Payment queued for later" }, result)
   end
 
   test "circuit recovers after reset timeout" do
     force_circuit_open(:stripe, @service)
-    
+
     travel_to 35.seconds.from_now do
       assert_circuit_half_open(:stripe, @service)
-      
+
       # Mock successful call
       Stripe::Charge.stub :create, { success: true } do
         result = @service.charge(100)
         assert result[:success]
       end
-      
+
       assert_circuit_closed(:stripe, @service)
     end
   end
@@ -136,23 +136,23 @@ class FallbackBehaviorTest < ActiveSupport::TestCase
   setup do
     @service_class = Class.new do
       include BreakerMachines::DSL
-      
+
       circuit :api do
         threshold failures: 2, within: 60
         fallback { |error| "Fallback: #{error.class.name}" }
       end
-      
+
       def call_api
         circuit(:api).wrap { yield }
       end
     end
-    
+
     @service = @service_class.new
   end
 
   test "uses fallback when circuit is open" do
     force_circuit_open(:api, @service)
-    
+
     result = @service.call_api { "should not execute" }
     assert_equal "Fallback: BreakerMachines::CircuitOpenError", result
   end
@@ -162,7 +162,7 @@ class FallbackBehaviorTest < ActiveSupport::TestCase
     assert_raises RuntimeError do
       @service.call_api { raise RuntimeError, "API Down" }
     end
-    
+
     # Second failure opens circuit and uses fallback
     result = @service.call_api { raise RuntimeError, "API Down" }
     assert_equal "Fallback: RuntimeError", result
@@ -177,24 +177,24 @@ class BulkheadProtectionTest < ActiveSupport::TestCase
   setup do
     @service_class = Class.new do
       include BreakerMachines::DSL
-      
+
       circuit :limited do
         max_concurrent 2
         threshold failures: 3, within: 60
       end
-      
+
       def process(&block)
         circuit(:limited).wrap(&block)
       end
     end
-    
+
     @service = @service_class.new
   end
 
   test "limits concurrent requests" do
     active_threads = []
     results = Concurrent::Array.new
-    
+
     # Fill bulkhead
     2.times do |i|
       active_threads << Thread.new do
@@ -204,31 +204,31 @@ class BulkheadProtectionTest < ActiveSupport::TestCase
         end
       end
     end
-    
+
     # Wait for threads to start
     sleep 0.01
-    
+
     # This should be rejected
     assert_raises BreakerMachines::CircuitBulkheadError do
       @service.process { "rejected" }
     end
-    
+
     active_threads.each(&:join)
     assert_equal 2, results.size
   end
 
   test "bulkhead rejections don't count as circuit failures" do
     threads = []
-    
+
     # Create 3 threads (one will be rejected)
     3.times do
       threads << Thread.new do
         @service.process { sleep 0.1 } rescue nil
       end
     end
-    
+
     threads.each(&:join)
-    
+
     # Circuit should still be closed
     assert_circuit_closed(:limited, @service)
     assert_equal 0, circuit_failure_count(:limited, @service)
@@ -243,30 +243,30 @@ class HedgedRequestsTest < ActiveSupport::TestCase
   setup do
     @service_class = Class.new do
       include BreakerMachines::DSL
-      
+
       circuit :fast_api do
         hedged do
           delay 50
           max_requests 3
         end
       end
-      
+
       def fetch_data
         circuit(:fast_api).wrap { make_request }
       end
-      
+
       def make_request
         # Stubbed in tests
       end
     end
-    
+
     @service = @service_class.new
     @call_count = 0
   end
 
   test "returns first successful response" do
     response_times = [0.1, 0.02, 0.15]  # Second call is fastest
-    
+
     @service.stub :make_request, -> {
       delay = response_times[@call_count]
       result = "response-#{@call_count}"
@@ -275,7 +275,7 @@ class HedgedRequestsTest < ActiveSupport::TestCase
       result
     } do
       result = @service.fetch_data
-      
+
       # Should get a response
       assert_match(/response-\d/, result)
       # Multiple requests should have been made
@@ -297,12 +297,12 @@ class TimeBasedCircuitTest < ActiveSupport::TestCase
     # Force circuit open
     force_circuit_open(:timed, @service)
     assert_circuit_open(:timed, @service)
-    
+
     # Still open after 29 seconds
     travel_to 29.seconds.from_now do
       assert_circuit_open(:timed, @service)
     end
-    
+
     # Half-open after 30 seconds
     travel_to 31.seconds.from_now do
       assert_circuit_half_open(:timed, @service)
@@ -314,7 +314,7 @@ class TimeBasedCircuitTest < ActiveSupport::TestCase
     2.times do
       @service.circuit(:windowed).wrap { raise "Error" } rescue nil
     end
-    
+
     # Travel past the window
     travel_to 2.minutes.from_now do
       # One more failure shouldn't open circuit
@@ -333,21 +333,21 @@ For a deeper understanding of storage options and their implications, refer to t
 class StorageBackendTest < ActiveSupport::TestCase
   test "shares state with Redis storage" do
     redis = MockRedis.new
-    
+
     with_storage(:cache, cache_store: redis) do
       service1 = MyService.new
       service2 = MyService.new
-      
+
       # Open circuit in first instance
       force_circuit_open(:shared, service1)
-      
+
       # Second instance should see open state
       assert_circuit_open(:shared, service2)
     end
   end
-  
+
   private
-  
+
   def with_storage(type, options = {})
     original = BreakerMachines.config.default_storage
     BreakerMachines.config.default_storage = [type, options]
@@ -364,20 +364,20 @@ end
 class CircuitCallbacksTest < ActiveSupport::TestCase
   setup do
     @events = []
-    
+
     @service_class = Class.new do
       include BreakerMachines::DSL
-      
+
       circuit :monitored do
         threshold failures: 2, within: 60
-        
+
         on_open { @events << :opened }
         on_close { @events << :closed }
         on_half_open { @events << :half_opened }
         on_reject { @events << :rejected }
       end
     end
-    
+
     @service = @service_class.new
     @service.instance_variable_set(:@events, @events)
   end
@@ -387,16 +387,16 @@ class CircuitCallbacksTest < ActiveSupport::TestCase
     2.times do
       @service.circuit(:monitored).wrap { raise "Error" } rescue nil
     end
-    
+
     assert_includes @events, :opened
-    
+
     # Trigger reject
     @service.circuit(:monitored).wrap { "rejected" } rescue nil
     assert_includes @events, :rejected
-    
+
     # Reset for half-open test
     @events.clear
-    
+
     # Trigger half-open and close
     travel_to 61.seconds.from_now do
       @service.circuit(:monitored).wrap { "success" }
@@ -414,25 +414,25 @@ module CircuitAssertions
   def assert_uses_fallback(expected_fallback, circuit_name, service)
     force_circuit_open(circuit_name, service)
     result = service.circuit(circuit_name).wrap { "should not run" }
-    assert_equal expected_fallback, result, 
+    assert_equal expected_fallback, result,
       "Expected fallback #{expected_fallback.inspect}, got #{result.inspect}"
   end
-  
+
   def assert_circuit_trips_after(failure_count, circuit_name, service)
     (failure_count - 1).times do
       service.circuit(circuit_name).wrap { raise "Error" } rescue nil
     end
     assert_circuit_closed(circuit_name, service)
-    
+
     # One more failure should trip it
     service.circuit(circuit_name).wrap { raise "Error" } rescue nil
     assert_circuit_open(circuit_name, service)
   end
-  
+
   def assert_concurrent_limit(limit, circuit_name, service)
     threads = []
     counter = Concurrent::AtomicFixnum.new(0)
-    
+
     (limit + 1).times do
       threads << Thread.new do
         service.circuit(circuit_name).wrap do
@@ -441,7 +441,7 @@ module CircuitAssertions
         end rescue nil
       end
     end
-    
+
     threads.each(&:join)
     assert_equal limit, counter.value,
       "Expected #{limit} concurrent executions, got #{counter.value}"
@@ -465,13 +465,13 @@ class CircuitPerformanceTest < ActiveSupport::TestCase
 
   test "handles high throughput" do
     iterations = 10_000
-    
+
     elapsed = Benchmark.realtime do
       iterations.times do
         @service.circuit(:performance).wrap { "success" }
       end
     end
-    
+
     ops_per_second = iterations / elapsed
     assert_operator ops_per_second, :>, 50_000,
       "Expected > 50k ops/sec, got #{ops_per_second}"
@@ -481,13 +481,13 @@ class CircuitPerformanceTest < ActiveSupport::TestCase
     baseline = Benchmark.realtime do
       10_000.times { "direct call" }
     end
-    
+
     circuit_time = Benchmark.realtime do
       10_000.times do
         @service.circuit(:performance).wrap { "wrapped call" }
       end
     end
-    
+
     overhead_percent = ((circuit_time - baseline) / baseline) * 100
     assert_operator overhead_percent, :<, 10,
       "Circuit overhead was #{overhead_percent}%, expected < 10%"
@@ -506,18 +506,18 @@ class FullIntegrationTest < ActionDispatch::IntegrationTest
       .times(3)
       .then
       .to_return(body: '{"data": "recovered"}')
-    
+
     # First requests fail and open circuit
     3.times do
       get "/api/data"
       assert_response :service_unavailable
     end
-    
+
     # Circuit open, should get fallback
     get "/api/data"
     assert_response :success
     assert_equal "cached_data", JSON.parse(response.body)["data"]
-    
+
     # After reset timeout, circuit recovers
     travel_to 1.minute.from_now do
       get "/api/data"
@@ -538,7 +538,7 @@ class ActionDispatch::IntegrationTest
     assert [:open, :half_open].include?(circuit.state),
       "Expected circuit to be degraded (open/half-open), but was #{circuit.state}"
   end
-  
+
   def wait_for_circuit_recovery(circuit_name)
     circuit = BreakerMachines.registry.get(circuit_name)
     reset_time = circuit.config[:reset_timeout]

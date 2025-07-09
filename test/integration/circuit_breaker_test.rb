@@ -6,7 +6,7 @@ class CircuitBreakerTest < ActionDispatch::IntegrationTest
   def setup
     # Clear all global circuits to prevent test pollution
     BreakerMachines.registry.clear
-    
+
     # Reset all circuits before each test
     post '/test/reset'
   end

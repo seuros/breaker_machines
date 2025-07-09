@@ -6,8 +6,9 @@ require 'rails/test_help'
 
 module ActiveSupport
   class TestCase
-    # Run tests in parallel with specified workers
-    parallelize(workers: :number_of_processors)
+    # Disable parallel tests globally to prevent DRb connection pool corruption
+    # with FallbackChain and other storage timeout behaviors
+    parallelize(workers: 1)
 
     # Setup all fixtures in test/fixtures/*.yml for all tests in alphabetical order.
     # fixtures :all

@@ -29,9 +29,9 @@ class AsyncRedisStorage < BreakerMachines::Storage::Base
     Async do
       last_failure = @client.hget("circuit:#{circuit_name}", 'last_failure')
       return 0 unless last_failure
-      
+
       return 0 if Time.at(last_failure.to_i) < window.ago
-      
+
       @client.hget("circuit:#{circuit_name}", 'failures').to_i
     end.wait
   end

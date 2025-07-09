@@ -96,7 +96,7 @@ curl http://localhost:3000/health
 # Process payment through circuit breaker
 curl http://localhost:3000/test/payment?amount=50.00
 
-# Send notification through circuit breaker  
+# Send notification through circuit breaker
 curl http://localhost:3000/test/notification
 
 # Get all circuit statuses

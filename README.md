@@ -1,5 +1,7 @@
 # BreakerMachines
 
+> The circuit breaker that went where no Ruby has gone before! ⭐
+
 A battle-tested Ruby implementation of the Circuit Breaker pattern, built on `state_machines` for reliable distributed systems protection.
 
 ## Quick Start
@@ -105,69 +107,16 @@ See the [Circuit Breaker State Machine diagram](docs/DIAGRAMS.md#the-circuit-bre
 
 See [The Retry Death Spiral diagram](docs/DIAGRAMS.md#the-retry-death-spiral) to understand how your well-intentioned retries become a self-inflicted distributed denial of service attack.
 
-## Production-Ready Features
+## Advanced Features
 
-### Hedged Requests
-Reduce latency by sending duplicate requests and using the first successful response:
+- **Hedged Requests** - Reduce latency with duplicate requests
+- **Multiple Backends** - Automatic failover across endpoints
+- **Percentage-Based Thresholds** - Open on error rates, not just counts
+- **Dynamic Circuit Breakers** - Runtime creation with templates
+- **Apocalypse-Resistant Storage** - Cascading fallbacks when Redis dies
+- **Custom Storage Backends** - SysV semaphores, distributed locks, etc.
 
-```ruby
-circuit :api do
-  hedged do
-    delay 100           # Start second request after 100ms
-    max_requests 3      # Maximum parallel requests
-  end
-end
-```
-
-### Multiple Backends
-Configure automatic failover across multiple service endpoints:
-
-```ruby
-circuit :multi_region do
-  backends [
-    -> { fetch_from_primary },
-    -> { fetch_from_secondary },
-    -> { fetch_from_tertiary }
-  ]
-end
-```
-
-### Percentage-Based Thresholds
-Open circuits based on error rates instead of absolute counts:
-
-```ruby
-circuit :high_traffic do
-  threshold failure_rate: 0.5, minimum_calls: 10, within: 60
-end
-```
-
-### Dynamic Circuit Breakers
-Create circuit breakers at runtime for webhook delivery, API proxies, or per-tenant isolation:
-
-```ruby
-class WebhookService
-  include BreakerMachines::DSL
-
-  circuit_template :webhook_default do
-    threshold failures: 3, within: 1.minute
-    fallback { |error| { delivered: false, error: error.message } }
-  end
-
-  def deliver_webhook(url, payload)
-    domain = URI.parse(url).host
-    circuit_name = "webhook_#{domain}".to_sym
-
-    dynamic_circuit(circuit_name, template: :webhook_default) do
-      # Custom per-domain configuration
-      if domain.include?('reliable-service.com')
-        threshold failures: 5, within: 2.minutes
-      end
-    end.wrap do
-      send_webhook(url, payload)
-    end
-  end
-end
-```
+See [Advanced Patterns](docs/ADVANCED_PATTERNS.md) for detailed examples and implementation guides.
 
 ## A Word from the RMNS Atlas Monkey
 
@@ -210,4 +159,4 @@ MIT License. See [LICENSE](LICENSE) file for details.
 
 Built with ❤️ and ☕ by the Resistance against cascading failures.
 
-**Remember: In space, no one can hear you retry.**
+**Remember: In space, nobody can hear your Redis timeout. But they can feel your circuit breaker failing over to localhost.**

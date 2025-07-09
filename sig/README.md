@@ -24,7 +24,7 @@ To use these type signatures in your project:
    target :app do
      signature "sig"
      check "lib"
-     
+
      library "breaker_machines"
    end
    ```
@@ -38,7 +38,7 @@ To use these type signatures in your project:
 
 ### Basic Circuit Usage
 ```ruby
-circuit = BreakerMachines::Circuit.new("api", 
+circuit = BreakerMachines::Circuit.new("api",
   failure_threshold: 5,
   reset_timeout: 30
 )
@@ -50,7 +50,7 @@ result = circuit.call { api.fetch_data }
 ```ruby
 class MyService
   include BreakerMachines::DSL
-  
+
   circuit :database do
     threshold failures: 10, within: 60
     reset_after 120
