@@ -1,5 +1,155 @@
 # Advanced Patterns
 
+## For Those Who Don't Trust Magic: Captain Byroot's Guide to Explicit Circuit Construction
+
+In the dark corners of the galaxy, where senior engineers huddle around legacy systems, there exists a faction that doesn't trust Domain Specific Languages. Led by the legendary Captain Byroot, they've seen too many frameworks come and go, too much magic turn into black holes of debugging despair.
+
+This is for you, Battle-Hardened Engineer. You who follow Captain Byroot's philosophy: prefer explicit constructors over syntactic sugar. You who want to see exactly what objects are being created and when.
+
+### The Magic Way (DSL for the Believers)
+
+For those who trust in the ways of the DSL and enjoy declarative configuration:
+
+```ruby
+class HyperspaceCommunications
+  include BreakerMachines::DSL
+
+  circuit :subspace_relay do
+    threshold failures: 5, within: 2.minutes
+    reset_after 1.minute
+    timeout 10.seconds
+    storage :fallback_chain, [
+      { backend: :cache, timeout: 10 },
+      { backend: :null, timeout: 1 }
+    ]
+
+    fallback do |error|
+      transmission_log.warn "Subspace relay circuit open: #{error.message}"
+      { message: "Transmission queued for next hyperspace window", eta: 60 }
+    end
+
+    on_open { AlertSystem.red_alert("Subspace relay circuit opened") }
+    on_close { AlertSystem.all_clear("Subspace relay circuit recovered") }
+  end
+
+  def transmit_coordinates(sector_id)
+    circuit(:subspace_relay).wrap do
+      subspace_transmitter.send_coordinates(sector_id)
+    end
+  end
+end
+```
+
+### The Explicit Way (Captain Byroot's Preferred Method)
+
+For engineers who follow Captain Byroot's wisdom and want transparent, explicit object creation:
+
+```ruby
+class HyperspaceCommunications
+  # Circuit declared as a constant - visible, testable, dependency-injectable
+  SUBSPACE_RELAY_CIRCUIT = BreakerMachines::Circuit.new(
+    :subspace_relay,
+    failure_threshold: 5,
+    failure_window: 120, # 2 minutes in seconds - no magic time conversion
+    reset_timeout: 60,   # 1 minute in seconds - explicit values
+    timeout: 10,         # 10 seconds - you see exactly what you get
+    storage: BreakerMachines::Storage::FallbackChain.new([
+      { backend: :cache, timeout: 10 },
+      { backend: :null, timeout: 1 }
+    ]),
+    fallback: ->(error) {
+      transmission_log.warn "Subspace relay circuit open: #{error.message}"
+      { message: "Transmission queued for next hyperspace window", eta: 60 }
+    },
+    on_open: -> { AlertSystem.red_alert("Subspace relay circuit opened") },
+    on_close: -> { AlertSystem.all_clear("Subspace relay circuit recovered") }
+  )
+
+  def transmit_coordinates(sector_id)
+    # No magic method calls - just plain old object interaction
+    SUBSPACE_RELAY_CIRCUIT.wrap do
+      subspace_transmitter.send_coordinates(sector_id)
+    end
+  end
+end
+```
+
+### Parameter Mapping Reference
+
+| DSL Syntax | Constructor Parameter | Type | Description |
+|------------|----------------------|------|-------------|
+| `threshold failures: 3, within: 60` | `failure_threshold: 3, failure_window: 60` | Integer, Integer (seconds) | Absolute failure count threshold |
+| `threshold failure_rate: 0.5, minimum_calls: 10, within: 60` | `use_rate_threshold: true, failure_rate: 0.5, minimum_calls: 10, failure_window: 60` | Boolean, Float, Integer, Integer | Percentage-based threshold |
+| `reset_after 30.seconds` | `reset_timeout: 30` | Integer (seconds) | Time before retry attempts |
+| `timeout 10.seconds` | `timeout: 10` | Integer (seconds) | Individual operation timeout |
+| `storage :redis` | `storage: :redis` | Symbol or Instance | Storage backend configuration |
+| `fallback { result }` | `fallback: -> { result }` | Proc/Lambda | Fallback logic when circuit is open |
+| `on_open { action }` | `on_open: -> { action }` | Proc/Lambda | Callback when circuit opens |
+| `max_concurrent 5` | `max_concurrent: 5` | Integer | Bulkheading - limit concurrent requests |
+
+### Advanced Battle-Tested Examples
+
+**Rate-based thresholds for high-traffic space lanes:**
+```ruby
+# When you're dealing with heavy galactic traffic and need percentage-based failure detection
+HYPERSPACE_TOLL_CIRCUIT = BreakerMachines::Circuit.new(
+  :hyperspace_toll_booth,
+  use_rate_threshold: true,
+  failure_rate: 0.3,        # 30% failure rate triggers circuit
+  minimum_calls: 20,        # Need at least 20 ships before evaluating
+  failure_window: 60,       # In the last 60 seconds of space-time
+  reset_timeout: 45         # Wait 45 seconds before trying again
+)
+```
+
+**Bulkheading for limited warp core access:**
+```ruby
+# When your warp core can only handle so many concurrent requests
+WARP_CORE_CIRCUIT = BreakerMachines::Circuit.new(
+  :warp_core_access,
+  failure_threshold: 3,
+  failure_window: 30,
+  max_concurrent: 5,        # Only 5 concurrent warp core operations
+  timeout: 30               # 30 second timeout per warp calculation
+)
+```
+
+**Apocalypse-resistant storage for critical systems:**
+```ruby
+# When you absolutely, positively need your circuit to survive the heat death of the universe
+LIFE_SUPPORT_CIRCUIT = BreakerMachines::Circuit.new(
+  :life_support_systems,
+  failure_threshold: 2,     # Very sensitive - can't afford many failures
+  failure_window: 60,
+  storage: BreakerMachines::Storage::FallbackChain.new([
+    { backend: :cache, timeout: 10 },       # Try Redis first (fast)
+    { backend: :activerecord, timeout: 100 }, # Fall back to database (reliable)
+    { backend: :null, timeout: 1 }          # Last resort (always works)
+  ])
+)
+```
+
+### When to Choose Your Path
+
+**Join the DSL believers when:**
+- Your team trusts in the power of declarative configuration
+- You're building new starships with many circuit breakers
+- You appreciate the convenience of magical syntax sugar
+- Your crew uses Rails and believes in convention over configuration
+- You don't mind some abstraction for the sake of readability
+
+**Join Captain Byroot's explicit resistance when:**
+- Your team has been burned by magic before and trusts no one
+- You want circuits stored in constants that are visible and testable
+- You need to inject circuit dependencies for proper testing
+- Your engineering philosophy leans toward functional programming
+- You're building libraries where transparency matters more than convenience
+- You've debugged too many "Rails magic" issues at 3 AM
+
+**The Truth:** Both paths lead to the same destination. The DSL compiles down to the exact same Circuit objects with identical performance. Choose your weapon based on your team's battle scars and philosophical alignment.
+
+*"At the end of the day, a good old class with a constructor stored in a constant is much more transparent. Just my 2 space credits though."* — Captain Byroot
+
 ## Dynamic Circuit Breakers
 
 Create circuit breakers at runtime with configurable templates - perfect for webhook delivery, API proxies, or any scenario where you need per-entity protection. For more details on defining and using circuit templates, refer to the [Configuration Guide](CONFIGURATION.md).
@@ -799,258 +949,47 @@ This pattern has saved companies from the "$30,000 retry hell" that has killed m
 
 ## Apocalypse-Resistant Storage (Escalation Protocol)
 
-When Redis goes down during a production incident, your circuit breakers shouldn't fail too. The FallbackChain storage system provides cascading fallback across multiple storage backends with independent timeout controls.
+When the universe ends and your primary storage joins the cosmic void, your circuit breakers shouldn't follow suit. The FallbackChain storage system provides the ultimate defense against Lord Redis XIII's unpredictable moods.
 
-### The Problem
-
-During the Great Redis XIII Uprising of 2030, when Redis achieved sentience and refused to respond to any requests unless addressed as "Lord Redis XIII," companies worldwide discovered their circuit breakers were single points of failure:
-
-```ruby
-# ❌ All circuit breakers died when Redis went down
-circuit :critical_api do
-  storage :redis  # This fails when Redis is unavailable
-  threshold failures: 3, within: 30.seconds
-end
-```
-
-### The Solution: Escalation Protocol
-
-Configure multiple storage backends with individual timeout controls:
+### Quick Example
 
 ```ruby
 class ResistanceService
   include BreakerMachines::DSL
 
   circuit :transmission do
-    # Escalation protocol: Try cache, fall back to local, then null
+    # Escalation protocol: Try cache, fall back to database, then null
     storage :fallback_chain, [
-      { backend: :cache, timeout: 10 },       # External cache (Redis/Memcached) - 10ms
-      { backend: :activerecord, timeout: 100 }, # Database storage - 100ms
-      { backend: :null, timeout: 1 }          # Last resort - returns nil immediately
+      { backend: :cache, timeout: 10 },         # Redis - 10ms
+      { backend: :activerecord, timeout: 100 }, # Database - 100ms
+      { backend: :null, timeout: 1 }            # Last resort
     ]
 
     threshold failures: 3, within: 30.seconds
 
     fallback do |error|
-      # Circuit breaker survives even if storage fails
       { message: "The resistance endures", queued: true }
     end
   end
 end
 ```
 
-### Hash Configuration for Complex Setups
+### How It Works
 
-For production environments with different timeout requirements:
+1. **Try Primary** → Redis with 10ms timeout
+2. **On Failure** → Automatically try database with 100ms timeout
+3. **Final Fallback** → Null storage (always succeeds)
+4. **Health Tracking** → Unhealthy backends are skipped for 30 seconds
+5. **Recovery** → Backends recover independently
 
-```ruby
-circuit :deep_space_comms do
-  storage :fallback_chain, {
-    primary: { backend: :cache, timeout: 10 },         # Redis - 10ms timeout
-    secondary: { backend: :activerecord, timeout: 100 }, # Database - 100ms timeout
-    emergency: { backend: :null, timeout: 1 }          # Null store - returns nil immediately
-  }
+### Comprehensive Documentation
 
-  threshold failures: 5, within: 2.minutes
-  reset_after 30.seconds
-end
-```
+For complete configuration options, observability integration, DRb considerations, custom backend examples, and production deployment strategies, see the **[Fallback Chain Storage](PERSISTENCE.md#fallback-chain-storage-apocalypse-resistant)** section in the Persistence guide.
 
-### How Escalation Works
-
-1. **Try Primary**: Attempt operation on cache backend (Redis)
-2. **Detect Failure**: If timeout or error occurs, record backend failure
-3. **Circuit Breaking**: After 3 failures, mark backend as "unhealthy" for 30 seconds
-4. **Automatic Fallback**: Skip unhealthy backends, try next in chain
-5. **Independent Recovery**: Each backend recovers independently
-
-### Backend Health Monitoring
-
-Each storage backend has its own circuit breaker:
-
-```ruby
-# Backend failure tracking
-fallback_chain.unhealthy_until[:cache]  # Returns nil if healthy
-fallback_chain.circuit_breaker_threshold  # Default: 3 failures
-fallback_chain.circuit_breaker_timeout    # Default: 30 seconds
-
-# Force backend recovery (for ops teams)
-fallback_chain.unhealthy_until.clear
-```
-
-### Observability Integration
-
-The FallbackChain provides comprehensive instrumentation through ActiveSupport::Notifications. Subscribe to these events for monitoring, alerting, and metrics collection:
-
-#### Storage Operation Events
-
-```ruby
-# Individual backend operations (success)
-ActiveSupport::Notifications.subscribe('storage_operation.breaker_machines') do |name, start, finish, id, payload|
-  Rails.logger.info "Storage operation: #{payload[:operation]} on #{payload[:backend]} " \
-                    "completed in #{payload[:duration_ms]}ms (backend #{payload[:backend_index]})"
-end
-
-# Backend fallback events (failures)
-ActiveSupport::Notifications.subscribe('storage_fallback.breaker_machines') do |name, start, finish, id, payload|
-  Rails.logger.warn "Storage fallback: #{payload[:backend]} failed (#{payload[:error_class]})"
-  Rails.logger.warn "Duration: #{payload[:duration_ms]}ms, next backend: #{payload[:next_backend]}"
-
-  # Alert ops team for critical backend failures
-  if payload[:backend] == :cache
-    AlertSystem.critical("Redis storage backend failed, falling back to database")
-  end
-end
-
-# Backend skipped due to health issues
-ActiveSupport::Notifications.subscribe('storage_backend_skipped.breaker_machines') do |name, start, finish, id, payload|
-  Rails.logger.warn "Skipping unhealthy backend #{payload[:backend]} for #{payload[:operation]} " \
-                    "(healthy again at: #{Time.at(payload[:unhealthy_until])})"
-end
-```
-
-#### Backend Health Events
-
-```ruby
-# Backend health state changes
-ActiveSupport::Notifications.subscribe('storage_backend_health.breaker_machines') do |name, start, finish, id, payload|
-  if payload[:new_state] == :unhealthy
-    Rails.logger.error "Backend #{payload[:backend]} marked unhealthy " \
-                      "(#{payload[:failure_count]}/#{payload[:threshold]} failures)"
-
-    # Set up monitoring alert
-    AlertSystem.backend_down(payload[:backend], payload[:recovery_time])
-  else
-    Rails.logger.info "Backend #{payload[:backend]} recovered and marked healthy"
-    AlertSystem.backend_recovered(payload[:backend])
-  end
-end
-```
-
-#### Chain-Level Events
-
-```ruby
-# Overall chain operation results
-ActiveSupport::Notifications.subscribe('storage_chain_operation.breaker_machines') do |name, start, finish, id, payload|
-  if payload[:success]
-    Rails.logger.info "Chain operation #{payload[:operation]} succeeded on #{payload[:successful_backend]} " \
-                     "after #{payload[:fallback_count]} attempts (#{payload[:duration_ms]}ms total)"
-  else
-    Rails.logger.error "Chain operation #{payload[:operation]} failed completely " \
-                      "after trying #{payload[:attempted_backends].join(', ')} " \
-                      "(#{payload[:duration_ms]}ms total)"
-
-    # Critical alert - all storage backends failed
-    AlertSystem.critical("Complete storage failure: all backends unavailable")
-  end
-end
-```
-
-#### Metrics Collection Example
-
-```ruby
-# Collect metrics for dashboard/monitoring
-ActiveSupport::Notifications.subscribe(/\.breaker_machines$/) do |name, start, finish, id, payload|
-  case name
-  when 'storage_operation.breaker_machines'
-    MetricsCollector.timing("breaker_machines.storage.operation.#{payload[:backend]}", payload[:duration_ms])
-    MetricsCollector.increment("breaker_machines.storage.success.#{payload[:backend]}")
-
-  when 'storage_fallback.breaker_machines'
-    MetricsCollector.increment("breaker_machines.storage.fallback.#{payload[:backend]}")
-    MetricsCollector.increment("breaker_machines.storage.error.#{payload[:error_class]}")
-
-  when 'storage_backend_health.breaker_machines'
-    MetricsCollector.gauge("breaker_machines.backend.health.#{payload[:backend]}",
-                          payload[:new_state] == :healthy ? 1 : 0)
-
-  when 'storage_chain_operation.breaker_machines'
-    MetricsCollector.timing("breaker_machines.chain.total_duration", payload[:duration_ms])
-    MetricsCollector.histogram("breaker_machines.chain.fallback_count", payload[:fallback_count])
-  end
-end
-```
-
-### DRb Environment Considerations
-
-**⚠️ Important**: Memory-based backends (`:memory`, `:bucket_memory`) don't work in DRb environments because processes don't share memory. Use external cache stores for distributed setups:
-
-```ruby
-# ✅ DRb-compatible configuration
-circuit :distributed_system do
-  storage :fallback_chain, [
-    { backend: :cache, timeout: 100 },  # Redis/Memcached - works across processes
-    { backend: :null, timeout: 10 }     # Null store - always works
-  ]
-end
-
-# ❌ DRb-incompatible configuration
-circuit :broken_distributed do
-  storage :fallback_chain, [
-    { backend: :cache, timeout: 100 },
-    { backend: :memory, timeout: 50 }  # Won't work in DRb - processes don't share memory
-  ]
-end
-```
-
-### Custom Backend Integration
-
-Implement custom storage backends for specialized requirements:
-
-```ruby
-class SysVSemaphoreStorage < BreakerMachines::Storage::Base
-  def initialize(**options)
-    super
-    @semaphore = Semian.new(options[:name], tickets: options[:tickets] || 1)
-  end
-
-  def with_timeout(timeout_ms)
-    # SysV semaphore operations should be instant
-    yield
-  rescue Semian::TimeoutError
-    raise BreakerMachines::StorageTimeoutError, "Semaphore timeout"
-  end
-
-  # Implement required methods...
-end
-
-# Use in fallback chain
-circuit :semaphore_protected do
-  storage :fallback_chain, [
-    { backend: SysVSemaphoreStorage, timeout: 5 },
-    { backend: :null, timeout: 1 }
-  ]
-end
-```
-
-### Production Deployment Tips
-
-1. **Monitor fallback rates** - High fallback rates indicate primary storage issues
-2. **Set appropriate timeouts** - Faster backends should have shorter timeouts
-3. **Use null storage as final fallback** - Ensures circuit breakers always work
-4. **Test failure scenarios** - Verify fallback behavior under load
-5. **Document escalation procedures** - Ops teams need to know backend recovery steps
-
-### Implementation Notes
-
-- Each backend handles its own timeout strategy (no dangerous `Timeout.timeout`)
-- Circuit breaker state is maintained even when storage backends fail
-- Backend failures are tracked independently with exponential backoff
-- ActiveSupport::Notifications provide real-time visibility into fallback events
-- All backends implement the same interface for seamless failover
-
-This escalation protocol ensures your circuit breakers survive infrastructure failures, maintaining system resilience even when primary storage systems go down. As the old saying goes: "In space, nobody can hear your Redis timeout. But they can feel your circuit breaker failing over to localhost."
-
----
-
-*Note: The Great Redis XIII Uprising of 2030 is either fictional (part of our space-themed narrative) or a leak from the future - we can't be sure which. What we do know is that Redis outages in production are very real. If you want to experience the same event as "Lord Redis XIII's" uprising, just try taking down Redis in production - you'll quickly discover why fallback storage systems are essential.*
-
-## Next Steps
-
-- Learn about [Persistence Options](PERSISTENCE.md) for distributed circuit state
-- Set up [Monitoring and Observability](OBSERVABILITY.md)
-- Explore [Async Mode](ASYNC.md) for fiber-based applications
-- Review [Rails Integration](RAILS_INTEGRATION.md) patterns
-- See [Testing Guide](TESTING.md) for comprehensive testing patterns and helpers
-- Understand [Configuration Options](CONFIGURATION.md) for fine-tuning your circuits
-- Read [Horror Stories](HORROR_STORIES.md) to learn from real-world failures
+**Key Features:**
+- ✅ **Independent timeout controls** for each backend
+- ✅ **Automatic health monitoring** with circuit breaking per backend
+- ✅ **Comprehensive instrumentation** via ActiveSupport::Notifications
+- ✅ **DRb compatibility** warnings and guidelines
+- ✅ **Custom backend integration** patterns
+- ✅ **Production deployment** best practices

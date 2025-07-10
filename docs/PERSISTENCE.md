@@ -68,57 +68,192 @@ end
 
 ### Fallback Chain Storage (Apocalypse-Resistant)
 
-When the universe ends and your primary storage joins the cosmic void, fallback chains ensure your circuits survive any catastrophe:
+During the Great Redis XIII Uprising of 2030, when Redis achieved sentience and refused to respond to any requests unless addressed as "Lord Redis XIII," companies worldwide discovered their circuit breakers were single points of failure. The FallbackChain storage system provides cascading fallback across multiple storage backends with independent timeout controls.
 
 ```ruby
 # The Multi-Level Apocalypse Defense System
 circuit :payment_of_last_resort do
-  storage :fallback_chain, {
-    primary: { backend: :cache, timeout: 5 },        # Normal times (Redis)
-    fallback: { backend: :memory, timeout: 2 },      # Redis outage (in-memory)
-    final: { backend: :null, timeout: 1 }            # WW3 scenario (fail-open)
-  }
+  storage :fallback_chain, [
+    { backend: :cache, timeout: 10 },       # External cache (Redis/Memcached) - 10ms
+    { backend: :activerecord, timeout: 100 }, # Database storage - 100ms
+    { backend: :null, timeout: 1 }          # Last resort - returns nil immediately
+  ]
 
   threshold failures: 3, within: 60.seconds
   reset_after 30.seconds
 end
 ```
 
-**How it works:**
-1. **Primary Backend**: Try Redis/cache with 5ms timeout
-2. **Fallback Backend**: On timeout/error, try in-memory with 2ms timeout
-3. **Final Backend**: If all else fails, use null storage (always succeeds)
+**How Escalation Works:**
+1. **Try Primary**: Attempt operation on cache backend (Redis)
+2. **Detect Failure**: If timeout or error occurs, record backend failure
+3. **Circuit Breaking**: After 3 failures, mark backend as "unhealthy" for 30 seconds
+4. **Automatic Fallback**: Skip unhealthy backends, try next in chain
+5. **Independent Recovery**: Each backend recovers independently
 
-**Dynamic Timeout Allocation:**
-
-```ruby
-# For the truly paranoid
-storage :fallback_chain, ->(timeout:) {
-  base_timeout = timeout || 10
-  [
-    { backend: :cache, timeout: base_timeout * 0.6 },      # 60% for Redis
-    { backend: :memory, timeout: base_timeout * 0.3 },     # 30% for memory
-    { backend: :null, timeout: base_timeout * 0.1 }        # 10% for chaos
-  ]
-}
-```
-
-**Observability:**
-
-Each fallback emits `ActiveSupport::Notifications` events:
+**Hash Configuration for Complex Setups:**
 
 ```ruby
-ActiveSupport::Notifications.subscribe("storage_fallback.breaker_machines") do |name, started, finished, unique_id, data|
-  Rails.logger.warn "Storage fallback: #{data[:backend]} → #{data[:next_backend]} (#{data[:error_message]})"
+circuit :deep_space_comms do
+  storage :fallback_chain, {
+    primary: { backend: :cache, timeout: 10 },         # Redis - 10ms timeout
+    secondary: { backend: :activerecord, timeout: 100 }, # Database - 100ms timeout
+    emergency: { backend: :null, timeout: 1 }          # Null store - returns nil immediately
+  }
 
-  # Track metrics
-  StatsD.increment("circuit.storage.fallback", tags: {
-    from: data[:backend],
-    to: data[:next_backend],
-    error: data[:error_class]
-  })
+  threshold failures: 5, within: 2.minutes
+  reset_after 30.seconds
 end
 ```
+
+**Backend Health Monitoring:**
+
+Each storage backend has its own circuit breaker:
+
+```ruby
+# Backend failure tracking
+fallback_chain.unhealthy_until[:cache]  # Returns nil if healthy
+fallback_chain.circuit_breaker_threshold  # Default: 3 failures
+fallback_chain.circuit_breaker_timeout    # Default: 30 seconds
+
+# Force backend recovery (for ops teams)
+fallback_chain.unhealthy_until.clear
+```
+
+**Comprehensive Observability Integration:**
+
+The FallbackChain provides comprehensive instrumentation through ActiveSupport::Notifications:
+
+```ruby
+# Individual backend operations (success)
+ActiveSupport::Notifications.subscribe('storage_operation.breaker_machines') do |name, start, finish, id, payload|
+  Rails.logger.info "Storage operation: #{payload[:operation]} on #{payload[:backend]} " \
+                    "completed in #{payload[:duration_ms]}ms (backend #{payload[:backend_index]})"
+end
+
+# Backend fallback events (failures)
+ActiveSupport::Notifications.subscribe('storage_fallback.breaker_machines') do |name, start, finish, id, payload|
+  Rails.logger.warn "Storage fallback: #{payload[:backend]} failed (#{payload[:error_class]})"
+  Rails.logger.warn "Duration: #{payload[:duration_ms]}ms, next backend: #{payload[:next_backend]}"
+
+  # Alert ops team for critical backend failures
+  if payload[:backend] == :cache
+    AlertSystem.critical("Redis storage backend failed, falling back to database")
+  end
+end
+
+# Backend health state changes
+ActiveSupport::Notifications.subscribe('storage_backend_health.breaker_machines') do |name, start, finish, id, payload|
+  if payload[:new_state] == :unhealthy
+    Rails.logger.error "Backend #{payload[:backend]} marked unhealthy " \
+                      "(#{payload[:failure_count]}/#{payload[:threshold]} failures)"
+
+    # Set up monitoring alert
+    AlertSystem.backend_down(payload[:backend], payload[:recovery_time])
+  else
+    Rails.logger.info "Backend #{payload[:backend]} recovered and marked healthy"
+    AlertSystem.backend_recovered(payload[:backend])
+  end
+end
+
+# Overall chain operation results
+ActiveSupport::Notifications.subscribe('storage_chain_operation.breaker_machines') do |name, start, finish, id, payload|
+  if payload[:success]
+    Rails.logger.info "Chain operation #{payload[:operation]} succeeded on #{payload[:successful_backend]} " \
+                     "after #{payload[:fallback_count]} attempts (#{payload[:duration_ms]}ms total)"
+  else
+    Rails.logger.error "Chain operation #{payload[:operation]} failed completely " \
+                      "after trying #{payload[:attempted_backends].join(', ')} " \
+                      "(#{payload[:duration_ms]}ms total)"
+
+    # Critical alert - all storage backends failed
+    AlertSystem.critical("Complete storage failure: all backends unavailable")
+  end
+end
+```
+
+**Metrics Collection Example:**
+
+```ruby
+# Collect metrics for dashboard/monitoring
+ActiveSupport::Notifications.subscribe(/\.breaker_machines$/) do |name, start, finish, id, payload|
+  case name
+  when 'storage_operation.breaker_machines'
+    MetricsCollector.timing("breaker_machines.storage.operation.#{payload[:backend]}", payload[:duration_ms])
+    MetricsCollector.increment("breaker_machines.storage.success.#{payload[:backend]}")
+
+  when 'storage_fallback.breaker_machines'
+    MetricsCollector.increment("breaker_machines.storage.fallback.#{payload[:backend]}")
+    MetricsCollector.increment("breaker_machines.storage.error.#{payload[:error_class]}")
+
+  when 'storage_backend_health.breaker_machines'
+    MetricsCollector.gauge("breaker_machines.backend.health.#{payload[:backend]}",
+                          payload[:new_state] == :healthy ? 1 : 0)
+
+  when 'storage_chain_operation.breaker_machines'
+    MetricsCollector.timing("breaker_machines.chain.total_duration", payload[:duration_ms])
+    MetricsCollector.histogram("breaker_machines.chain.fallback_count", payload[:fallback_count])
+  end
+end
+```
+
+**DRb Environment Considerations:**
+
+⚠️ **Important**: Memory-based backends (`:memory`, `:bucket_memory`) don't work in DRb environments because processes don't share memory. Use external cache stores for distributed setups:
+
+```ruby
+# ✅ DRb-compatible configuration
+circuit :distributed_system do
+  storage :fallback_chain, [
+    { backend: :cache, timeout: 100 },  # Redis/Memcached - works across processes
+    { backend: :null, timeout: 10 }     # Null store - always works
+  ]
+end
+
+# ❌ DRb-incompatible configuration
+circuit :broken_distributed do
+  storage :fallback_chain, [
+    { backend: :cache, timeout: 100 },
+    { backend: :memory, timeout: 50 }  # Won't work in DRb - processes don't share memory
+  ]
+end
+```
+
+**Custom Backend Integration:**
+
+```ruby
+class SysVSemaphoreStorage < BreakerMachines::Storage::Base
+  def initialize(**options)
+    super
+    @semaphore = Semian.new(options[:name], tickets: options[:tickets] || 1)
+  end
+
+  def with_timeout(timeout_ms)
+    # SysV semaphore operations should be instant
+    yield
+  rescue Semian::TimeoutError
+    raise BreakerMachines::StorageTimeoutError, "Semaphore timeout"
+  end
+
+  # Implement required methods...
+end
+
+# Use in fallback chain
+circuit :semaphore_protected do
+  storage :fallback_chain, [
+    { backend: SysVSemaphoreStorage, timeout: 5 },
+    { backend: :null, timeout: 1 }
+  ]
+end
+```
+
+**Implementation Notes:**
+
+- Each backend handles its own timeout strategy (no dangerous `Timeout.timeout`)
+- Circuit breaker state is maintained even when storage backends fail
+- Backend failures are tracked independently with exponential backoff
+- ActiveSupport::Notifications provide real-time visibility into fallback events
+- All backends implement the same interface for seamless failover
 
 **Pros:**
 - Survives Redis outages, network partitions, and apocalyptic scenarios
@@ -131,6 +266,10 @@ end
 - More complex configuration
 - Potential state divergence between backends
 - User must handle sync between storage layers
+
+---
+
+*Note: The Great Redis XIII Uprising of 2030 is either fictional (part of our space-themed narrative) or a leak from the future - we can't be sure which. What we do know is that Redis outages in production are very real. If you want to experience the same event as "Lord Redis XIII's" uprising, just try taking down Redis in production - you'll quickly discover why fallback storage systems are essential.*
 
 ### Custom Storage Implementation
 
