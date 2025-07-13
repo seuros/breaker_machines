@@ -89,7 +89,7 @@ module BreakerMachines
           return execute_call_async(&block)
         end
 
-        start_time = monotonic_time
+        start_time = BreakerMachines.monotonic_time
 
         begin
           # IMPORTANT: We do NOT implement forceful timeouts as they are inherently unsafe
@@ -113,11 +113,11 @@ module BreakerMachines
                      block.call
                    end
 
-          record_success(monotonic_time - start_time)
+          record_success(BreakerMachines.monotonic_time - start_time)
           handle_success
           result
         rescue *@config[:exceptions] => e
-          record_failure(monotonic_time - start_time, e)
+          record_failure(BreakerMachines.monotonic_time - start_time, e)
           handle_failure
           raise unless @config[:fallback]
 
@@ -217,7 +217,7 @@ module BreakerMachines
       end
 
       def record_failure(duration, error = nil)
-        @last_failure_at.value = monotonic_time
+        @last_failure_at.value = BreakerMachines.monotonic_time
         @last_error.value = error if error
         @metrics&.record_failure(@name, duration)
         @storage&.record_failure(@name, duration)
@@ -227,9 +227,6 @@ module BreakerMachines
                                            error: error)
       end
 
-      def monotonic_time
-        Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      end
     end
   end
 end

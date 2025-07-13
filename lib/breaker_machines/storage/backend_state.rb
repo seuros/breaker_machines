@@ -30,7 +30,7 @@ module BreakerMachines
         end
 
         before_transition to: :unhealthy do |backend, _transition|
-          backend.instance_variable_set(:@unhealthy_until, Process.clock_gettime(Process::CLOCK_MONOTONIC) + backend.instance_variable_get(:@timeout))
+          backend.instance_variable_set(:@unhealthy_until, BreakerMachines.monotonic_time + backend.instance_variable_get(:@timeout))
         end
 
         after_transition to: :healthy do |backend, _transition|
@@ -42,7 +42,7 @@ module BreakerMachines
 
       def record_failure
         @failure_count += 1
-        @last_failure_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        @last_failure_at = BreakerMachines.monotonic_time
         trip
       end
 
@@ -56,7 +56,7 @@ module BreakerMachines
         unhealthy_until = instance_variable_get(:@unhealthy_until)
         return false unless unhealthy_until
 
-        if Process.clock_gettime(Process::CLOCK_MONOTONIC) > unhealthy_until
+        if BreakerMachines.monotonic_time > unhealthy_until
           recover
           false
         else

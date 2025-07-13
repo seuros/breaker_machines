@@ -18,7 +18,7 @@ module BreakerMachines
 
     # Execute a call with async support (fiber-safe mode)
     def execute_call_async(&)
-      start_time = monotonic_time
+      start_time = BreakerMachines.monotonic_time
 
       begin
         # Execute with hedged requests if enabled
@@ -28,14 +28,14 @@ module BreakerMachines
                    execute_with_async_timeout(@config[:timeout], &)
                  end
 
-        record_success(monotonic_time - start_time)
+        record_success(BreakerMachines.monotonic_time - start_time)
         handle_success
         result
       rescue StandardError => e
         # Re-raise if it's not an async timeout or configured exception
         raise unless e.is_a?(async_timeout_error_class) || @config[:exceptions].any? { |klass| e.is_a?(klass) }
 
-        record_failure(monotonic_time - start_time, e)
+        record_failure(BreakerMachines.monotonic_time - start_time, e)
         handle_failure
         raise unless @config[:fallback]
 

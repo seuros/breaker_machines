@@ -78,6 +78,15 @@ module BreakerMachines
     def registry
       Registry.instance
     end
+
+    # Returns the current monotonic time in seconds.
+    # Monotonic time is guaranteed to always increase and is not affected
+    # by system clock adjustments, making it ideal for measuring durations.
+    #
+    # @return [Float] current monotonic time in seconds
+    def monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
   end
 
   # Set up notifications on first use

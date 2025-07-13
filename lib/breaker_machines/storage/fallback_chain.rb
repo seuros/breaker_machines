@@ -80,7 +80,7 @@ module BreakerMachines
       private
 
       def execute_with_fallback(method, *args, **kwargs)
-        chain_started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        chain_started_at = BreakerMachines.monotonic_time
         attempted_backends = []
 
         storage_configs.each_with_index do |config, index|
@@ -95,7 +95,7 @@ module BreakerMachines
 
           begin
             backend = get_backend_instance(backend_type)
-            started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+            started_at = BreakerMachines.monotonic_time
 
             result = backend.with_timeout(config[:timeout]) do
               if kwargs.any?
@@ -105,21 +105,21 @@ module BreakerMachines
               end
             end
 
-            duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at) * 1000).round(2)
+            duration_ms = ((BreakerMachines.monotonic_time - started_at) * 1000).round(2)
             emit_operation_success_notification(backend_type, method, duration_ms, index)
             reset_backend_failures(backend_type)
 
-            chain_duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - chain_started_at) * 1000).round(2)
+            chain_duration_ms = ((BreakerMachines.monotonic_time - chain_started_at) * 1000).round(2)
             emit_chain_success_notification(method, attempted_backends, backend_type, chain_duration_ms)
 
             return result
           rescue BreakerMachines::StorageTimeoutError, BreakerMachines::StorageError, StandardError => e
-            duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at) * 1000).round(2)
+            duration_ms = ((BreakerMachines.monotonic_time - started_at) * 1000).round(2)
             record_backend_failure(backend_type, e, duration_ms)
             emit_fallback_notification(backend_type, e, duration_ms, index)
 
             if index == storage_configs.size - 1
-              chain_duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - chain_started_at) * 1000).round(2)
+              chain_duration_ms = ((BreakerMachines.monotonic_time - chain_started_at) * 1000).round(2)
               emit_chain_failure_notification(method, attempted_backends, chain_duration_ms)
               raise e
             end
@@ -128,7 +128,7 @@ module BreakerMachines
           end
         end
 
-        chain_duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - chain_started_at) * 1000).round(2)
+        chain_duration_ms = ((BreakerMachines.monotonic_time - chain_started_at) * 1000).round(2)
         emit_chain_failure_notification(method, attempted_backends, chain_duration_ms)
         raise BreakerMachines::StorageError, 'All storage backends are unhealthy'
       end

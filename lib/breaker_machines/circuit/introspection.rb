@@ -59,7 +59,7 @@ module BreakerMachines
           "Circuit '#{@name}' is CLOSED. #{stats[:failure_count]} failures recorded."
         when :open
           # Calculate time remaining until reset
-          time_since_open = monotonic_time - @opened_at.value
+          time_since_open = BreakerMachines.monotonic_time - @opened_at.value
           time_until_reset = @config[:reset_timeout] - time_since_open
           reset_time = time_until_reset.seconds.from_now
           opened_time = time_since_open.seconds.ago

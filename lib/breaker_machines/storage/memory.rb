@@ -130,7 +130,7 @@ module BreakerMachines
       end
 
       def monotonic_time
-        Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        BreakerMachines.monotonic_time
       end
     end
   end

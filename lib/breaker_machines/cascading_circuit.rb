@@ -102,7 +102,7 @@ module BreakerMachines
 
       cascade_results = []
       @cascade_triggered_at ||= Concurrent::AtomicReference.new
-      @cascade_triggered_at.value = monotonic_time
+      @cascade_triggered_at.value = BreakerMachines.monotonic_time
 
       @dependent_circuits.each do |circuit_name|
         # First try to find circuit in registry
@@ -186,8 +186,5 @@ module BreakerMachines
       result
     end
 
-    def monotonic_time
-      Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    end
   end
 end
