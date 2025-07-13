@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestHedgedExecution < ActiveSupport::TestCase
+class HedgedExecutionTest < ActiveSupport::TestCase
   def setup
     @call_count = Concurrent::AtomicFixnum.new(0)
     @latencies = Concurrent::Array.new

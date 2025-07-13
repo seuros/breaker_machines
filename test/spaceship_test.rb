@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestSpaceship < ActiveSupport::TestCase
+class SpaceshipTest < ActiveSupport::TestCase
   def setup
     @ship = Spaceship.new('USS Enterprise')
     # Reset all circuits to ensure clean state

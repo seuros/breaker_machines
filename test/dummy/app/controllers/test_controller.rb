@@ -66,6 +66,6 @@ class TestController < ApplicationController
   private
 
   def initialize_service
-    @service = ExternalApiService.new
+    @service ||= ExternalApiService.new
   end
 end

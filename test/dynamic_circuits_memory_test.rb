@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestDynamicCircuitsMemory < ActiveSupport::TestCase
+class DynamicCircuitsMemoryTest < ActiveSupport::TestCase
   def setup
     @test_class = Class.new do
       include BreakerMachines::DSL

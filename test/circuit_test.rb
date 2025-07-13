@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestCircuit < ActiveSupport::TestCase
+class CircuitTest < ActiveSupport::TestCase
   class MockService
     def self.call
       'success'

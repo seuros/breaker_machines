@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestBulkhead < ActiveSupport::TestCase
+class BulkheadTest < ActiveSupport::TestCase
   def test_max_concurrent_limits_simultaneous_calls
     circuit = BreakerMachines::Circuit.new(:bulkhead_test, {
                                              max_concurrent: 2

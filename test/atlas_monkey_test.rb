@@ -5,7 +5,7 @@ require_relative 'dummy/app/models/base_ship'
 require_relative 'dummy/app/models/science_vessel'
 require_relative 'dummy/app/models/rmns_atlas_monkey'
 
-class TestAtlasMonkey < ActiveSupport::TestCase
+class AtlasMonkeyTest < ActiveSupport::TestCase
   def setup
     @atlas = RMNSAtlasMonkey.instance
     # Reset all instance variables to clean state

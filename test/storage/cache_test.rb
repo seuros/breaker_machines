@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestStorageCache < ActiveSupport::TestCase
+class StorageCacheTest < ActiveSupport::TestCase
   class MockCache
     def initialize
       @data = {}

@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestRegistry < ActiveSupport::TestCase
+class RegistryTest < ActiveSupport::TestCase
   def setup
     @registry = BreakerMachines::Registry.instance
     @registry.clear

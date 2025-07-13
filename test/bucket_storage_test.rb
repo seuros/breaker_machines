@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestBucketStorage < ActiveSupport::TestCase
+class BucketStorageTest < ActiveSupport::TestCase
   def setup
     @storage = BreakerMachines::Storage::BucketMemory.new(bucket_count: 60) # 1 minute
     @circuit_name = :test_circuit

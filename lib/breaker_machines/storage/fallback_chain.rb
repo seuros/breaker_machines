@@ -9,15 +9,17 @@ module BreakerMachines
     # cache stores (Redis, Memcached) will work properly. Memory-based backends (:memory,
     # :bucket_memory) are incompatible with DRb as they don't share state between processes.
     class FallbackChain < Base
-      attr_reader :storage_configs, :storage_instances, :unhealthy_until, :circuit_breaker_threshold, :circuit_breaker_timeout
+      attr_reader :storage_configs, :storage_instances, :backend_states
 
-      def initialize(storage_configs, **)
+      def initialize(storage_configs, circuit_breaker_threshold: 3, circuit_breaker_timeout: 30, **)
         super(**)
         @storage_configs = normalize_storage_configs(storage_configs)
         @storage_instances = {}
-        @unhealthy_until = {}
-        @circuit_breaker_threshold = 3 # After 3 failures, mark backend as unhealthy
-        @circuit_breaker_timeout = 30 # Keep marked as unhealthy for 30 seconds
+        @circuit_breaker_threshold = circuit_breaker_threshold
+        @circuit_breaker_timeout = circuit_breaker_timeout
+        @backend_states = @storage_configs.to_h do |config|
+          [config[:backend], BackendState.new(config[:backend], threshold: @circuit_breaker_threshold, timeout: @circuit_breaker_timeout)]
+        end
         validate_configs!
       end
 
@@ -72,8 +74,7 @@ module BreakerMachines
           instance.clear_all if instance.respond_to?(:clear_all)
         end
         storage_instances.clear
-        @backend_failures&.clear
-        unhealthy_until.clear
+        backend_states.each_value(&:reset)
       end
 
       private
@@ -83,15 +84,17 @@ module BreakerMachines
         attempted_backends = []
 
         storage_configs.each_with_index do |config, index|
-          attempted_backends << config[:backend]
+          backend_type = config[:backend]
+          attempted_backends << backend_type
+          backend_state = backend_states[backend_type]
 
-          if backend_unhealthy?(config[:backend])
-            emit_backend_skipped_notification(config[:backend], method, index)
+          if backend_state.unhealthy_due_to_timeout?
+            emit_backend_skipped_notification(backend_type, method, index)
             next
           end
 
           begin
-            backend = get_backend_instance(config[:backend])
+            backend = get_backend_instance(backend_type)
             started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
             result = backend.with_timeout(config[:timeout]) do
@@ -102,34 +105,29 @@ module BreakerMachines
               end
             end
 
-            # Success - emit success notification and reset failure count
             duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at) * 1000).round(2)
-            emit_operation_success_notification(config[:backend], method, duration_ms, index)
-            reset_backend_failures(config[:backend])
+            emit_operation_success_notification(backend_type, method, duration_ms, index)
+            reset_backend_failures(backend_type)
 
-            # Emit chain success notification
             chain_duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - chain_started_at) * 1000).round(2)
-            emit_chain_success_notification(method, attempted_backends, config[:backend], chain_duration_ms)
+            emit_chain_success_notification(method, attempted_backends, backend_type, chain_duration_ms)
 
             return result
           rescue BreakerMachines::StorageTimeoutError, BreakerMachines::StorageError, StandardError => e
             duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at) * 1000).round(2)
+            record_backend_failure(backend_type, e, duration_ms)
+            emit_fallback_notification(backend_type, e, duration_ms, index)
 
-            # Record the failure
-            record_backend_failure(config[:backend], e, duration_ms)
+            if index == storage_configs.size - 1
+              chain_duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - chain_started_at) * 1000).round(2)
+              emit_chain_failure_notification(method, attempted_backends, chain_duration_ms)
+              raise e
+            end
 
-            # Emit notification about the fallback
-            emit_fallback_notification(config[:backend], e, duration_ms, index)
-
-            # If this is the last backend, re-raise the error
-            raise e if index == storage_configs.size - 1
-
-            # Continue to next backend
             next
           end
         end
 
-        # If we get here, all backends were unhealthy
         chain_duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - chain_started_at) * 1000).round(2)
         emit_chain_failure_notification(method, attempted_backends, chain_duration_ms)
         raise BreakerMachines::StorageError, 'All storage backends are unhealthy'
@@ -158,48 +156,32 @@ module BreakerMachines
         end
       end
 
-      def backend_unhealthy?(backend_type)
-        unhealthy_until_time = unhealthy_until[backend_type]
-        return false unless unhealthy_until_time
+      def record_backend_failure(backend_type, _error, _duration_ms)
+        backend_state = backend_states[backend_type]
+        return unless backend_state
 
-        if Process.clock_gettime(Process::CLOCK_MONOTONIC) > unhealthy_until_time
-          unhealthy_until.delete(backend_type)
-          false
-        else
-          true
+        previous_health = backend_state.health_name
+        backend_state.record_failure
+        new_health = backend_state.health_name
+
+        if new_health != previous_health
+          emit_backend_health_change_notification(backend_type, previous_health, new_health, backend_state.failure_count)
         end
-      end
-
-      def record_backend_failure(backend_type, error, duration_ms)
-        @backend_failures ||= {}
-        @backend_failures[backend_type] ||= []
-        @backend_failures[backend_type] << {
-          error: error,
-          duration_ms: duration_ms,
-          timestamp: Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        }
-
-        # Keep only recent failures (last 60 seconds)
-        cutoff = Process.clock_gettime(Process::CLOCK_MONOTONIC) - 60
-        @backend_failures[backend_type].reject! { |f| f[:timestamp] < cutoff }
-
-        # Mark as unhealthy if too many failures
-        return unless @backend_failures[backend_type].size >= circuit_breaker_threshold
-
-        unhealthy_until[backend_type] = Process.clock_gettime(Process::CLOCK_MONOTONIC) + circuit_breaker_timeout
-        emit_backend_health_change_notification(backend_type, :healthy, :unhealthy, @backend_failures[backend_type].size)
       rescue StandardError => e
         # Don't let failure recording cause the whole chain to hang
         Rails.logger&.error("FallbackChain: Failed to record backend failure: #{e.message}")
       end
 
       def reset_backend_failures(backend_type)
-        was_unhealthy = unhealthy_until.key?(backend_type)
-        @backend_failures&.delete(backend_type)
-        unhealthy_until.delete(backend_type)
+        backend_state = backend_states[backend_type]
+        return unless backend_state&.unhealthy?
 
-        if was_unhealthy
-          emit_backend_health_change_notification(backend_type, :unhealthy, :healthy, 0)
+        previous_health = backend_state.health_name
+        backend_state.reset
+        new_health = backend_state.health_name
+
+        if new_health != previous_health
+          emit_backend_health_change_notification(backend_type, previous_health, new_health, 0)
         end
       end
 
@@ -227,25 +209,27 @@ module BreakerMachines
       end
 
       def emit_backend_skipped_notification(backend_type, method, backend_index)
+        backend_state = backend_states[backend_type]
         ActiveSupport::Notifications.instrument(
           'storage_backend_skipped.breaker_machines',
           backend: backend_type,
           operation: method,
           backend_index: backend_index,
           reason: 'unhealthy',
-          unhealthy_until: unhealthy_until[backend_type]
+          unhealthy_until: backend_state&.instance_variable_get(:@unhealthy_until)
         )
       end
 
       def emit_backend_health_change_notification(backend_type, previous_state, new_state, failure_count)
+        backend_state = backend_states[backend_type]
         ActiveSupport::Notifications.instrument(
           'storage_backend_health.breaker_machines',
           backend: backend_type,
           previous_state: previous_state,
           new_state: new_state,
           failure_count: failure_count,
-          threshold: circuit_breaker_threshold,
-          recovery_time: new_state == :unhealthy ? unhealthy_until[backend_type] : nil
+          threshold: backend_state&.instance_variable_get(:@threshold),
+          recovery_time: new_state == :unhealthy ? backend_state&.instance_variable_get(:@unhealthy_until) : nil
         )
       end
 

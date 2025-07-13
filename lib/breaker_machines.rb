@@ -3,6 +3,7 @@
 require 'zeitwerk'
 require 'active_support'
 require 'active_support/core_ext'
+require 'state_machines'
 require_relative 'breaker_machines/errors'
 
 loader = Zeitwerk::Loader.for_gem

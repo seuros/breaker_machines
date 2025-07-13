@@ -2,7 +2,7 @@
 
 require 'singleton'
 
-# Royal Martian Navy Ship Atlas Monkey
+# Royal Moroccan Navy Ship Atlas Monkey
 # The legendary vessel with the Universal Commentary Engine
 # Only one can exist in the universe at any given time
 class RMNSAtlasMonkey < ScienceVessel

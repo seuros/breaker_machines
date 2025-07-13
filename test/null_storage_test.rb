@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestNullStorage < ActiveSupport::TestCase
+class NullStorageTest < ActiveSupport::TestCase
   def setup
     @storage = BreakerMachines::Storage::Null.new
     @circuit_name = :test_circuit

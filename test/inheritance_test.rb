@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestInheritance < ActiveSupport::TestCase
+class InheritanceTest < ActiveSupport::TestCase
   def test_base_class_circuits
     ship = BaseSpaceship.new
 

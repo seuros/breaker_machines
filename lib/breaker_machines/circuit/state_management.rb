@@ -19,6 +19,7 @@ module BreakerMachines
 
           event :reset do
             transition %i[open half_open] => :closed
+            transition closed: :closed
           end
 
           event :force_open do

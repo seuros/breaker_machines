@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestStorageBackends < ActiveSupport::TestCase
+class StorageBackendsTest < ActiveSupport::TestCase
   class SpaceProbe
     include BreakerMachines::DSL
 

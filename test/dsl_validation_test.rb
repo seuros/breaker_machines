@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestDSLValidation < ActiveSupport::TestCase
+class DSLValidationTest < ActiveSupport::TestCase
   def test_validates_positive_failure_threshold
     assert_raises(BreakerMachines::ConfigurationError) do
       Class.new do

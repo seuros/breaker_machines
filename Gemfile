@@ -18,3 +18,6 @@ gem 'rubocop-rake', '~> 0.6'
 gem 'async', '~> 2.0'
 
 gem 'railties', '~> 8.0'
+gem 'activerecord', '~> 8.0'
+gem 'state_machines-activerecord'
+gem 'sqlite3', '~> 2.0'
