@@ -31,12 +31,10 @@ Gem::Specification.new do |spec|
 
   # Specify which files should be added to the gem
   spec.files = Dir['lib/**/*'] + Dir['sig/**/*'] + %w[LICENSE.txt README.md]
-  spec.bindir = 'exe'
-  spec.executables = spec.files.grep(%r{\Aexe/}) { |f| File.basename(f) }
   spec.require_paths = ['lib']
 
   # Core dependencies
-  spec.add_dependency 'activesupport', '>= 8.0'
+  spec.add_dependency 'activesupport', '>= 7.2'
   spec.add_dependency 'concurrent-ruby', '~> 1.3'
   spec.add_dependency 'state_machines', '>= 0.50.0'
   spec.add_dependency 'zeitwerk', '~> 2.7'
