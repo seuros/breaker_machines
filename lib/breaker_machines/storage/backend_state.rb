@@ -18,11 +18,11 @@ module BreakerMachines
 
       state_machine :health, initial: :healthy do
         event :trip do
-          transition :healthy => :unhealthy, if: :threshold_reached?
+          transition healthy: :unhealthy, if: :threshold_reached?
         end
 
         event :recover do
-          transition :unhealthy => :healthy
+          transition unhealthy: :healthy
         end
 
         event :reset do
@@ -30,7 +30,8 @@ module BreakerMachines
         end
 
         before_transition to: :unhealthy do |backend, _transition|
-          backend.instance_variable_set(:@unhealthy_until, BreakerMachines.monotonic_time + backend.instance_variable_get(:@timeout))
+          backend.instance_variable_set(:@unhealthy_until,
+                                        BreakerMachines.monotonic_time + backend.instance_variable_get(:@timeout))
         end
 
         after_transition to: :healthy do |backend, _transition|

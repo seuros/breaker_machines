@@ -18,7 +18,8 @@ module BreakerMachines
         @circuit_breaker_threshold = circuit_breaker_threshold
         @circuit_breaker_timeout = circuit_breaker_timeout
         @backend_states = @storage_configs.to_h do |config|
-          [config[:backend], BackendState.new(config[:backend], threshold: @circuit_breaker_threshold, timeout: @circuit_breaker_timeout)]
+          [config[:backend],
+           BackendState.new(config[:backend], threshold: @circuit_breaker_threshold, timeout: @circuit_breaker_timeout)]
         end
         validate_configs!
       end
@@ -165,7 +166,8 @@ module BreakerMachines
         new_health = backend_state.health_name
 
         if new_health != previous_health
-          emit_backend_health_change_notification(backend_type, previous_health, new_health, backend_state.failure_count)
+          emit_backend_health_change_notification(backend_type, previous_health, new_health,
+                                                  backend_state.failure_count)
         end
       rescue StandardError => e
         # Don't let failure recording cause the whole chain to hang
@@ -180,9 +182,9 @@ module BreakerMachines
         backend_state.reset
         new_health = backend_state.health_name
 
-        if new_health != previous_health
-          emit_backend_health_change_notification(backend_type, previous_health, new_health, 0)
-        end
+        return unless new_health != previous_health
+
+        emit_backend_health_change_notification(backend_type, previous_health, new_health, 0)
       end
 
       def emit_fallback_notification(backend_type, error, duration_ms, backend_index)

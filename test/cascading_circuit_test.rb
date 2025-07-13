@@ -44,9 +44,7 @@ class CascadingCircuitTest < ActiveSupport::TestCase
         @emergency_executed
       end
 
-      def affected_circuits
-        @affected_circuits
-      end
+      attr_reader :affected_circuits
 
       def trigger_power_failure
         3.times do
@@ -75,9 +73,7 @@ class CascadingCircuitTest < ActiveSupport::TestCase
       @ship.instance_variable_set(:@circuit_instances, nil) if @ship.instance_variable_defined?(:@circuit_instances)
     end
     # Clear any class-level circuit definitions that might pollute tests
-    if @ship && @ship.class.instance_variable_defined?(:@circuits)
-      @ship.class.instance_variable_set(:@circuits, nil)
-    end
+    @ship.class.instance_variable_set(:@circuits, nil) if @ship && @ship.class.instance_variable_defined?(:@circuits)
     # Clear registry
     BreakerMachines.registry.clear if BreakerMachines.registry.respond_to?(:clear)
   end
@@ -89,31 +85,30 @@ class CascadingCircuitTest < ActiveSupport::TestCase
 
   test 'dependent circuits are tripped when parent opens' do
     # Initially all circuits should be closed
-    assert @ship.circuit(:main_power).closed?
-    assert @ship.circuit(:life_support).closed?
-    assert @ship.circuit(:navigation).closed?
-    assert @ship.circuit(:weapons).closed?
-
+    assert_predicate @ship.circuit(:main_power), :closed?
+    assert_predicate @ship.circuit(:life_support), :closed?
+    assert_predicate @ship.circuit(:navigation), :closed?
+    assert_predicate @ship.circuit(:weapons), :closed?
 
     # Trigger main power failures
     @ship.trigger_power_failure
 
     # Main power should be open
-    assert @ship.circuit(:main_power).open?
+    assert_predicate @ship.circuit(:main_power), :open?
 
     # All dependent circuits should also be open
-    assert @ship.circuit(:life_support).open?
-    assert @ship.circuit(:navigation).open?
-    assert @ship.circuit(:weapons).open?
+    assert_predicate @ship.circuit(:life_support), :open?
+    assert_predicate @ship.circuit(:navigation), :open?
+    assert_predicate @ship.circuit(:weapons), :open?
   end
 
   test 'emergency protocol is executed on cascade' do
-    refute @ship.emergency_executed?
+    refute_predicate @ship, :emergency_executed?
 
     @ship.trigger_power_failure
 
-    assert @ship.emergency_executed?
-    assert_equal [:life_support, :navigation, :weapons], @ship.affected_circuits
+    assert_predicate @ship, :emergency_executed?
+    assert_equal %i[life_support navigation weapons], @ship.affected_circuits
   end
 
   test 'on_cascade tracking via emergency protocol' do
@@ -122,17 +117,17 @@ class CascadingCircuitTest < ActiveSupport::TestCase
     @ship.trigger_power_failure
 
     # The emergency protocol adds to cascade_log
-    assert_equal [[:life_support, :navigation, :weapons]], @ship.cascade_log
+    assert_equal [%i[life_support navigation weapons]], @ship.cascade_log
   end
 
   test 'cascading only affects specified circuits' do
     # Main and dependent circuits should be open after trigger
     @ship.trigger_power_failure
 
-    assert @ship.circuit(:main_power).open?
-    assert @ship.circuit(:life_support).open?
-    assert @ship.circuit(:navigation).open?
-    assert @ship.circuit(:weapons).open?
+    assert_predicate @ship.circuit(:main_power), :open?
+    assert_predicate @ship.circuit(:life_support), :open?
+    assert_predicate @ship.circuit(:navigation), :open?
+    assert_predicate @ship.circuit(:weapons), :open?
 
     # Create a new ship instance with auxiliary power circuit
     ship2_class = self.class.create_spaceship_class
@@ -142,13 +137,14 @@ class CascadingCircuitTest < ActiveSupport::TestCase
     ship2 = ship2_class.new
 
     # Verify auxiliary power is not affected by the first ship's cascade
-    assert ship2.circuit(:auxiliary_power).closed?
+    assert_predicate ship2.circuit(:auxiliary_power), :closed?
   end
 
   test 'cascading circuit configuration' do
     config = @ship.class.circuits[:main_power]
+
     assert_equal :cascading, config[:circuit_type]
-    assert_equal [:life_support, :navigation, :weapons], config[:cascades_to]
+    assert_equal %i[life_support navigation weapons], config[:cascades_to]
     assert_equal :emergency_shutdown, config[:emergency_protocol]
   end
 end

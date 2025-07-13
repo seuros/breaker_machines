@@ -129,9 +129,9 @@ class StarfleetBattleCruiser < ApplicationRecord
     end
   end
 
-  def abandon_ship_protocols(affected_circuits)
+  def abandon_ship_protocols(_affected_circuits)
     critical_damage!
-    captain_log "CRITICAL: Hull breach! Abandon ship protocols initiated!"
+    captain_log 'CRITICAL: Hull breach! Abandon ship protocols initiated!'
     sound_evacuation_alarm
     launch_escape_pods
   end
@@ -145,12 +145,12 @@ class StarfleetBattleCruiser < ApplicationRecord
       damage_report[name] = {
         status: circuit.status_name,
         operational: circuit.closed?,
-        failure_count: circuit.stats[:failure_count]
+        failure_count: circuit.stats.failure_count
       }
     end
 
     # Determine overall status
-    critical_systems = [:warp_core, :life_support, :hull_integrity]
+    critical_systems = %i[warp_core life_support hull_integrity]
     critical_failures = critical_systems.count { |sys| damage_report[sys] && !damage_report[sys][:operational] }
 
     if critical_failures >= 2
@@ -166,6 +166,7 @@ class StarfleetBattleCruiser < ApplicationRecord
   def engage_warp_drive
     circuit(:warp_core).call do
       raise 'Warp core offline!' if warp_core_temperature > 9000
+
       captain_log 'Engaging warp drive'
       update!(warp_engaged: true)
     end
@@ -175,6 +176,7 @@ class StarfleetBattleCruiser < ApplicationRecord
     circuit(:weapons).call do
       circuit(:targeting_computer).call do
         raise 'Targeting computer malfunction!' if rand > 0.9
+
         captain_log 'Phasers fired!'
         decrement_phaser_banks
       end
@@ -184,6 +186,7 @@ class StarfleetBattleCruiser < ApplicationRecord
   def raise_shields
     circuit(:shields).call do
       raise 'Shield generator overload!' if shield_strength < 10
+
       captain_log 'Shields raised'
       update!(shields_up: true)
     end
@@ -192,6 +195,7 @@ class StarfleetBattleCruiser < ApplicationRecord
   def hail_starfleet
     circuit(:communications).call do
       raise 'Subspace interference!' if in_nebula?
+
       captain_log 'Hailing Starfleet Command'
       transmit_message
     end

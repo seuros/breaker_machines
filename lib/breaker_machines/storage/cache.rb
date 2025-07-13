@@ -16,10 +16,10 @@ module BreakerMachines
         data = @cache.read(status_key(circuit_name))
         return nil unless data
 
-        {
+        BreakerMachines::Status.new(
           status: data[:status].to_sym,
           opened_at: data[:opened_at]
-        }
+        )
       end
 
       def set_status(circuit_name, status, opened_at = nil)

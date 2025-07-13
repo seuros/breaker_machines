@@ -26,11 +26,11 @@ class StarfleetBattleCruiserTest < ActiveSupport::TestCase
 
   test 'warp core failure cascades to dependent systems' do
     # All systems should start operational
-    assert @cruiser.circuit(:warp_core).closed?
-    assert @cruiser.circuit(:shields).closed?
-    assert @cruiser.circuit(:weapons).closed?
-    assert @cruiser.circuit(:life_support).closed?
-    assert @cruiser.circuit(:navigation).closed?
+    assert_predicate @cruiser.circuit(:warp_core), :closed?
+    assert_predicate @cruiser.circuit(:shields), :closed?
+    assert_predicate @cruiser.circuit(:weapons), :closed?
+    assert_predicate @cruiser.circuit(:life_support), :closed?
+    assert_predicate @cruiser.circuit(:navigation), :closed?
 
     # Simulate warp core failures
     2.times do
@@ -40,11 +40,11 @@ class StarfleetBattleCruiserTest < ActiveSupport::TestCase
     end
 
     # Warp core and all dependent systems should be open
-    assert @cruiser.circuit(:warp_core).open?
-    assert @cruiser.circuit(:shields).open?
-    assert @cruiser.circuit(:weapons).open?
-    assert @cruiser.circuit(:life_support).open?
-    assert @cruiser.circuit(:navigation).open?
+    assert_predicate @cruiser.circuit(:warp_core), :open?
+    assert_predicate @cruiser.circuit(:shields), :open?
+    assert_predicate @cruiser.circuit(:weapons), :open?
+    assert_predicate @cruiser.circuit(:life_support), :open?
+    assert_predicate @cruiser.circuit(:navigation), :open?
 
     # Battle status should change to red alert
     assert_equal 'red', @cruiser.battle_status
@@ -59,14 +59,14 @@ class StarfleetBattleCruiserTest < ActiveSupport::TestCase
     end
 
     # Main computer and its dependents should be open
-    assert @cruiser.circuit(:main_computer).open?
-    assert @cruiser.circuit(:targeting_computer).open?
-    assert @cruiser.circuit(:navigation).open?
-    assert @cruiser.circuit(:communications).open?
+    assert_predicate @cruiser.circuit(:main_computer), :open?
+    assert_predicate @cruiser.circuit(:targeting_computer), :open?
+    assert_predicate @cruiser.circuit(:navigation), :open?
+    assert_predicate @cruiser.circuit(:communications), :open?
 
     # But shields and weapons should remain closed (not dependent on main computer)
-    assert @cruiser.circuit(:shields).closed?
-    assert @cruiser.circuit(:weapons).closed?
+    assert_predicate @cruiser.circuit(:shields), :closed?
+    assert_predicate @cruiser.circuit(:weapons), :closed?
   end
 
   test 'hull integrity breach triggers abandon ship protocols' do
@@ -78,9 +78,9 @@ class StarfleetBattleCruiserTest < ActiveSupport::TestCase
     end
 
     # Hull integrity and dependent systems should be open
-    assert @cruiser.circuit(:hull_integrity).open?
-    assert @cruiser.circuit(:life_support).open?
-    assert @cruiser.circuit(:structural_integrity).open?
+    assert_predicate @cruiser.circuit(:hull_integrity), :open?
+    assert_predicate @cruiser.circuit(:life_support), :open?
+    assert_predicate @cruiser.circuit(:structural_integrity), :open?
 
     # Battle status should be critical
     assert_equal 'critical', @cruiser.battle_status
@@ -108,6 +108,7 @@ class StarfleetBattleCruiserTest < ActiveSupport::TestCase
     end
 
     damage_report = @cruiser.assess_battle_damage
+
     refute damage_report[:shields][:operational]
     assert_equal :open, damage_report[:shields][:status]
   end
@@ -131,7 +132,7 @@ class StarfleetBattleCruiserTest < ActiveSupport::TestCase
     end
 
     # Emergency protocol should have been executed
-    assert @cruiser.shields_diverted?
+    assert_predicate @cruiser, :shields_diverted?
   end
 
   test 'cascading failures can be reset' do
@@ -143,15 +144,15 @@ class StarfleetBattleCruiserTest < ActiveSupport::TestCase
     end
 
     # All circuits should be open
-    assert @cruiser.circuit(:warp_core).open?
-    assert @cruiser.circuit(:shields).open?
+    assert_predicate @cruiser.circuit(:warp_core), :open?
+    assert_predicate @cruiser.circuit(:shields), :open?
 
     # Reset all circuits
     @cruiser.reset_all_circuits
 
     # All circuits should be closed again
-    assert @cruiser.circuit(:warp_core).closed?
-    assert @cruiser.circuit(:shields).closed?
+    assert_predicate @cruiser.circuit(:warp_core), :closed?
+    assert_predicate @cruiser.circuit(:shields), :closed?
   end
 
   test 'ship operations use circuit breakers' do
@@ -169,7 +170,12 @@ class StarfleetBattleCruiserTest < ActiveSupport::TestCase
 
     # After enough failures, circuit should open
     assert_raises(BreakerMachines::CircuitOpenError) do
-      2.times { @cruiser.engage_warp_drive rescue nil }
+      2.times do
+        @cruiser.engage_warp_drive
+      rescue RuntimeError
+        # Expected failure to trip the circuit
+        nil
+      end
       @cruiser.engage_warp_drive
     end
   end
@@ -203,8 +209,8 @@ class StarfleetBattleCruiserTest < ActiveSupport::TestCase
     end
 
     # Both emergency protocols should have been called
-    assert protocols_called.any? { |p| p[0] == :red_alert }
-    assert protocols_called.any? { |p| p[0] == :backup_systems_engage }
+    assert(protocols_called.any? { |p| p[0] == :red_alert })
+    assert(protocols_called.any? { |p| p[0] == :backup_systems_engage })
   end
 
   test 'critical damage assessment from multiple system failures' do
@@ -219,6 +225,7 @@ class StarfleetBattleCruiserTest < ActiveSupport::TestCase
     end
 
     @cruiser.assess_battle_damage
+
     assert_equal 'critical', @cruiser.battle_status
 
     # Now damage hull integrity too
@@ -229,6 +236,7 @@ class StarfleetBattleCruiserTest < ActiveSupport::TestCase
     end
 
     @cruiser.assess_battle_damage
+
     assert_equal 'critical', @cruiser.battle_status
   end
 
@@ -241,9 +249,10 @@ class StarfleetBattleCruiserTest < ActiveSupport::TestCase
     end
 
     # Shield circuit should be open but fallback should work
-    assert @cruiser.circuit(:shields).open?
+    assert_predicate @cruiser.circuit(:shields), :open?
 
     result = @cruiser.circuit(:shields).call { 'Normal shields' }
+
     assert_equal 'Emergency force fields activated', result
   end
 end

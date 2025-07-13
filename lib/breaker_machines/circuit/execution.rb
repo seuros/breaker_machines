@@ -226,7 +226,6 @@ module BreakerMachines
         @storage.record_event_with_details(@name, :failure, duration,
                                            error: error)
       end
-
     end
   end
 end

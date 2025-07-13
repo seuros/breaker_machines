@@ -86,8 +86,8 @@ module BreakerMachines
         stored_status = @storage.get_status(@name)
         return unless stored_status
 
-        self.status = stored_status[:status].to_s
-        @opened_at.value = stored_status[:opened_at] if stored_status[:opened_at]
+        self.status = stored_status.status.to_s
+        @opened_at.value = stored_status.opened_at if stored_status.opened_at
       end
 
       def reset_timeout_elapsed?

@@ -44,11 +44,11 @@ class IntrospectionTest < ActiveSupport::TestCase
     circuit = @module.circuit(:sensor_array)
     stats = circuit.stats
 
-    assert_equal :closed, stats[:state]
-    assert_equal 0, stats[:failure_count]
-    assert_equal 0, stats[:success_count]
-    assert_nil stats[:last_failure_at]
-    assert_nil stats[:opened_at]
+    assert_equal :closed, stats.state
+    assert_equal 0, stats.failure_count
+    assert_equal 0, stats.success_count
+    assert_nil stats.last_failure_at
+    assert_nil stats.opened_at
   end
 
   def test_circuit_configuration
@@ -91,9 +91,9 @@ class IntrospectionTest < ActiveSupport::TestCase
 
     error_info = circuit.last_error_info
 
-    assert_equal 'RuntimeError', error_info[:class]
-    assert_equal 'Sensor malfunction', error_info[:message]
-    assert_kind_of Float, error_info[:occurred_at]
+    assert_equal 'RuntimeError', error_info.error_class
+    assert_equal 'Sensor malfunction', error_info.message
+    assert_kind_of Float, error_info.occurred_at
   end
 
   def test_event_logging
@@ -109,7 +109,7 @@ class IntrospectionTest < ActiveSupport::TestCase
     events = circuit.event_log(limit: 10)
 
     # Event log is available with our storage backends
-    return unless events&.any?
+    skip unless events&.any?
 
     assert_equal 2, events.size
     assert_equal :success, events.first[:type]

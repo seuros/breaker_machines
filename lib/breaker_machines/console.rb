@@ -114,9 +114,9 @@ module BreakerMachines
 
         printf "%-20s %-12s %-10d %-10d %s\n",
                circuit.name,
-               colorize_state(stats[:state]),
-               stats[:failure_count],
-               stats[:success_count],
+               colorize_state(stats.state),
+               stats.failure_count,
+               stats.success_count,
                error_info
       end
 
@@ -167,22 +167,22 @@ module BreakerMachines
         stats = circuit.stats
         config = circuit.configuration
 
-        puts "Current State: #{colorize_state(stats[:state])}"
-        puts "Failure Count: #{stats[:failure_count]} / #{config[:failure_threshold]}"
-        puts "Success Count: #{stats[:success_count]}"
+        puts "Current State: #{colorize_state(stats.state)}"
+        puts "Failure Count: #{stats.failure_count} / #{config[:failure_threshold]}"
+        puts "Success Count: #{stats.success_count}"
 
-        if stats[:opened_at]
-          puts "Opened At: #{Time.at(stats[:opened_at])}"
-          reset_time = Time.at(stats[:opened_at] + config[:reset_timeout])
+        if stats.opened_at
+          puts "Opened At: #{Time.at(stats.opened_at)}"
+          reset_time = Time.at(stats.opened_at + config[:reset_timeout])
           puts "Reset At: #{reset_time} (in #{(reset_time - Time.now).to_i}s)"
         end
 
         if circuit.last_error
           error_info = circuit.last_error_info
           puts "\nLast Error:"
-          puts "  Class: #{error_info[:class]}"
-          puts "  Message: #{error_info[:message]}"
-          puts "  Time: #{Time.at(error_info[:occurred_at])}"
+          puts "  Class: #{error_info.error_class}"
+          puts "  Message: #{error_info.message}"
+          puts "  Time: #{Time.at(error_info.occurred_at)}"
         end
 
         puts "\nConfiguration:"

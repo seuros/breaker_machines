@@ -82,13 +82,13 @@ class ExternalApiService
     {
       payment_gateway: {
         available: !circuit(:payment_gateway).open?,
-        state: payment_stats[:state],
-        failure_count: payment_stats[:failure_count]
+        state: payment_stats.state,
+        failure_count: payment_stats.failure_count
       },
       email_service: {
         available: !circuit(:email_service).open?,
-        state: email_stats[:state],
-        failure_count: email_stats[:failure_count]
+        state: email_stats.state,
+        failure_count: email_stats.failure_count
       }
     }
   end

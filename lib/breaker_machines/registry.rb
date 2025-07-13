@@ -102,13 +102,13 @@ module BreakerMachines
 
       {
         summary: stats_summary,
-        circuits: circuits.map(&:stats),
+        circuits: circuits.map { |c| c.stats.to_h },
         health: {
           open_count: circuits.count(&:open?),
           closed_count: circuits.count(&:closed?),
           half_open_count: circuits.count(&:half_open?),
-          total_failures: circuits.sum { |c| c.stats[:failure_count] },
-          total_successes: circuits.sum { |c| c.stats[:success_count] }
+          total_failures: circuits.sum { |c| c.stats.failure_count },
+          total_successes: circuits.sum { |c| c.stats.success_count }
         }
       }
     end
