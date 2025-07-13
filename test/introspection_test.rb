@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestIntrospection < ActiveSupport::TestCase
+class IntrospectionTest < ActiveSupport::TestCase
   class DiagnosticModule
     include BreakerMachines::DSL
 

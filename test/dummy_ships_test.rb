@@ -9,7 +9,7 @@ require_relative 'dummy/app/models/cargo_ship'
 require_relative 'dummy/app/models/science_vessel'
 require_relative 'dummy/app/models/rmns_atlas_monkey'
 
-class TestDummyShips < ActiveSupport::TestCase
+class DummyShipsTest < ActiveSupport::TestCase
   def setup
     @base_ship = BaseShip.new('USS Foundation', 'NCC-0001')
     @battle_ship = BattleShip.new('USS Warrior', 'NCC-1701-D')

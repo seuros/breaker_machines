@@ -19,3 +19,9 @@ BreakerMachines.config.fiber_safe = false
 ENV['RAILS_ENV'] ||= 'test'
 require_relative 'dummy/config/environment'
 require 'rails/test_help'
+require 'state_machines/integrations/active_record'
+
+# Load the schema
+ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: ':memory:')
+ActiveRecord::Schema.verbose = false
+load File.expand_path('dummy/db/schema.rb', __dir__)

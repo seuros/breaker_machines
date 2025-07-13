@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestStorage < ActiveSupport::TestCase
+class StorageTest < ActiveSupport::TestCase
   def setup
     # Test the original Memory storage (not BucketMemory)
     @storage = BreakerMachines::Storage::Memory.new

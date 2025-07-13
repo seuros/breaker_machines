@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestArrayFallback < ActiveSupport::TestCase
+class ArrayFallbackTest < ActiveSupport::TestCase
   class SpaceStation
     include BreakerMachines::DSL
 

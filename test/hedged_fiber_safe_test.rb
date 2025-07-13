@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestHedgedFiberSafe < ActiveSupport::TestCase
+class HedgedFiberSafeTest < ActiveSupport::TestCase
   def setup
     BreakerMachines.config.fiber_safe = true
   end

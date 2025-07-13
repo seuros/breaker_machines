@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class TestDSL < ActiveSupport::TestCase
+class DSLTest < ActiveSupport::TestCase
   class SpaceStation
     include BreakerMachines::DSL
 
