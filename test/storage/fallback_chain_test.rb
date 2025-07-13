@@ -24,7 +24,7 @@ class FallbackChainTest < ActiveSupport::TestCase
     result = @chain.get_status(:test_circuit)
 
     assert_not_nil result
-    assert_equal :closed, result[:status]
+    assert_equal :closed, result.status
   end
 
   def test_fallback_to_second_backend_when_first_fails
@@ -78,6 +78,6 @@ class FallbackChainTest < ActiveSupport::TestCase
     result = @chain.get_status(:test_circuit)
 
     assert_not_nil result
-    assert_equal :open, result[:status]
+    assert_equal :open, result.status
   end
 end

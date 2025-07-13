@@ -19,7 +19,6 @@ module BreakerMachines
   #   # => All dependent circuits are now open
   #
   class CascadingCircuit < Circuit
-
     attr_reader :dependent_circuits, :emergency_protocol
 
     def initialize(name, config = {})
@@ -59,40 +58,29 @@ module BreakerMachines
       end
     end
 
-    # Enhanced stats that include dependent circuit information
-    def stats
-      base_stats = super
-      base_stats.merge(
-        dependent_circuits: @dependent_circuits,
-        dependent_status: dependent_status,
-        emergency_protocol: @emergency_protocol,
-        cascade_triggered: @cascade_triggered_at&.value
-      )
-    end
-
     # Summary that includes cascade information
     def summary
       base_summary = super
       return base_summary if @dependent_circuits.empty?
 
-      cascade_info = if @cascade_triggered_at&.value
-                       compromised_count = dependent_status.values.count(:open)
-                       " CASCADE TRIGGERED: #{compromised_count}/#{@dependent_circuits.length} dependent systems compromised."
-                     else
-                       " Monitoring #{@dependent_circuits.length} dependent systems."
-                     end
+      if @cascade_triggered_at&.value
+        compromised_count = dependent_status.values.count(:open)
+        " CASCADE TRIGGERED: #{compromised_count}/#{@dependent_circuits.length} dependent systems compromised."
+      else
+        " Monitoring #{@dependent_circuits.length} dependent systems."
+      end
 
-      base_summary + cascade_info
+      base_summary + cascade_info_text
     end
 
     # Provide cascade info for introspection
     def cascade_info
-      {
+      BreakerMachines::CascadeInfo.new(
         dependent_circuits: @dependent_circuits,
         emergency_protocol: @emergency_protocol,
         cascade_triggered_at: @cascade_triggered_at&.value,
         dependent_status: dependent_status
-      }
+      )
     end
 
     private
@@ -102,7 +90,7 @@ module BreakerMachines
 
       cascade_results = []
       @cascade_triggered_at ||= Concurrent::AtomicReference.new
-      @cascade_triggered_at.value = monotonic_time
+      @cascade_triggered_at.value = BreakerMachines.monotonic_time
 
       @dependent_circuits.each do |circuit_name|
         # First try to find circuit in registry
@@ -114,9 +102,7 @@ module BreakerMachines
           # Handle WeakRef if present
           owner = owner.__getobj__ if owner.is_a?(WeakRef)
 
-          if owner.respond_to?(:circuit)
-            circuit = owner.circuit(circuit_name)
-          end
+          circuit = owner.circuit(circuit_name) if owner.respond_to?(:circuit)
         end
 
         next unless circuit
@@ -184,10 +170,6 @@ module BreakerMachines
       result = super
       perform_cascade if result && @dependent_circuits.any?
       result
-    end
-
-    def monotonic_time
-      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
   end
 end

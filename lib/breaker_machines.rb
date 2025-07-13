@@ -5,10 +5,12 @@ require 'active_support'
 require 'active_support/core_ext'
 require 'state_machines'
 require_relative 'breaker_machines/errors'
+require_relative 'breaker_machines/types'
 
 loader = Zeitwerk::Loader.for_gem
 loader.inflector.inflect('dsl' => 'DSL')
 loader.ignore("#{__dir__}/breaker_machines/errors.rb")
+loader.ignore("#{__dir__}/breaker_machines/types.rb")
 loader.ignore("#{__dir__}/breaker_machines/console.rb")
 loader.ignore("#{__dir__}/breaker_machines/async_support.rb")
 loader.ignore("#{__dir__}/breaker_machines/hedged_async_support.rb")
@@ -77,6 +79,15 @@ module BreakerMachines
     # Get the global registry
     def registry
       Registry.instance
+    end
+
+    # Returns the current monotonic time in seconds.
+    # Monotonic time is guaranteed to always increase and is not affected
+    # by system clock adjustments, making it ideal for measuring durations.
+    #
+    # @return [Float] current monotonic time in seconds
+    def monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
   end
 

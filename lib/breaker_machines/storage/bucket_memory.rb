@@ -27,10 +27,10 @@ module BreakerMachines
         circuit_data = @circuits[circuit_name]
         return nil unless circuit_data
 
-        {
+        BreakerMachines::Status.new(
           status: circuit_data[:status],
           opened_at: circuit_data[:opened_at]
-        }
+        )
       end
 
       def set_status(circuit_name, status, opened_at = nil)
@@ -160,7 +160,7 @@ module BreakerMachines
       end
 
       def monotonic_time
-        Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        BreakerMachines.monotonic_time
       end
 
       def with_timeout(_timeout_ms)

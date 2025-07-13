@@ -8,10 +8,10 @@ class CircuitsController < ApplicationController
 
       {
         name: circuit.name,
-        state: stats[:state],
-        failure_count: stats[:failure_count],
-        success_count: stats[:success_count],
-        last_failure_at: stats[:last_failure_at],
+        state: stats.state,
+        failure_count: stats.failure_count,
+        success_count: stats.success_count,
+        last_failure_at: stats.last_failure_at,
         config: {
           failure_threshold: config[:failure_threshold],
           failure_window: config[:failure_window],

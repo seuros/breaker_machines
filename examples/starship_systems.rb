@@ -29,7 +29,7 @@ class StarshipSystems
     emergency_protocol :warp_core_ejection_protocol
 
     on_open do
-      puts "[CRITICAL] Warp core breach detected!"
+      puts '[CRITICAL] Warp core breach detected!'
     end
   end
 
@@ -92,21 +92,21 @@ class StarshipSystems
 
   # Emergency protocols
   def emergency_power_redirect(affected_circuits)
-    puts "[EMERGENCY] Redirecting auxiliary power..."
+    puts '[EMERGENCY] Redirecting auxiliary power...'
     affected_circuits.each do |circuit_name|
       puts "  - Attempting to restore #{circuit_name}"
     end
   end
 
-  def warp_core_ejection_protocol(affected_circuits)
-    puts "[EMERGENCY] Initiating warp core ejection sequence!"
-    puts "  - Sealing blast doors"
-    puts "  - Preparing ejection mechanism"
-    puts "  - All hands brace for impact!"
+  def warp_core_ejection_protocol(_affected_circuits)
+    puts '[EMERGENCY] Initiating warp core ejection sequence!'
+    puts '  - Sealing blast doors'
+    puts '  - Preparing ejection mechanism'
+    puts '  - All hands brace for impact!'
   end
 
   def manual_override_engaged(affected_circuits)
-    puts "[EMERGENCY] Computer core offline - manual control engaged"
+    puts '[EMERGENCY] Computer core offline - manual control engaged'
     affected_circuits.each do |circuit_name|
       puts "  - #{circuit_name}: Switching to manual control"
     end
@@ -114,46 +114,48 @@ class StarshipSystems
 
   # Fallback methods
   def activate_emergency_force_fields
-    puts "  - Emergency force fields activated"
-    "Emergency shields at 20% capacity"
+    puts '  - Emergency force fields activated'
+    'Emergency shields at 20% capacity'
   end
 
   def enable_manual_targeting
-    puts "  - Manual targeting enabled"
-    "Weapons on manual control"
+    puts '  - Manual targeting enabled'
+    'Weapons on manual control'
   end
 
   def deploy_emergency_oxygen
-    puts "  - Emergency oxygen deployed"
-    "Life support on backup - 4 hours remaining"
+    puts '  - Emergency oxygen deployed'
+    'Life support on backup - 4 hours remaining'
   end
 
   def switch_to_stellar_cartography
-    puts "  - Stellar cartography navigation engaged"
-    "Navigation by star charts"
+    puts '  - Stellar cartography navigation engaged'
+    'Navigation by star charts'
   end
 
   def activate_emergency_beacon
-    puts "  - Emergency beacon activated"
-    "Distress signal broadcasting"
+    puts '  - Emergency beacon activated'
+    'Distress signal broadcasting'
   end
 
   # System operations
   def raise_shields
     circuit(:shields).call do
-      puts "Raising shields..."
+      puts 'Raising shields...'
       # Simulate shield activation
-      raise "Shield generator overload!" if rand > 0.8
-      "Shields at 100%"
+      raise 'Shield generator overload!' if rand > 0.8
+
+      'Shields at 100%'
     end
   end
 
   def fire_phasers
     circuit(:weapons).call do
       circuit(:targeting_system).call do
-        puts "Locking on target..."
-        raise "Targeting computer malfunction!" if rand > 0.9
-        "Phasers fired!"
+        puts 'Locking on target...'
+        raise 'Targeting computer malfunction!' if rand > 0.9
+
+        'Phasers fired!'
       end
     end
   end
@@ -161,25 +163,27 @@ class StarshipSystems
   def engage_warp
     circuit(:warp_core).call do
       circuit(:warp_drive).call do
-        puts "Engaging warp drive..."
-        raise "Warp core containment failure!" if rand > 0.95
-        "Warp 5 engaged"
+        puts 'Engaging warp drive...'
+        raise 'Warp core containment failure!' if rand > 0.95
+
+        'Warp 5 engaged'
       end
     end
   end
 
   def scan_sector
     circuit(:sensors).call do
-      puts "Scanning sector..."
-      raise "Sensor array offline!" if rand > 0.85
-      "Scan complete - no threats detected"
+      puts 'Scanning sector...'
+      raise 'Sensor array offline!' if rand > 0.85
+
+      'Scan complete - no threats detected'
     end
   end
 
   # Status report
   def status_report
     puts "\n=== STARSHIP SYSTEMS STATUS ==="
-    circuits_summary.each do |name, summary|
+    circuits_summary.each_value do |summary|
       puts summary
     end
     puts "==============================\n"
@@ -211,25 +215,23 @@ class StarshipSystems
 end
 
 # Example usage
-if __FILE__ == $0
+if __FILE__ == $PROGRAM_NAME
   ship = StarshipSystems.new
 
   puts "=== STARSHIP SYSTEMS DEMONSTRATION ===\n\n"
 
   # Normal operations
-  puts "1. Normal Operations:"
+  puts '1. Normal Operations:'
   puts ship.raise_shields
   puts ship.scan_sector
 
   # Simulate some failures
   puts "\n2. Simulating system failures:"
   5.times do |i|
-    begin
-      puts "\nAttempt #{i + 1}:"
-      ship.circuit(:computer_core).call { raise "Memory bank failure!" }
-    rescue => e
-      puts "  Error: #{e.message}"
-    end
+    puts "\nAttempt #{i + 1}:"
+    ship.circuit(:computer_core).call { raise 'Memory bank failure!' }
+  rescue StandardError => e
+    puts "  Error: #{e.message}"
   end
 
   # Check cascade effect
@@ -239,7 +241,7 @@ if __FILE__ == $0
   # Try to use affected systems
   puts "\n4. Attempting to use cascaded systems:"
   begin
-    ship.circuit(:targeting_system).call { "Targeting..." }
+    ship.circuit(:targeting_system).call { 'Targeting...' }
   rescue BreakerMachines::CircuitOpenError => e
     puts "  Targeting system unavailable: #{e.message}"
   end
@@ -251,11 +253,9 @@ if __FILE__ == $0
   # Simulate main power failure
   puts "\n6. Simulating main power failure:"
   2.times do
-    begin
-      ship.circuit(:main_power).call { raise "Power conduit explosion!" }
-    rescue => e
-      puts "  Error: #{e.message}"
-    end
+    ship.circuit(:main_power).call { raise 'Power conduit explosion!' }
+  rescue StandardError => e
+    puts "  Error: #{e.message}"
   end
 
   # Final damage report

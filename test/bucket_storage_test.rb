@@ -17,8 +17,8 @@ class BucketStorageTest < ActiveSupport::TestCase
 
     status = @storage.get_status(@circuit_name)
 
-    assert_equal :open, status[:status]
-    assert_equal 1_234_567_890, status[:opened_at]
+    assert_equal :open, status.status
+    assert_equal 1_234_567_890, status.opened_at
   end
 
   def test_record_and_count_successes

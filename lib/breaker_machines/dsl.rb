@@ -279,6 +279,5 @@ module BreakerMachines
     def cleanup_stale_dynamic_circuits(max_age_seconds = 3600)
       BreakerMachines.registry.cleanup_stale_dynamic_circuits(max_age_seconds)
     end
-
   end
 end

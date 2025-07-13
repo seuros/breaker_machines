@@ -43,8 +43,8 @@ class StorageCacheTest < ActiveSupport::TestCase
     @storage.set_status('test_circuit', :open, Time.now.to_f)
     status = @storage.get_status('test_circuit')
 
-    assert_equal :open, status[:status]
-    assert status[:opened_at]
+    assert_equal :open, status.status
+    assert status.opened_at
   end
 
   def test_record_and_count_successes

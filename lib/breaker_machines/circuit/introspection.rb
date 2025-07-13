@@ -12,7 +12,7 @@ module BreakerMachines
       # - half_open? (returns true when status == :half_open)
 
       def stats
-        {
+        BreakerMachines::Stats.new(
           state: status_name,
           failure_count: @storage.failure_count(@name, @config[:failure_window]),
           success_count: @storage.success_count(@name, @config[:failure_window]),
@@ -20,7 +20,7 @@ module BreakerMachines
           opened_at: @opened_at.value,
           half_open_attempts: @half_open_attempts.value,
           half_open_successes: @half_open_successes.value
-        }
+        )
       end
 
       def configuration
@@ -39,40 +39,38 @@ module BreakerMachines
         hash = {
           name: @name,
           state: status_name,
-          stats: stats,
+          stats: stats.to_h,
           config: configuration.except(:owner, :storage, :metrics),
           event_log: event_log || [],
-          last_error: last_error_info
+          last_error: last_error_info&.to_h
         }
 
         # Add cascade-specific information if this is a cascading circuit
-        if self.is_a?(CascadingCircuit)
-          hash[:cascade_info] = cascade_info
-        end
+        hash[:cascade_info] = cascade_info.to_h if is_a?(CascadingCircuit)
 
         hash
       end
 
       def summary
         base_summary = case status_name
-        when :closed
-          "Circuit '#{@name}' is CLOSED. #{stats[:failure_count]} failures recorded."
-        when :open
-          # Calculate time remaining until reset
-          time_since_open = monotonic_time - @opened_at.value
-          time_until_reset = @config[:reset_timeout] - time_since_open
-          reset_time = time_until_reset.seconds.from_now
-          opened_time = time_since_open.seconds.ago
-          error_info = @last_error.value ? " The last error was #{@last_error.value.class}." : ''
-          "Circuit '#{@name}' is OPEN until #{reset_time}. " \
-            "It opened at #{opened_time} after #{@config[:failure_threshold]} failures.#{error_info}"
-        when :half_open
-          "Circuit '#{@name}' is HALF-OPEN. Testing with limited requests " \
-          "(#{@half_open_attempts.value}/#{@config[:half_open_calls]} attempts)."
-        end
+                       when :closed
+                         "Circuit '#{@name}' is CLOSED. #{stats.failure_count} failures recorded."
+                       when :open
+                         # Calculate time remaining until reset
+                         time_since_open = BreakerMachines.monotonic_time - @opened_at.value
+                         time_until_reset = @config[:reset_timeout] - time_since_open
+                         reset_time = time_until_reset.seconds.from_now
+                         opened_time = time_since_open.seconds.ago
+                         error_info = @last_error.value ? " The last error was #{@last_error.value.class}." : ''
+                         "Circuit '#{@name}' is OPEN until #{reset_time}. " \
+                           "It opened at #{opened_time} after #{@config[:failure_threshold]} failures.#{error_info}"
+                       when :half_open
+                         "Circuit '#{@name}' is HALF-OPEN. Testing with limited requests " \
+                         "(#{@half_open_attempts.value}/#{@config[:half_open_calls]} attempts)."
+                       end
 
         # Add cascade information if this is a cascading circuit
-        if self.is_a?(CascadingCircuit) && @dependent_circuits.any?
+        if is_a?(CascadingCircuit) && @dependent_circuits.any?
           base_summary += " [Cascades to: #{@dependent_circuits.join(', ')}]"
         end
 
@@ -83,11 +81,11 @@ module BreakerMachines
         error = @last_error.value
         return nil unless error
 
-        {
-          class: error.class.name,
+        BreakerMachines::ErrorInfo.new(
+          error_class: error.class.name,
           message: error.message,
           occurred_at: @last_failure_at.value
-        }
+        )
       end
     end
   end

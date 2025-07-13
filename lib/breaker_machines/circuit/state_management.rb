@@ -47,7 +47,7 @@ module BreakerMachines
       private
 
       def on_circuit_open
-        @opened_at.value = monotonic_time
+        @opened_at.value = BreakerMachines.monotonic_time
         @storage&.set_status(@name, :open, @opened_at.value)
         if @storage.respond_to?(:record_event_with_details)
           @storage.record_event_with_details(@name, :state_change, 0,
@@ -86,8 +86,8 @@ module BreakerMachines
         stored_status = @storage.get_status(@name)
         return unless stored_status
 
-        self.status = stored_status[:status].to_s
-        @opened_at.value = stored_status[:opened_at] if stored_status[:opened_at]
+        self.status = stored_status.status.to_s
+        @opened_at.value = stored_status.opened_at if stored_status.opened_at
       end
 
       def reset_timeout_elapsed?
@@ -99,7 +99,7 @@ module BreakerMachines
         jitter_multiplier = 1.0 + (((rand * 2) - 1) * jitter_factor)
         timeout_with_jitter = @config[:reset_timeout] * jitter_multiplier
 
-        monotonic_time - @opened_at.value >= timeout_with_jitter
+        BreakerMachines.monotonic_time - @opened_at.value >= timeout_with_jitter
       end
     end
   end
