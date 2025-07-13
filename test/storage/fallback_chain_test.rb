@@ -4,6 +4,7 @@ require 'test_helper'
 
 class FallbackChainTest < ActiveSupport::TestCase
   def setup
+    @original_cache = Rails.cache
     # Use memory cache store for testing since null_store doesn't actually store anything
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
 
@@ -15,8 +16,10 @@ class FallbackChainTest < ActiveSupport::TestCase
   end
 
   def teardown
+    super
     @chain&.cleanup!
-    Rails.cache = ActiveSupport::Cache::NullStore.new
+    # Restore original cache to prevent state leakage
+    Rails.cache = @original_cache
   end
 
   def test_successful_operation_on_first_backend

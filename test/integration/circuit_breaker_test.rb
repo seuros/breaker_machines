@@ -4,14 +4,36 @@ require 'test_helper'
 
 class CircuitBreakerTest < ActionDispatch::IntegrationTest
   def setup
-    # Clear all global circuits to prevent test pollution
+    super
+    
+    # FIRST: Clear everything to start with a clean slate
     BreakerMachines.registry.clear
-
-    # Reset all circuits before each test
+    
+    # Clear any persisted state in storage backends
+    # This ensures circuits start fresh even if they restore from storage
+    Rails.cache.clear
+    
+    # LAST: Call the test reset endpoint to establish baseline state
+    # This should be done AFTER all clearing operations
     post '/test/reset'
   end
 
-  test 'payment succeeds when circuit is closed' do
+  def teardown
+    super
+    # Ensure circuits are cleared after each test
+    BreakerMachines.registry.clear
+    
+    # Clear storage again to prevent state leakage
+    Rails.cache.clear
+    
+    # Reset test behavior
+    ExternalApiService.test_payment_behavior = nil
+  end
+
+  test 'payment succeeds when circuit is closed and service is healthy' do
+    # Force payment to succeed
+    ExternalApiService.test_payment_behavior = :success
+    
     get '/test/payment', params: { amount: 50.00 }
 
     assert_response :success
@@ -19,6 +41,31 @@ class CircuitBreakerTest < ActionDispatch::IntegrationTest
 
     assert_equal 'success', json['status']
     assert_predicate json['transaction_id'], :present?
+  ensure
+    ExternalApiService.test_payment_behavior = nil
+  end
+
+  test 'payment returns fallback when service fails but circuit remains closed' do
+    # Force payment to fail
+    ExternalApiService.test_payment_behavior = :fail
+    
+    get '/test/payment', params: { amount: 50.00 }
+
+    assert_response :success
+    json = JSON.parse(response.body)
+
+    # Should get fallback response
+    assert_equal 'queued', json['status']
+    assert_equal 'Payment will be processed when service recovers', json['message']
+    assert_predicate json['reference'], :present?
+    
+    # Verify circuit is still closed (one failure shouldn't trip it)
+    service = ExternalApiService.new
+    circuit = service.circuit(:payment_gateway)
+    assert_equal :closed, circuit.status_name.to_sym
+    assert_equal 1, circuit.stats.failure_count
+  ensure
+    ExternalApiService.test_payment_behavior = nil
   end
 
   test 'circuit opens after multiple failures and returns fallback' do
