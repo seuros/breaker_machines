@@ -30,7 +30,7 @@ class TestController < ApplicationController
   def trip_payment
     results = []
 
-    # Force multiple failures to trip the circuit
+    # Trigger failures within the circuit wrap to trip it
     5.times do
       service.circuit(:payment_gateway).wrap do
         raise StandardError, 'Forced failure for testing'
@@ -48,12 +48,13 @@ class TestController < ApplicationController
 
   # Reset circuits
   def reset
-    # Only reset if not already closed
+    # Force reset ALL circuits, not just if they're open
     payment_circuit = service.circuit(:payment_gateway)
     email_circuit = service.circuit(:email_service)
 
-    payment_circuit.reset! if payment_circuit.open? || payment_circuit.half_open?
-    email_circuit.reset! if email_circuit.open? || email_circuit.half_open?
+    # Use force_close! to ensure circuits are closed regardless of state
+    payment_circuit.force_close!
+    email_circuit.force_close!
 
     render json: {
       message: 'Circuits reset',

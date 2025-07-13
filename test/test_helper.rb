@@ -25,3 +25,22 @@ require 'state_machines/integrations/active_record'
 ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: ':memory:')
 ActiveRecord::Schema.verbose = false
 load File.expand_path('dummy/db/schema.rb', __dir__)
+
+# Global teardown to ensure circuit registry is cleared between ALL tests
+module ActiveSupport
+  class TestCase
+    # Disable parallel tests globally to prevent DRb connection pool corruption
+    # with FallbackChain and other storage timeout behaviors
+    parallelize(workers: 1)
+  end
+end
+
+class Minitest::Test
+  def teardown
+    super
+    # Clear the circuit registry after every test to prevent state leakage
+    BreakerMachines.registry.clear
+    # Clear Rails cache to prevent storage state leakage
+    Rails.cache.clear
+  end
+end

@@ -2,6 +2,9 @@
 
 class ExternalApiService
   include BreakerMachines::DSL
+  
+  # Test control for deterministic behavior
+  cattr_accessor :test_payment_behavior
 
   def circuit(name)
     case name
@@ -45,8 +48,8 @@ class ExternalApiService
 
   def process_payment(amount, _card_token)
     circuit(:payment_gateway).wrap do
-      # Simulate payment processing
-      raise 'Payment gateway timeout' if rand > 0.9 # 10% failure rate
+      # Simulate payment processing with 10% failure rate
+      raise 'Payment gateway timeout' if should_fail_payment?
 
       {
         status: 'success',
@@ -91,5 +94,13 @@ class ExternalApiService
         failure_count: email_stats.failure_count
       }
     }
+  end
+  
+  private
+  
+  def should_fail_payment?
+    # Allow tests to override this behavior
+    return test_payment_behavior == :fail if test_payment_behavior
+    rand > 0.9
   end
 end

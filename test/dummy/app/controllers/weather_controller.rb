@@ -2,6 +2,9 @@
 
 class WeatherController < ApplicationController
   include BreakerMachines::DSL
+  
+  # Test control for deterministic behavior
+  cattr_accessor :test_weather_behavior
 
   def circuit(name)
     case name
@@ -51,7 +54,11 @@ class WeatherController < ApplicationController
 
   def fetch_weather_from_external_api
     # Simulate an external API call
-    raise 'Weather API timeout' if rand > 0.8 # 20% chance of failure
+    if test_weather_behavior
+      raise 'Weather API timeout' if test_weather_behavior == :fail
+    else
+      raise 'Weather API timeout' if rand > 0.8 # 20% chance of failure
+    end
 
     {
       temperature: rand(60..80),
