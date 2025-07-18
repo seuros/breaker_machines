@@ -15,6 +15,9 @@ BreakerMachines.config.log_events = false
 # Disable fiber_safe by default during tests
 BreakerMachines.config.fiber_safe = false
 
+# Disable logger output during tests
+BreakerMachines.logger = Logger.new(nil)
+
 # Load Rails environment
 ENV['RAILS_ENV'] ||= 'test'
 require_relative 'dummy/config/environment'

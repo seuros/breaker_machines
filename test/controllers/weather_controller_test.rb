@@ -4,13 +4,8 @@ require 'test_helper'
 
 class WeatherControllerTest < ActionDispatch::IntegrationTest
   setup do
-    # Clear all global circuits to prevent test pollution
-    BreakerMachines.registry.clear
-
-    # Reset all circuits before each test
-    BreakerMachines.registry.all_circuits.each do |circuit|
-      circuit.reset! if circuit.open? || circuit.half_open?
-    end
+    # Reset BreakerMachines to ensure clean state
+    BreakerMachines.reset!
 
     # Ensure deterministic behavior
     WeatherController.test_weather_behavior = :success
