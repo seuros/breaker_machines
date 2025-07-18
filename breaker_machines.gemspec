@@ -20,6 +20,10 @@ Gem::Specification.new do |spec|
   spec.license = 'MIT'
   spec.required_ruby_version = '>= 3.2.0'
 
+  # Platform support
+  spec.platform = Gem::Platform::RUBY
+  # NOTE: This gem supports JRuby and TruffleRuby, but async features require MRI
+
   # Allow push to RubyGems.org
   spec.metadata['allowed_push_host'] = 'https://rubygems.org'
 
@@ -36,7 +40,7 @@ Gem::Specification.new do |spec|
   # Core dependencies
   spec.add_dependency 'activesupport', '>= 7.2'
   spec.add_dependency 'concurrent-ruby', '~> 1.3'
-  spec.add_dependency 'state_machines', '>= 0.50.0'
+  spec.add_dependency 'state_machines', '>= 0.100.0'
   spec.add_dependency 'zeitwerk', '~> 2.7'
 
   # Development dependencies

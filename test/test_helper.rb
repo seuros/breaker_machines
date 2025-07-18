@@ -35,12 +35,14 @@ module ActiveSupport
   end
 end
 
-class Minitest::Test
-  def teardown
-    super
-    # Clear the circuit registry after every test to prevent state leakage
-    BreakerMachines.registry.clear
-    # Clear Rails cache to prevent storage state leakage
-    Rails.cache.clear
+module Minitest
+  class Test
+    def teardown
+      super
+      # Clear the circuit registry after every test to prevent state leakage
+      BreakerMachines.registry.clear
+      # Clear Rails cache to prevent storage state leakage
+      Rails.cache.clear
+    end
   end
 end

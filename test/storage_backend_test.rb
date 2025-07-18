@@ -65,6 +65,9 @@ class StorageBackendsTest < ActiveSupport::TestCase
   end
 
   def test_default_storage_is_bucket_memory
+    # Reset to ensure default configuration
+    BreakerMachines.reset!
+
     probe = Class.new(SpaceProbe) do
       circuit :sensors do
         threshold failures: 2

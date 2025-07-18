@@ -30,9 +30,9 @@ To understand *why* this matters, read [Why I Open Sourced This](../WHY_OPEN_SOU
 2. **Open** - Circuit has tripped, requests are rejected or use fallback
 3. **Half-Open** - Testing if the service has recovered
 
-## Your First Circuit Breaker
+## Quick Start Examples
 
-### Simple Example
+### Simple Circuit Breaker
 
 ```ruby
 class PaymentService
@@ -117,6 +117,40 @@ class UserService
 end
 ```
 
+## Circuit Groups
+
+Manage related circuits with dependencies:
+
+```ruby
+class MicroserviceStack
+  def initialize
+    @services = BreakerMachines::CircuitGroup.new('stack', {
+      failure_threshold: 10,
+      reset_timeout: 30.seconds
+    })
+
+    # Database is the foundation
+    @services.circuit :database do
+      threshold failures: 3
+    end
+
+    # Cache depends on database
+    @services.circuit :cache, depends_on: :database do
+      threshold failures: 5
+    end
+
+    # API depends on both
+    @services.circuit :api, depends_on: [:database, :cache] do
+      threshold failures: 10
+    end
+  end
+
+  def call_api(&block)
+    @services[:api].call(&block)  # Fails if dependencies are down
+  end
+end
+```
+
 ## Dynamic Circuit Breakers
 
 For scenarios where you need circuit breakers created at runtime (like webhook delivery to different domains):
@@ -168,10 +202,21 @@ This creates a separate circuit breaker for each domain, allowing independent fa
 
 ## Next Steps
 
+### Core Features
 - Learn about [Configuration Options](CONFIGURATION.md) for fine-tuning your circuits
 - Explore [Advanced Patterns](ADVANCED_PATTERNS.md) for complex scenarios
-- Set up [Monitoring and Observability](OBSERVABILITY.md)
 - Understand [Persistence Options](PERSISTENCE.md) for distributed systems
-- Dive into [Testing Patterns](TESTING.md) to prove your worth
-- Explore [Asynchronous Support](ASYNC.md) and [Async Storage Examples](ASYNC_STORAGE_EXAMPLES.md) for modern Ruby applications
-- See [Rails Integration Examples](RAILS_INTEGRATION.md) for common web application patterns
+
+### Advanced Features
+- Master [Circuit Groups](CIRCUIT_GROUPS.md) for managing related services
+- Understand [Coordinated State Management](COORDINATED_STATE_MANAGEMENT.md) for dependency-aware circuits
+- Learn about [Cascading Circuit Breakers](CASCADING_CIRCUITS.md) for system-wide failure handling
+
+### Async & Testing
+- Explore [Asynchronous Support](ASYNC.md) including the AsyncCircuit class
+- Check out [Async Storage Examples](ASYNC_STORAGE_EXAMPLES.md) for non-blocking backends
+- Dive into [Testing Patterns](TESTING.md) to ensure reliability
+
+### Integration
+- Set up [Monitoring and Observability](OBSERVABILITY.md)
+- See [Rails Integration Examples](RAILS_INTEGRATION.md) for web applications

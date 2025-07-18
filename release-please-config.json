@@ -1,0 +1,9 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "ruby",
+      "package-name": "breaker_machines",
+      "bump-patch-for-minor-pre-major": true
+    }
+  }
+}

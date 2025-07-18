@@ -81,6 +81,22 @@ module BreakerMachines
       Registry.instance
     end
 
+    # Register a circuit with the global registry
+    def register(circuit)
+      registry.register(circuit)
+    end
+
+    # Reset the registry and configurations (useful for testing)
+    def reset!
+      registry.clear
+      config.default_storage = :bucket_memory
+      config.default_timeout = nil
+      config.default_reset_timeout = 60.seconds
+      config.default_failure_threshold = 5
+      config.log_events = true
+      config.fiber_safe = false
+    end
+
     # Returns the current monotonic time in seconds.
     # Monotonic time is guaranteed to always increase and is not affected
     # by system clock adjustments, making it ideal for measuring durations.

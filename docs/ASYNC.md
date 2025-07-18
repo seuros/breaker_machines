@@ -2,9 +2,11 @@
 
 ## Overview
 
-BreakerMachines offers optional `fiber_safe` mode for modern Ruby applications using Fiber-based servers like Falcon. This mode enables non-blocking operations, cooperative timeouts, and seamless integration with async/await patterns.
+BreakerMachines offers two levels of async support:
+1. **fiber_safe mode** - For modern Ruby applications using Fiber-based servers like Falcon
+2. **AsyncCircuit class** - Leveraging state_machines' async: true parameter for thread-safe concurrent operations
 
-**Important**: The `async` gem is completely optional. BreakerMachines works perfectly without it. You only need `async` if you want to use `fiber_safe` mode.
+**Important**: The `async` gem is completely optional. BreakerMachines works perfectly without it. You only need `async` if you want to use `fiber_safe` mode with Falcon or similar async frameworks.
 
 ## Why Fiber Support?
 
@@ -211,6 +213,95 @@ result = circuit(:fast_api).wrap do
 end
 ```
 
+## AsyncCircuit Class
+
+The `AsyncCircuit` class provides thread-safe state transitions using state_machines' async support:
+
+### Basic AsyncCircuit Usage
+
+```ruby
+# Create an async circuit
+async_circuit = BreakerMachines::AsyncCircuit.new('payment_api', {
+  failure_threshold: 5,
+  reset_timeout: 30.seconds,
+  timeout: 10
+})
+
+# Use it like a regular circuit
+result = async_circuit.call do
+  PaymentAPI.process(order)
+end
+
+# Or use async-specific methods (requires async gem)
+if defined?(Async)
+  Async do
+    task = async_circuit.call_async do
+      PaymentAPI.process_async(order)
+    end
+    result = task.wait
+  end
+end
+```
+
+### Understanding the async: true Parameter
+
+The AsyncCircuit leverages state_machines' `async: true` parameter, which automatically wraps all state transitions in mutex synchronization:
+
+```ruby
+# Under the hood, AsyncCircuit uses:
+state_machine :status, initial: :closed, async: true do
+  # All transitions are automatically thread-safe
+end
+```
+
+This parameter:
+- Adds mutex protection to all state transitions
+- Ensures thread-safe callback execution
+- Prevents race conditions in concurrent environments
+- Works seamlessly with JRuby and TruffleRuby's threading models
+
+### Thread-Safe State Transitions
+
+AsyncCircuit automatically provides mutex-protected state transitions:
+
+```ruby
+# Multiple threads can safely transition states
+threads = 10.times.map do
+  Thread.new do
+    100.times do
+      begin
+        async_circuit.call { perform_operation }
+      rescue => e
+        # Circuit handles concurrent failures safely
+      end
+    end
+  end
+end
+
+threads.each(&:join)
+```
+
+### Using with Circuit Groups
+
+```ruby
+# Enable async mode for all circuits in a group
+async_services = BreakerMachines::CircuitGroup.new('services', 
+                                                   async_mode: true)
+
+async_services.circuit :database do
+  threshold failures: 3
+  timeout 5
+end
+
+async_services.circuit :cache do
+  threshold failures: 5
+  timeout 2
+end
+
+# All circuits in the group are AsyncCircuit instances
+async_services[:database].class # => BreakerMachines::AsyncCircuit
+```
+
 ## Integration with Falcon
 
 BreakerMachines works seamlessly with Falcon server:
@@ -236,9 +327,17 @@ class MyApp < Roda
 
   route do |r|
     r.get "api" do
+      # Use fiber_safe circuit for Falcon
       circuit(:external_api).wrap do
         # This won't block the event loop
         fetch_external_data
+      end
+    end
+
+    r.get "async_api" do
+      # Or use AsyncCircuit for thread-safe operations
+      async_circuit.call do
+        fetch_concurrent_data
       end
     end
   end
@@ -367,6 +466,20 @@ Async.logger.level = Logger::DEBUG
 3. **Monitor fiber count** - Too many concurrent fibers can cause memory issues
 4. **Test timeout behavior** - Ensure your timeouts work as expected
 5. **Use async storage** - For maximum performance, use async-compatible storage backends
+
+## Platform Support
+
+### JRuby Considerations
+- AsyncCircuit works seamlessly on JRuby with thread-based concurrency
+- The `async: true` parameter leverages JRuby's efficient thread management
+- Fiber-safe mode requires the `async` gem's JRuby fiber implementation
+- Performance is excellent due to JVM's mature threading model
+
+### TruffleRuby Support
+- Full compatibility with both fiber_safe mode and AsyncCircuit
+- TruffleRuby's advanced JIT compilation optimizes state machine transitions
+- The `async: true` parameter benefits from TruffleRuby's low-overhead locking
+- Consider using TruffleRuby for CPU-intensive circuit breaker workloads
 
 ## Next Steps
 

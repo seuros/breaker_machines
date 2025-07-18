@@ -6,6 +6,8 @@ Cascading circuit breakers allow you to model complex system dependencies where 
 
 When a cascading circuit breaker opens (fails), it automatically forces all its dependent circuits to open as well. This prevents cascading failures from propagating through your system in an uncontrolled manner.
 
+`CascadingCircuit` inherits from `CoordinatedCircuit`, providing both cascading failure propagation and coordinated recovery management. This means cascading circuits can also check dependencies before allowing recovery or reset operations.
+
 ## Basic Usage
 
 ```ruby

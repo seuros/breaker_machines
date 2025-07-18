@@ -7,7 +7,7 @@ module BreakerMachines
     include StateManagement
     include Configuration
     include Execution
-    include HedgedExecution
+    include Circuit::HedgedExecution
     include Introspection
     include Callbacks
   end

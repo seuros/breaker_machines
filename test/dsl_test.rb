@@ -43,6 +43,7 @@ class DSLTest < ActiveSupport::TestCase
   end
 
   def setup
+    BreakerMachines.reset!
     @station = SpaceStation.new
   end
 
