@@ -14,6 +14,16 @@ module BreakerMachines
     end
   end
 
+  # Raised when a circuit cannot be called due to unmet dependencies
+  class CircuitDependencyError < CircuitOpenError
+    def initialize(circuit_name, message = nil)
+      @circuit_name = circuit_name
+      @opened_at = nil
+      super_message = message || "Circuit '#{circuit_name}' cannot be called: dependencies not met"
+      Error.instance_method(:initialize).bind(self).call(super_message)
+    end
+  end
+
   # Raised when a circuit-protected call exceeds the configured timeout
   class CircuitTimeoutError < Error
     attr_reader :circuit_name, :timeout

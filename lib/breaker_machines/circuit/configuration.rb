@@ -78,8 +78,12 @@ module BreakerMachines
         when :null
           BreakerMachines::Storage::Null.new
         else
-          # Allow for custom storage class names
-          BreakerMachines.config.default_storage.new
+          # Allow for custom storage class names or instances
+          if BreakerMachines.config.default_storage.respond_to?(:new)
+            BreakerMachines.config.default_storage.new
+          else
+            BreakerMachines.config.default_storage
+          end
         end
       end
     end

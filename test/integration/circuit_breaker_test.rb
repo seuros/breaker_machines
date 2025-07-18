@@ -5,14 +5,14 @@ require 'test_helper'
 class CircuitBreakerTest < ActionDispatch::IntegrationTest
   def setup
     super
-    
+
     # FIRST: Clear everything to start with a clean slate
     BreakerMachines.registry.clear
-    
+
     # Clear any persisted state in storage backends
     # This ensures circuits start fresh even if they restore from storage
     Rails.cache.clear
-    
+
     # LAST: Call the test reset endpoint to establish baseline state
     # This should be done AFTER all clearing operations
     post '/test/reset'
@@ -22,10 +22,10 @@ class CircuitBreakerTest < ActionDispatch::IntegrationTest
     super
     # Ensure circuits are cleared after each test
     BreakerMachines.registry.clear
-    
+
     # Clear storage again to prevent state leakage
     Rails.cache.clear
-    
+
     # Reset test behavior
     ExternalApiService.test_payment_behavior = nil
   end
@@ -33,7 +33,7 @@ class CircuitBreakerTest < ActionDispatch::IntegrationTest
   test 'payment succeeds when circuit is closed and service is healthy' do
     # Force payment to succeed
     ExternalApiService.test_payment_behavior = :success
-    
+
     get '/test/payment', params: { amount: 50.00 }
 
     assert_response :success
@@ -46,9 +46,13 @@ class CircuitBreakerTest < ActionDispatch::IntegrationTest
   end
 
   test 'payment returns fallback when service fails but circuit remains closed' do
+    # Ensure circuit starts fresh
+    service = ExternalApiService.new
+    service.circuit(:payment_gateway).force_close!
+
     # Force payment to fail
     ExternalApiService.test_payment_behavior = :fail
-    
+
     get '/test/payment', params: { amount: 50.00 }
 
     assert_response :success
@@ -58,10 +62,11 @@ class CircuitBreakerTest < ActionDispatch::IntegrationTest
     assert_equal 'queued', json['status']
     assert_equal 'Payment will be processed when service recovers', json['message']
     assert_predicate json['reference'], :present?
-    
+
     # Verify circuit is still closed (one failure shouldn't trip it)
     service = ExternalApiService.new
     circuit = service.circuit(:payment_gateway)
+
     assert_equal :closed, circuit.status_name.to_sym
     assert_equal 1, circuit.stats.failure_count
   ensure

@@ -2,12 +2,18 @@
 
 module BreakerMachines
   class Circuit
-    # StateManagement provides the state machine functionality for circuit breakers,
-    # managing transitions between closed, open, and half-open states.
-    module StateManagement
+    # AsyncStateManagement provides state machine functionality with async support
+    # leveraging state_machines' async: true parameter for thread-safe operations
+    module AsyncStateManagement
       extend ActiveSupport::Concern
+
       included do
-        state_machine :status, initial: :closed do
+        # Enable async mode for thread-safe state transitions
+        # This automatically provides:
+        # - Mutex-protected state reads/writes
+        # - Fiber-safe execution
+        # - Concurrent transition handling
+        state_machine :status, initial: :closed, async: true do
           event :trip do
             transition closed: :open
             transition half_open: :open
@@ -30,6 +36,7 @@ module BreakerMachines
             transition any => :closed
           end
 
+          # Async-safe callbacks using modern API
           after_transition to: :open do |circuit|
             circuit.send(:on_circuit_open)
           end
@@ -42,6 +49,12 @@ module BreakerMachines
             circuit.send(:on_circuit_half_open)
           end
         end
+
+        # Additional async event methods are automatically generated:
+        # - trip_async! - Returns Async::Task
+        # - attempt_recovery_async! - Returns Async::Task
+        # - reset_async! - Returns Async::Task
+        # - fire_event_async(:event_name) - Generic async event firing
       end
 
       private

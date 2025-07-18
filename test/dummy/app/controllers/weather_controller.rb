@@ -2,7 +2,7 @@
 
 class WeatherController < ApplicationController
   include BreakerMachines::DSL
-  
+
   # Test control for deterministic behavior
   cattr_accessor :test_weather_behavior
 
@@ -56,8 +56,8 @@ class WeatherController < ApplicationController
     # Simulate an external API call
     if test_weather_behavior
       raise 'Weather API timeout' if test_weather_behavior == :fail
-    else
-      raise 'Weather API timeout' if rand > 0.8 # 20% chance of failure
+    elsif rand > 0.8
+      raise 'Weather API timeout' # 20% chance of failure
     end
 
     {

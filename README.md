@@ -44,6 +44,10 @@ Built on the battle-tested `state_machines` gem, because I don't reinvent wheels
 
 - **Thread-safe** circuit breaker implementation
 - **Fiber-safe mode** for async Ruby (Falcon, async gem)
+- **AsyncCircuit** class with mutex-protected state transitions
+- **Circuit Groups** for managing related circuits with dependencies
+- **Coordinated State Management** for dependency-aware transitions
+- **Cascading Circuit Breakers** for modeling system dependencies
 - **Hedged requests** for latency reduction
 - **Multiple backends** with automatic failover
 - **Bulkheading** to limit concurrent requests
@@ -52,21 +56,39 @@ Built on the battle-tested `state_machines` gem, because I don't reinvent wheels
 - **Pluggable storage** (Memory, Redis, Custom)
 - **Rich callbacks** and instrumentation
 - **ActiveSupport::Notifications** integration
+- **Cross-platform support** - Optimized for MRI, JRuby, and TruffleRuby
 
 ## Documentation
 
+### Core Features
 - **Getting Started Guide** (docs/GETTING_STARTED.md) - Installation and basic usage
 - **Configuration Reference** (docs/CONFIGURATION.md) - All configuration options
 - **Advanced Patterns** (docs/ADVANCED_PATTERNS.md) - Complex scenarios and patterns
+
+### Advanced Features
+- **Circuit Groups** (docs/CIRCUIT_GROUPS.md) - Managing related circuits with dependencies
+- **Coordinated State Management** (docs/COORDINATED_STATE_MANAGEMENT.md) - Dependency-aware state transitions
+- **Cascading Circuit Breakers** (docs/CASCADING_CIRCUITS.md) - Modeling system dependencies
+
+### Async & Concurrency
+- **Async Mode** (docs/ASYNC.md) - Fiber-safe operations and AsyncCircuit
+- **Async Storage Examples** (docs/ASYNC_STORAGE_EXAMPLES.md) - Non-blocking storage backends
+
+### Storage & Persistence
 - **Persistence Options** (docs/PERSISTENCE.md) - Storage backends and distributed state
-- **Observability Guide** (docs/OBSERVABILITY.md) - Monitoring and metrics
-- **Async Mode** (docs/ASYNC.md) - Fiber-safe operations
+
+### Testing
 - **Testing Guide** (docs/TESTING.md) - Testing strategies
   - [RSpec Testing](docs/TESTING_RSPEC.md)
   - [ActiveSupport Testing](docs/TESTING_ACTIVESUPPORT.md)
+
+### Integration & Monitoring
 - **Rails Integration** (docs/RAILS_INTEGRATION.md) - Rails-specific patterns
-- **Horror Stories** (docs/HORROR_STORIES.md) - Real production failures and lessons learned
+- **Observability Guide** (docs/OBSERVABILITY.md) - Monitoring and metrics
+
+### Reference
 - **API Reference** (docs/API_REFERENCE.md) - Complete API documentation
+- **Horror Stories** (docs/HORROR_STORIES.md) - Real production failures and lessons learned
 
 ## Why BreakerMachines?
 

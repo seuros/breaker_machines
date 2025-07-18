@@ -10,6 +10,7 @@ class CircuitTest < ActiveSupport::TestCase
   end
 
   def setup
+    BreakerMachines.reset!
     @circuit = BreakerMachines::Circuit.new(:test_circuit, {
                                               failure_threshold: 3,
                                               failure_window: 60,

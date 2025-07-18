@@ -15,6 +15,9 @@ BreakerMachines.config.log_events = false
 # Disable fiber_safe by default during tests
 BreakerMachines.config.fiber_safe = false
 
+# Disable logger output during tests
+BreakerMachines.logger = Logger.new(nil)
+
 # Load Rails environment
 ENV['RAILS_ENV'] ||= 'test'
 require_relative 'dummy/config/environment'
@@ -35,12 +38,14 @@ module ActiveSupport
   end
 end
 
-class Minitest::Test
-  def teardown
-    super
-    # Clear the circuit registry after every test to prevent state leakage
-    BreakerMachines.registry.clear
-    # Clear Rails cache to prevent storage state leakage
-    Rails.cache.clear
+module Minitest
+  class Test
+    def teardown
+      super
+      # Clear the circuit registry after every test to prevent state leakage
+      BreakerMachines.registry.clear
+      # Clear Rails cache to prevent storage state leakage
+      Rails.cache.clear
+    end
   end
 end

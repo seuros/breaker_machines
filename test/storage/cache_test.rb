@@ -34,12 +34,22 @@ class StorageCacheTest < ActiveSupport::TestCase
     end
   end
 
-  def setup
+  class MockCacheWithoutIncrement < MockCache
+    # rubocop:disable Style/OptionalBooleanParameter
+    def respond_to?(method, include_private = false)
+      return false if method == :increment
+
+      super
+    end
+    # rubocop:enable Style/OptionalBooleanParameter
+  end
+
+  setup do
     @cache = MockCache.new
     @storage = BreakerMachines::Storage::Cache.new(cache_store: @cache)
   end
 
-  def test_status_persistence
+  test 'persists circuit status' do
     @storage.set_status('test_circuit', :open, Time.now.to_f)
     status = @storage.get_status('test_circuit')
 
@@ -47,20 +57,19 @@ class StorageCacheTest < ActiveSupport::TestCase
     assert status.opened_at
   end
 
-  def test_record_and_count_successes
+  test 'records and counts successes' do
     5.times { @storage.record_success('test_circuit', 0.1) }
 
-    # With increment support, it returns total count
     assert_equal 5, @storage.success_count('test_circuit', 60)
   end
 
-  def test_record_and_count_failures
+  test 'records and counts failures' do
     3.times { @storage.record_failure('test_circuit', 0.1) }
 
     assert_equal 3, @storage.failure_count('test_circuit', 60)
   end
 
-  def test_clear_circuit_data
+  test 'clears circuit data' do
     @storage.set_status('test_circuit', :open)
     @storage.record_success('test_circuit', 0.1)
     @storage.record_failure('test_circuit', 0.1)
@@ -72,7 +81,7 @@ class StorageCacheTest < ActiveSupport::TestCase
     assert_equal 0, @storage.failure_count('test_circuit', 60)
   end
 
-  def test_clear_all_with_pattern_support
+  test 'clears all circuit data with pattern support' do
     @storage.set_status('circuit1', :open)
     @storage.set_status('circuit2', :closed)
 
@@ -82,10 +91,14 @@ class StorageCacheTest < ActiveSupport::TestCase
     assert_nil @storage.get_status('circuit2')
   end
 
-  def test_event_logging
-    @storage.record_event_with_details('test_circuit', :failure, 0.5,
-                                       error: StandardError.new('Test error'),
-                                       new_state: :open)
+  test 'logs events with details' do
+    @storage.record_event_with_details(
+      'test_circuit',
+      :failure,
+      0.5,
+      error: StandardError.new('Test error'),
+      new_state: :open
+    )
 
     events = @storage.event_log('test_circuit', 10)
 
@@ -96,19 +109,12 @@ class StorageCacheTest < ActiveSupport::TestCase
     assert_equal :open, events.first[:new_state]
   end
 
-  def test_works_with_cache_without_increment
-    # Test fallback for caches without atomic increment
-    cache_without_increment = MockCache.new
-    def cache_without_increment.respond_to?(method)
-      return false if method == :increment
-
-      super
-    end
-
-    storage = BreakerMachines::Storage::Cache.new(cache_store: cache_without_increment)
+  test 'handles caches without increment method' do
+    storage = BreakerMachines::Storage::Cache.new(cache_store: MockCacheWithoutIncrement.new)
 
     3.times { storage.record_failure('test_circuit', 0.1) }
-    # With bucket-based counting
+
     assert_operator storage.failure_count('test_circuit', 60), :>=, 3
   end
 end
+

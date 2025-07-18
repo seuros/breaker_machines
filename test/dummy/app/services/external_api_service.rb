@@ -2,7 +2,7 @@
 
 class ExternalApiService
   include BreakerMachines::DSL
-  
+
   # Test control for deterministic behavior
   cattr_accessor :test_payment_behavior
 
@@ -95,12 +95,13 @@ class ExternalApiService
       }
     }
   end
-  
+
   private
-  
+
   def should_fail_payment?
     # Allow tests to override this behavior
     return test_payment_behavior == :fail if test_payment_behavior
+
     rand > 0.9
   end
 end

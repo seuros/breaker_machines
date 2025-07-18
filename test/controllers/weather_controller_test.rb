@@ -4,18 +4,13 @@ require 'test_helper'
 
 class WeatherControllerTest < ActionDispatch::IntegrationTest
   setup do
-    # Clear all global circuits to prevent test pollution
-    BreakerMachines.registry.clear
+    # Reset BreakerMachines to ensure clean state
+    BreakerMachines.reset!
 
-    # Reset all circuits before each test
-    BreakerMachines.registry.all_circuits.each do |circuit|
-      circuit.reset! if circuit.open? || circuit.half_open?
-    end
-    
     # Ensure deterministic behavior
     WeatherController.test_weather_behavior = :success
   end
-  
+
   def teardown
     super
     # Reset test behavior
@@ -40,7 +35,7 @@ class WeatherControllerTest < ActionDispatch::IntegrationTest
     3.times do
       get '/weather'
     end
-    
+
     # Reset behavior so next call doesn't fail
     WeatherController.test_weather_behavior = :success
 
@@ -66,12 +61,12 @@ class WeatherControllerTest < ActionDispatch::IntegrationTest
 
     # Skip test if weather circuit doesn't exist yet
     skip 'Weather circuit not found' unless weather_circuit
-    
+
     assert_equal 'closed', weather_circuit['state']
 
     # Trigger failures
     WeatherController.test_weather_behavior = :fail
-    3.times do |i|
+    3.times do |_i|
       get '/weather'
       # The circuit will return fallback after 3 failures
     end

@@ -93,6 +93,9 @@ class DummyShipsTest < ActiveSupport::TestCase
   end
 
   def test_circuit_independence_across_ships
+    # Reset all circuits to ensure clean state
+    BreakerMachines.reset!
+    
     # Cause battle ship's weapons to fail
     3.times do
       @battle_ship.circuit(:weapons).wrap { raise 'Weapons malfunction' }
@@ -195,6 +198,9 @@ class DummyShipsTest < ActiveSupport::TestCase
   end
 
   def test_cascading_circuit_failures
+    # Reset to ensure clean state
+    BreakerMachines.reset!
+    
     # Science vessel sensor failure affects experiments
     begin
       @science_vessel.circuit(:sensor_array).wrap { raise 'Sensor overload' }
@@ -202,7 +208,7 @@ class DummyShipsTest < ActiveSupport::TestCase
       nil
     end
 
-    # Can still do basic experiments
+    # Can still do basic experiments (laboratory circuit is still closed)
     result = @science_vessel.conduct_experiment('Basic chemistry')
 
     assert_match(/completed/, result)

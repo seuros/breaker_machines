@@ -78,8 +78,8 @@ class CascadingCircuitTest < ActiveSupport::TestCase
     BreakerMachines.registry.clear if BreakerMachines.registry.respond_to?(:clear)
   end
 
-  test 'cascading circuit inherits from base circuit' do
-    assert_kind_of BreakerMachines::Circuit, @ship.circuit(:main_power)
+  test 'cascading circuit inherits from coordinated circuit' do
+    assert_kind_of BreakerMachines::CoordinatedCircuit, @ship.circuit(:main_power)
     assert_instance_of BreakerMachines::CascadingCircuit, @ship.circuit(:main_power)
   end
 

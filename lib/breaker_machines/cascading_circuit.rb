@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 
+require_relative 'coordinated_circuit'
+
 module BreakerMachines
-  # CascadingCircuit extends the base Circuit class with the ability to automatically
+  # CascadingCircuit extends the CoordinatedCircuit class with the ability to automatically
   # trip dependent circuits when this circuit opens. This enables sophisticated
   # failure cascade modeling, similar to how critical system failures in a starship
   # would cascade to dependent subsystems.
@@ -18,7 +20,7 @@ module BreakerMachines
   #   network_circuit.call { raise 'Subspace relay offline!' }
   #   # => All dependent circuits are now open
   #
-  class CascadingCircuit < Circuit
+  class CascadingCircuit < CoordinatedCircuit
     attr_reader :dependent_circuits, :emergency_protocol
 
     def initialize(name, config = {})
@@ -144,7 +146,7 @@ module BreakerMachines
 
       # Allow custom emergency protocol handling
       owner = @config[:owner]
-      if owner&.respond_to?(@emergency_protocol, true)
+      if owner.respond_to?(@emergency_protocol, true)
         begin
           owner.send(@emergency_protocol, affected_circuits)
         rescue StandardError => e
