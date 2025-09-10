@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.4.2...breaker_machines/v0.5.0) (2025-09-10)
+
+
+### Bug Fixes
+
+* version ([c69d413](https://github.com/seuros/breaker_machines/commit/c69d41371ea9b72c63b0cce11825f6059a45b8f3))
+
 ## [0.4.2](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.4.1...breaker_machines/v0.4.2) (2025-09-10)
 
 
