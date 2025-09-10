@@ -120,19 +120,14 @@ module BreakerMachines
           end
         end
 
-        # Wait for first successful result
-        begin
-          Timeout.timeout(5) do # reasonable timeout for fallbacks
-            loop do
-              return result_queue.pop unless result_queue.empty?
+        threads.each(&:join)
 
-              raise error_queue.pop if error_queue.size >= fallbacks.size
-
-              sleep 0.001
-            end
-          end
-        ensure
-          threads.each(&:kill)
+        if result_queue.empty?
+          errors = []
+          errors << error_queue.pop until error_queue.empty?
+          raise BreakerMachines::ParallelFallbackError.new('All parallel fallbacks failed', errors)
+        else
+          result_queue.pop
         end
       end
     end

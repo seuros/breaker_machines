@@ -58,4 +58,14 @@ module BreakerMachines
       super("Circuit '#{circuit_name}' rejected call: max concurrent limit of #{max_concurrent} reached")
     end
   end
+
+  # Raised when all parallel fallbacks fail
+  class ParallelFallbackError < Error
+    attr_reader :errors
+
+    def initialize(message, errors)
+      @errors = errors
+      super(message)
+    end
+  end
 end

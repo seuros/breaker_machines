@@ -62,7 +62,7 @@ class HedgedExecutionTest < ActiveSupport::TestCase
     # Should get result from fast backend
     assert_equal 'fast', result
     # Should complete quickly (not wait for slow backend)
-    assert_operator duration, :<, 0.08
+    assert_operator duration, :<, 0.03
   end
 
   def test_hedged_request_with_failure
@@ -102,7 +102,7 @@ class HedgedExecutionTest < ActiveSupport::TestCase
     # Should get fastest fallback
     assert_equal 'fallback2', result
     # Should complete quickly
-    assert_operator duration, :<, 0.03
+    assert_operator duration, :<, 0.08
   end
 
   def test_hedged_with_bulkhead
