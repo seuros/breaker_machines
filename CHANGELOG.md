@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.2](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.4.1...breaker_machines/v0.4.2) (2025-09-10)
+
+
+### Features
+
+* modernize async API to leverage 2.31.0 features ([#19](https://github.com/seuros/breaker_machines/issues/19)) ([8360716](https://github.com/seuros/breaker_machines/commit/836071690cee92febdc7d66d9839dbfb68fe486f))
+
+
+### Bug Fixes
+
+* implement hard_reset event for proper test isolation ([#16](https://github.com/seuros/breaker_machines/issues/16)) ([0e0c31f](https://github.com/seuros/breaker_machines/commit/0e0c31f0c5e289be77c453b41ea56a8b96449610))
+* resolve race condition in parallel fallback execution ([#18](https://github.com/seuros/breaker_machines/issues/18)) ([07eed69](https://github.com/seuros/breaker_machines/commit/07eed69092dc4747251e10d6501a054570198e5f))
+
 ## [0.4.1](https://github.com/seuros/breaker_machines/compare/breaker_machines-v0.4.0...breaker_machines/v0.4.1) (2025-09-10)
 
 
