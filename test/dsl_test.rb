@@ -162,4 +162,33 @@ class DSLTest < ActiveSupport::TestCase
     assert_includes shields_config[:exceptions], StandardError
     assert_includes shields_config[:exceptions], SystemCallError
   end
+
+  class ParallelSystem
+    include BreakerMachines::DSL
+
+    circuit :parallel_processing do
+      parallel_fallback [
+        -> { raise 'Fallback 1 failed' },
+        -> { raise 'Fallback 2 failed' },
+        -> { raise 'Fallback 3 failed' }
+      ]
+    end
+
+    def process
+      circuit(:parallel_processing).wrap { raise 'Processing failed' }
+    end
+  end
+
+  def test_parallel_fallbacks_all_fail
+    system = ParallelSystem.new
+    error = assert_raises BreakerMachines::ParallelFallbackError do
+      system.process
+    end
+
+    assert_equal 'All parallel fallbacks failed', error.message
+    assert_equal 3, error.errors.size
+    assert_equal 'Fallback 1 failed', error.errors[0].message
+    assert_equal 'Fallback 2 failed', error.errors[1].message
+    assert_equal 'Fallback 3 failed', error.errors[2].message
+  end
 end
