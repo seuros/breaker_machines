@@ -2,10 +2,12 @@
 
 # This file contains async support for hedged execution
 # It is only loaded when fiber_safe mode is enabled
+# Requires async gem ~> 2.31.0 for Promise and modern API features
 
 require 'async'
 require 'async/task'
-require 'async/condition'
+require 'async/promise'
+require 'async/barrier'
 require 'concurrent'
 
 module BreakerMachines
@@ -43,53 +45,44 @@ module BreakerMachines
     private
 
     # Race callables; return first result or raise if it was an Exception
-    # Uses Async::Condition to signal the winner instead of an Async::Channel.
+    # Uses modern Async::Promise and Async::Barrier for cleaner synchronization
     # @param callables [Array<Proc>] Tasks to race
     # @param delay_ms [Integer] Delay in milliseconds between task starts
     # @return [Object] First successful result
     # @raise [Exception] The first exception received
     def race_tasks(callables, delay_ms: 0)
-      Async do |parent|
-        mutex     = Mutex.new
-        condition = Async::Condition.new
-        winner    = nil
-        exception = nil
+      promise = Async::Promise.new
+      barrier = Async::Barrier.new
 
-        tasks = callables.map.with_index do |callable, idx|
-          parent.async do |task|
-            # stagger hedged attempts
-            task.sleep(delay_ms / 1000.0) if idx.positive? && delay_ms.positive?
+      begin
+        result = Async do
+          callables.each_with_index do |callable, idx|
+            barrier.async do
+              # stagger hedged attempts
+              sleep(delay_ms / 1000.0) if idx.positive? && delay_ms.positive?
 
-            begin
-              res = callable.call
-              mutex.synchronize do
-                next if winner || exception
-
-                winner = res
-                condition.signal
-              end
-            rescue StandardError => e
-              mutex.synchronize do
-                next if winner || exception
-
-                exception = e
-                condition.signal
+              begin
+                result = callable.call
+                # Try to resolve the promise with this result
+                # Only the first resolution will succeed
+                promise.resolve(result) unless promise.resolved?
+              rescue StandardError => e
+                # Only set exception if no result has been resolved yet
+                promise.resolve(e) unless promise.resolved?
               end
             end
           end
-        end
 
-        # block until first signal
-        condition.wait
+          # Wait for the first resolution (either success or exception)
+          promise.wait
+        end.wait
 
-        # tear down
-        tasks.each(&:stop)
-
-        # propagate
-        raise(exception) if exception
-
-        winner
-      end.wait
+        # If result is an exception, raise it; otherwise return the result
+        result.is_a?(StandardError) ? raise(result) : result
+      ensure
+        # Ensure all tasks are stopped
+        barrier&.stop
+      end
     end
   end
 end

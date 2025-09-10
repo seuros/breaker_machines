@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+# Requires async gem ~> 2.31.0 for modern async patterns
+
 require_relative 'circuit/async_state_management'
 
 module BreakerMachines
