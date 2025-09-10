@@ -4,20 +4,11 @@ require 'test_helper'
 
 class AsyncCircuitTest < ActiveSupport::TestCase
   def setup
-    skip 'Async gem not available' unless async_available?
+    skip_async_dependent_test
 
     BreakerMachines.reset!
     @storage = BreakerMachines::Storage::Memory.new
     BreakerMachines.default_storage = @storage
-  end
-
-  private
-
-  def async_available?
-    require 'async'
-    true
-  rescue LoadError
-    false
   end
 
   def test_async_circuit_basic_functionality

@@ -35,13 +35,20 @@ begin
   load File.expand_path('dummy/db/schema.rb', __dir__)
 rescue LoadError
   # Rails not available (e.g., on JRuby)
-  require_relative 'jruby_test_helper'
 end
 
-# Skip Rails-dependent tests helper
+# Skip platform-dependent tests helper
 module RailsTestSkipper
   def skip_rails_dependent_test
     # This is a no-op when Rails is available
+  end
+
+  def skip_activerecord_dependent_test
+    skip 'ActiveRecord not available' unless defined?(ActiveRecord)
+  end
+
+  def skip_async_dependent_test
+    skip 'Async gem not available' unless defined?(Async)
   end
 end
 
@@ -62,6 +69,16 @@ if defined?(ActiveSupport)
         # Clear Rails cache to prevent storage state leakage
         Rails.cache.clear if defined?(Rails)
       end
+    end
+  end
+else
+  # Add helper to Minitest::Test for non-Rails environments
+  class Minitest::Test
+    include RailsTestSkipper
+
+    def teardown
+      super
+      BreakerMachines.registry.clear
     end
   end
 end
