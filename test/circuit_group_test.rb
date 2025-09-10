@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class CircuitGroupTest < Minitest::Test
+class CircuitGroupTest < ActiveSupport::TestCase
   def setup
     BreakerMachines.reset!
     BreakerMachines.config.default_storage = :memory

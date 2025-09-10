@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+# Skip this entire test file if Rails is not available
+return unless defined?(ApplicationController)
+
 class TestController < ApplicationController
   # Process a payment through circuit breaker
   def payment

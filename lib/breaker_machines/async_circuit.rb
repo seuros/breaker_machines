@@ -1,17 +1,13 @@
 # frozen_string_literal: true
 
+require_relative 'circuit'
 require_relative 'circuit/async_state_management'
 
 module BreakerMachines
   # AsyncCircuit provides a circuit breaker with async-enabled state machine
   # for thread-safe, fiber-safe concurrent operations
-  class AsyncCircuit
+  class AsyncCircuit < Circuit
     include Circuit::AsyncStateManagement
-    include Circuit::Configuration
-    include Circuit::Execution
-    include Circuit::HedgedExecution
-    include Circuit::Introspection
-    include Circuit::Callbacks
 
     # Additional async-specific methods
     def call_async(&block)
