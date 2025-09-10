@@ -53,32 +53,20 @@ module RailsTestSkipper
 end
 
 # Global teardown to ensure circuit registry is cleared between ALL tests
-if defined?(ActiveSupport)
-  module ActiveSupport
-    class TestCase
-      include RailsTestSkipper
-
-      # Disable parallel tests globally to prevent DRb connection pool corruption
-      # with FallbackChain and other storage timeout behaviors
-      parallelize(workers: 1)
-
-      def teardown
-        super
-        # Clear the circuit registry after every test to prevent state leakage
-        BreakerMachines.registry.clear
-        # Clear Rails cache to prevent storage state leakage
-        Rails.cache.clear if defined?(Rails)
-      end
-    end
-  end
-else
-  # Add helper to Minitest::Test for non-Rails environments
-  class Minitest::Test
+module ActiveSupport
+  class TestCase
     include RailsTestSkipper
+
+    # Disable parallel tests globally to prevent DRb connection pool corruption
+    # with FallbackChain and other storage timeout behaviors
+    parallelize(workers: 1)
 
     def teardown
       super
+      # Clear the circuit registry after every test to prevent state leakage
       BreakerMachines.registry.clear
+      # Clear Rails cache to prevent storage state leakage
+      Rails.cache.clear if defined?(Rails)
     end
   end
 end

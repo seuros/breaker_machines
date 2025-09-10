@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'concurrent-ruby'
-require_relative 'state_callbacks'
 
 module BreakerMachines
   class Circuit

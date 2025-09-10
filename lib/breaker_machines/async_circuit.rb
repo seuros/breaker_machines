@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require_relative 'circuit'
 require_relative 'circuit/async_state_management'
 
 module BreakerMachines
