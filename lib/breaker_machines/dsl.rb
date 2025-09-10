@@ -122,7 +122,7 @@ module BreakerMachines
         instance_registry.each do |weak_ref|
           instance = weak_ref.__getobj__
           circuit_instances = instance.instance_variable_get(:@circuit_instances)
-          circuit_instances&.each_value(&:force_close!)
+          circuit_instances&.each_value(&:hard_reset!)
         rescue WeakRef::RefError
           # Instance was garbage collected, skip it
         end
@@ -262,7 +262,7 @@ module BreakerMachines
 
     # Reset all circuits for this instance
     def reset_all_circuits
-      circuit_instances.each_value(&:force_close!)
+      circuit_instances.each_value(&:hard_reset!)
     end
 
     # Remove a global dynamic circuit by name

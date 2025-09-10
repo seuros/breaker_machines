@@ -31,6 +31,16 @@ module BreakerMachines
             transition any => :closed
           end
 
+          event :hard_reset do
+            transition any => :closed
+          end
+
+          before_transition on: :hard_reset do |circuit|
+            circuit.storage.clear(circuit.name) if circuit.storage
+            circuit.half_open_attempts.value = 0
+            circuit.half_open_successes.value = 0
+          end
+
           after_transition to: :open do |circuit|
             circuit.send(:on_circuit_open)
           end
