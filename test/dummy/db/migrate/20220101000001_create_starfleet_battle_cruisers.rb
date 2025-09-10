@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-class CreateStarfleetBattleCruisers < ActiveRecord::Migration[7.0]
+class CreateStarfleetBattleCruisers < ActiveRecord::Migration[7.2]
   def change
     create_table :starfleet_battle_cruisers do |t|
       t.string :name
