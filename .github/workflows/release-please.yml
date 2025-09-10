@@ -18,21 +18,3 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
       
-      - name: Checkout
-        if: ${{ steps.release.outputs.release_created }}
-        uses: actions/checkout@v4
-      
-      - name: Set up Ruby
-        if: ${{ steps.release.outputs.release_created }}
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.3'
-          bundler-cache: true
-      
-      - name: Publish to RubyGems
-        if: ${{ steps.release.outputs.release_created }}
-        run: |
-          mkdir -p ~/.gem
-          echo -e "---\n:rubygems_api_key: ${{ secrets.RUBYGEMS_AUTH_TOKEN }}" > ~/.gem/credentials
-          chmod 0600 ~/.gem/credentials
-          bundle exec rake release
