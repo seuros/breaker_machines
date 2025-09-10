@@ -35,9 +35,14 @@ class IntrospectionTest < ActiveSupport::TestCase
   end
 
   def setup
-    @module = DiagnosticModule.new
-    # Clear registry to start fresh
+    # Clear registry first
     BreakerMachines::Registry.instance.clear
+    
+    # Reset at class level to catch any prior instances
+    DiagnosticModule.reset_all_circuits
+    
+    # Create fresh instance
+    @module = DiagnosticModule.new
   end
 
   def test_circuit_stats
