@@ -23,7 +23,7 @@ class HedgedFiberSafeTest < ActiveSupport::TestCase
       call_count = 0
       result = circuit.wrap do
         call_count += 1
-        Async::Task.current.sleep(0.02)
+        sleep(0.02)
         "result-#{call_count}"
       end
 
@@ -33,12 +33,12 @@ class HedgedFiberSafeTest < ActiveSupport::TestCase
 
   def test_fiber_safe_multiple_backends
     fast_backend = lambda do
-      Async::Task.current.sleep(0.01)
+      sleep(0.01)
       'fast'
     end
 
     slow_backend = lambda do
-      Async::Task.current.sleep(0.1)
+      sleep(0.1)
       'slow'
     end
 
@@ -61,11 +61,11 @@ class HedgedFiberSafeTest < ActiveSupport::TestCase
   def test_fiber_safe_parallel_fallback
     primary = -> { raise 'Primary failed' }
     fallback1 = lambda do
-      Async::Task.current.sleep(0.05)
+      sleep(0.05)
       'fallback1'
     end
     fallback2 = lambda do
-      Async::Task.current.sleep(0.01)
+      sleep(0.01)
       'fallback2'
     end
 
@@ -103,7 +103,7 @@ class HedgedFiberSafeTest < ActiveSupport::TestCase
       5.times do |i|
         task = Async do
           result = circuit.wrap do
-            Async::Task.current.sleep(0.01 + (i * 0.002))
+            sleep(0.01 + (i * 0.002))
             "result-#{i}"
           end
           results << result

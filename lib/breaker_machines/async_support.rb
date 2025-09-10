@@ -2,6 +2,7 @@
 
 # This file contains all async-related functionality for fiber-safe mode
 # It is only loaded when fiber_safe mode is enabled
+# Requires async gem ~> 2.31.0 for modern timeout API and Promise features
 
 require 'async'
 require 'async/task'
@@ -43,11 +44,11 @@ module BreakerMachines
       end
     end
 
-    # Execute a block with optional timeout using Async
+    # Execute a block with optional timeout using modern Async API
     def execute_with_async_timeout(timeout, &)
       if timeout
-        # Use safe, cooperative timeout from async gem
-        ::Async::Task.current.with_timeout(timeout, &)
+        # Use modern timeout API - the flexible with_timeout API is on the task level
+        Async::Task.current.with_timeout(timeout, &)
       else
         yield
       end

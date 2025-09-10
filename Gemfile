@@ -21,7 +21,7 @@ gem 'rubocop-rake', '~> 0.6'
 # Platform specific gems (MRI Ruby only)
 platforms :mri do
   gem 'activerecord', "~> #{ENV.fetch('ACTIVERECORD_VERSION', '8.0.2')}"
-  gem 'async', '~> 2.0'
+  gem 'async', '~> 2.31.0'
   gem 'railties', "~> #{ENV.fetch('ACTIVERECORD_VERSION', '8.0.2')}"
   gem 'rbs', '~> 3.0'
   gem 'sqlite3', '~> 2.0'
