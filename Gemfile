@@ -11,7 +11,6 @@ gemspec
 gem 'irb'
 gem 'rake', '~> 13.0'
 
-gem 'activesupport', '~> 8.0'
 gem 'minitest', '~> 5.16'
 gem 'rubocop', '~> 1.77'
 gem 'rubocop-minitest', '~> 0.30'
