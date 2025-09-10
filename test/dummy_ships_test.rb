@@ -11,6 +11,7 @@ require_relative 'dummy/app/models/rmns_atlas_monkey'
 
 class DummyShipsTest < ActiveSupport::TestCase
   def setup
+    skip_rails_dependent_test
     @base_ship = BaseShip.new('USS Foundation', 'NCC-0001')
     @battle_ship = BattleShip.new('USS Warrior', 'NCC-1701-D')
     @cargo_ship = CargoShip.new('USS Merchant', 'NCC-4747', 100_000)
@@ -95,7 +96,7 @@ class DummyShipsTest < ActiveSupport::TestCase
   def test_circuit_independence_across_ships
     # Reset all circuits to ensure clean state
     BreakerMachines.reset!
-    
+
     # Cause battle ship's weapons to fail
     3.times do
       @battle_ship.circuit(:weapons).wrap { raise 'Weapons malfunction' }
@@ -200,7 +201,7 @@ class DummyShipsTest < ActiveSupport::TestCase
   def test_cascading_circuit_failures
     # Reset to ensure clean state
     BreakerMachines.reset!
-    
+
     # Science vessel sensor failure affects experiments
     begin
       @science_vessel.circuit(:sensor_array).wrap { raise 'Sensor overload' }

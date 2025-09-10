@@ -2,6 +2,9 @@
 
 require 'test_helper'
 
+# Skip this entire test file if Rails is not available
+return unless defined?(ActionDispatch)
+
 class WeatherControllerTest < ActionDispatch::IntegrationTest
   setup do
     # Reset BreakerMachines to ensure clean state

@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class CircuitGroupTest < Minitest::Test
+class CircuitGroupTest < ActiveSupport::TestCase
   def setup
     BreakerMachines.reset!
     BreakerMachines.config.default_storage = :memory
@@ -160,12 +160,7 @@ class CircuitGroupTest < Minitest::Test
   end
 
   def test_async_circuit_group
-    # Skip if async not available
-    begin
-      require 'async'
-    rescue LoadError
-      skip 'Async gem not available'
-    end
+    skip_async_dependent_test
 
     async_services = BreakerMachines::CircuitGroup.new('async_services',
                                                        async_mode: true)

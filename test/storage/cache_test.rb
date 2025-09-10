@@ -117,4 +117,3 @@ class StorageCacheTest < ActiveSupport::TestCase
     assert_operator storage.failure_count('test_circuit', 60), :>=, 3
   end
 end
-

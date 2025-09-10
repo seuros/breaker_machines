@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class CoordinatedCircuitTest < Minitest::Test
+class CoordinatedCircuitTest < ActiveSupport::TestCase
   def setup
     BreakerMachines.reset!
     BreakerMachines.config.default_storage = :memory

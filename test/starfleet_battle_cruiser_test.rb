@@ -168,14 +168,15 @@ class StarfleetBattleCruiserTest < ActiveSupport::TestCase
     end
     assert_raises(StandardError) { @cruiser.engage_warp_drive }
 
-    # After enough failures, circuit should open
+    # After enough failures, circuit should open (already had 1 failure, need 1 more)
+    begin
+      @cruiser.engage_warp_drive
+    rescue RuntimeError
+      # Expected failure to trip the circuit (this should be the 2nd failure)
+      nil
+    end
+
     assert_raises(BreakerMachines::CircuitOpenError) do
-      2.times do
-        @cruiser.engage_warp_drive
-      rescue RuntimeError
-        # Expected failure to trip the circuit
-        nil
-      end
       @cruiser.engage_warp_drive
     end
   end
