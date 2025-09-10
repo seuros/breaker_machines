@@ -11,7 +11,6 @@ gemspec
 gem 'irb'
 gem 'rake', '~> 13.0'
 
-gem 'activesupport', '~> 8.0'
 gem 'minitest', '~> 5.16'
 gem 'rubocop', '~> 1.77'
 gem 'rubocop-minitest', '~> 0.30'
@@ -21,9 +20,9 @@ gem 'rubocop-rake', '~> 0.6'
 
 # Platform specific gems (MRI Ruby only)
 platforms :mri do
-  gem 'activerecord', '~> 8.0'
+  gem 'activerecord', "~> #{ENV.fetch('ACTIVERECORD_VERSION', '8.0.2')}"
   gem 'async', '~> 2.0'
-  gem 'railties', '~> 8.0'
+  gem 'railties', "~> #{ENV.fetch('ACTIVERECORD_VERSION', '8.0.2')}"
   gem 'rbs', '~> 3.0'
   gem 'sqlite3', '~> 2.0'
   gem 'state_machines-activerecord'

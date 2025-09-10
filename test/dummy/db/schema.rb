@@ -12,7 +12,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 20_220_101_000_001) do
+ActiveRecord::Schema[7.2].define(version: 20_220_101_000_001) do
   create_table 'starfleet_battle_cruisers', force: :cascade do |t|
     t.string 'name'
     t.string 'registry'
