@@ -17,6 +17,8 @@ module BreakerMachines
         @events = Concurrent::Map.new
         @event_logs = Concurrent::Map.new
         @max_events = options[:max_events] || 100
+        # Store creation time as anchor for relative timestamps (like Rust implementation)
+        @start_time = BreakerMachines.monotonic_time
       end
 
       def get_status(circuit_name)
@@ -130,7 +132,8 @@ module BreakerMachines
       end
 
       def monotonic_time
-        BreakerMachines.monotonic_time
+        # Return time relative to storage creation (matches Rust implementation)
+        BreakerMachines.monotonic_time - @start_time
       end
     end
   end

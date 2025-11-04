@@ -1,0 +1,18 @@
+[package]
+name = "breaker-machines"
+version = "0.2.0"
+edition = "2024"
+authors = ["Abdelkader Boudih <terminale@gmail.com>"]
+license = "MIT"
+description = "High-performance circuit breaker with fallback support and rate-based thresholds"
+repository = "https://github.com/seuros/breaker_machines"
+readme = "README.md"
+keywords = ["circuit-breaker", "reliability", "fault-tolerance"]
+categories = ["concurrency"]
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+state-machines = { workspace = true }
+chrono-machines = { workspace = true }

@@ -34,16 +34,21 @@ Gem::Specification.new do |spec|
   spec.metadata['rubygems_mfa_required'] = 'true'
 
   # Specify which files should be added to the gem
-  spec.files = Dir['lib/**/*'] + Dir['sig/**/*'] + %w[LICENSE.txt README.md]
+  spec.files = Dir['lib/**/*'] + Dir['sig/**/*'] + Dir['ext/**/*.{rb,rs,toml}'] + %w[LICENSE.txt README.md]
   spec.require_paths = ['lib']
 
+  # Add native extension (only on CRuby/TruffleRuby)
+  spec.extensions = ['ext/breaker_machines_native/extconf.rb'] unless RUBY_ENGINE == 'jruby'
+
   # Core dependencies
-  spec.add_dependency 'activesupport', '>= 7.2'
+  spec.add_dependency 'activesupport', '>= 8.0'
+  spec.add_dependency 'chrono_machines', '~> 0.2'
   spec.add_dependency 'concurrent-ruby', '~> 1.3'
-  spec.add_dependency 'state_machines', '>= 0.100.0'
+  spec.add_dependency 'state_machines', '>= 0.100.4'
   spec.add_dependency 'zeitwerk', '~> 2.7'
 
   # Development dependencies
   spec.add_development_dependency 'minitest', '~> 5.16'
   spec.add_development_dependency 'rake', '~> 13.0'
+  spec.add_development_dependency 'rb_sys', '~> 0.9' unless RUBY_ENGINE == 'jruby'
 end

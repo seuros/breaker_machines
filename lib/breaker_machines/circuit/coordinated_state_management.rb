@@ -17,12 +17,12 @@ module BreakerMachines
 
           event :attempt_recovery do
             transition open: :half_open,
-                       if: ->(circuit) { circuit.recovery_allowed? }
+                       if: lambda(&:recovery_allowed?)
           end
 
           event :reset do
             transition %i[open half_open] => :closed,
-                       if: ->(circuit) { circuit.reset_allowed? }
+                       if: lambda(&:reset_allowed?)
             transition closed: :closed
           end
 
@@ -39,7 +39,7 @@ module BreakerMachines
           end
 
           before_transition on: :hard_reset do |circuit|
-            circuit.storage.clear(circuit.name) if circuit.storage
+            circuit.storage&.clear(circuit.name)
             circuit.half_open_attempts.value = 0
             circuit.half_open_successes.value = 0
           end

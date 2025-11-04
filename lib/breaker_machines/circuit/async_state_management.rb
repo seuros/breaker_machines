@@ -41,7 +41,7 @@ module BreakerMachines
           end
 
           before_transition on: :hard_reset do |circuit|
-            circuit.storage.clear(circuit.name) if circuit.storage
+            circuit.storage&.clear(circuit.name)
             circuit.half_open_attempts.value = 0
             circuit.half_open_successes.value = 0
           end

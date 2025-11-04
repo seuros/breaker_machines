@@ -1,0 +1,210 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Test script to verify both Pure Ruby and Native FFI modes locally
+# This mimics what CI does
+
+require 'benchmark'
+require 'English'
+
+def header(title)
+  puts "\n" + "=" * 80
+  puts title.center(80)
+  puts "=" * 80
+end
+
+def section(title)
+  puts "\n" + "-" * 80
+  puts title
+  puts "-" * 80
+end
+
+def success(message)
+  puts "✅ #{message}"
+end
+
+def error(message)
+  puts "❌ #{message}"
+  exit 1
+end
+
+header("BreakerMachines Dual-Mode Test Suite")
+
+# Clean up any previous builds
+section("Cleaning previous builds...")
+system('rm -rf ext/breaker_machines_native/target/release')
+system('rm -f ext/breaker_machines_native/breaker_machines_native.bundle')
+success("Clean complete")
+
+# Test 1: Pure Ruby mode
+header("TEST 1: Pure Ruby Backend")
+
+ENV['BREAKER_MACHINES_NATIVE'] = '0'
+section("Running tests in Pure Ruby mode...")
+
+ruby_start = Time.now
+result = system('bundle exec rake test')
+ruby_time = Time.now - ruby_start
+
+if result
+  success("Pure Ruby tests passed in #{ruby_time.round(2)}s")
+else
+  error("Pure Ruby tests failed!")
+end
+
+section("Verifying Pure Ruby mode...")
+verification = `ruby -Ilib -e "
+  require 'breaker_machines'
+  puts BreakerMachines.native_available? ? 'NATIVE' : 'RUBY'
+"`
+
+if verification.strip == 'RUBY'
+  success("Pure Ruby backend confirmed")
+else
+  error("Expected Pure Ruby mode but got: #{verification.strip}")
+end
+
+# Test 2: Build native extension
+header("TEST 2: Building Native Extension")
+
+section("Building Rust extension...")
+Dir.chdir('ext/breaker_machines_native') do
+  build_start = Time.now
+
+  unless system('ruby extconf.rb')
+    error("extconf.rb failed!")
+  end
+
+  unless system('make')
+    error("make failed!")
+  end
+
+  # Create subdirectory structure for require to work
+  system('mkdir -p breaker_machines_native')
+  system('cp breaker_machines_native.* breaker_machines_native/ 2>/dev/null || true')
+
+  build_time = Time.now - build_start
+  success("Native extension built in #{build_time.round(2)}s")
+end
+
+# Test 3: Native FFI mode
+header("TEST 3: Native FFI Backend")
+
+ENV['BREAKER_MACHINES_NATIVE'] = '1'
+section("Running tests in Native FFI mode...")
+
+native_start = Time.now
+result = system('bundle exec rake test')
+native_time = Time.now - native_start
+
+if result
+  success("Native FFI tests passed in #{native_time.round(2)}s")
+else
+  error("Native FFI tests failed!")
+end
+
+section("Verifying Native FFI mode...")
+verification = `ruby -Ilib:ext/breaker_machines_native -e "
+  require 'breaker_machines'
+  BreakerMachines.config.log_events = false  # Suppress logging for verification
+  ENV['BREAKER_MACHINES_NATIVE'] = '1'
+  begin
+    require 'breaker_machines/native_speedup'
+  rescue LoadError => e
+    puts 'LOAD_ERROR: ' + e.message
+  end
+  puts BreakerMachines.native_available? ? 'NATIVE' : 'RUBY'
+"`
+
+# Filter out log lines that start with '[' to get the actual result
+result = verification.lines.reject { |l| l.strip.start_with?('[') }.last&.strip
+
+if result == 'NATIVE'
+  success("Native FFI backend confirmed")
+else
+  error("Expected Native FFI mode but got: #{verification.strip}")
+end
+
+# Performance comparison
+header("PERFORMANCE COMPARISON")
+
+iterations = 10_000
+section("Running #{iterations} circuit breaker operations...")
+
+benchmark_script = <<~RUBY
+  require 'benchmark'
+  require 'breaker_machines'
+
+  BreakerMachines.config.log_events = false  # Suppress logging
+
+  iterations = #{iterations}
+
+  # Pure Ruby
+  BreakerMachines.instance_variable_set(:@native_available, false)
+  circuit_ruby = BreakerMachines::Circuit.new('benchmark', {
+    failure_threshold: 5,
+    failure_window_secs: 60.0,
+    reset_timeout_secs: 30.0
+  })
+
+  time_ruby = Benchmark.realtime do
+    iterations.times do |i|
+      if i % 2 == 0
+        circuit_ruby.call { "success" }
+      else
+        circuit_ruby.call { raise "error" } rescue nil
+      end
+    end
+  end
+
+  # Native FFI
+  ENV['BREAKER_MACHINES_NATIVE'] = '1'
+  require 'breaker_machines/native_speedup'
+
+  circuit_native = BreakerMachines::Circuit.new('benchmark', {
+    failure_threshold: 5,
+    failure_window_secs: 60.0,
+    reset_timeout_secs: 30.0
+  })
+
+  time_native = Benchmark.realtime do
+    iterations.times do |i|
+      if i % 2 == 0
+        circuit_native.call { "success" }
+      else
+        circuit_native.call { raise "error" } rescue nil
+      end
+    end
+  end
+
+  printf "RUBY:%.4f\\n", time_ruby
+  printf "NATIVE:%.4f\\n", time_native
+  printf "SPEEDUP:%.2f\\n", time_ruby / time_native
+RUBY
+
+output = `ruby -Ilib:ext/breaker_machines_native -e "#{benchmark_script}"`
+results = output.lines.map(&:strip)
+
+ruby_benchmark = results.find { |l| l.start_with?('RUBY:') }&.split(':')&.last&.to_f
+native_benchmark = results.find { |l| l.start_with?('NATIVE:') }&.split(':')&.last&.to_f
+speedup = results.find { |l| l.start_with?('SPEEDUP:') }&.split(':')&.last&.to_f
+
+if ruby_benchmark && native_benchmark && speedup
+  puts
+  puts "Pure Ruby:   #{ruby_benchmark.round(4)}s"
+  puts "Native FFI:  #{native_benchmark.round(4)}s"
+  puts
+  puts "🚀 Native FFI is #{speedup.round(2)}x faster"
+else
+  error("Benchmark failed to produce results")
+end
+
+# Summary
+header("SUMMARY")
+puts
+puts "✅ Pure Ruby tests:    PASSED (#{ruby_time.round(2)}s)"
+puts "✅ Native FFI tests:   PASSED (#{native_time.round(2)}s)"
+puts "✅ Performance gain:   #{speedup.round(2)}x"
+puts
+puts "All tests completed successfully!"
+puts "=" * 80
