@@ -26,3 +26,4 @@ Gemfile.lock
 /ext/**/.sitearchdir.time
 /ext/**/Makefile
 /ext/**/target/
+lib/**/*.bundle

@@ -14,7 +14,83 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      upload_url: ${{ steps.release.outputs.upload_url }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
-      
+
+  build-ruby-gem:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+          bundler-cache: true
+
+      - name: Build Ruby gem
+        run: bundle exec rake build
+
+      - name: Upload ruby gem artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ruby-gem
+          path: pkg/*.gem
+          if-no-files-found: error
+
+  build-native-gems:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - arm64-darwin
+          - x86_64-darwin
+          - aarch64-linux
+          - x86_64-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cross-compile native gem
+        id: cross
+        uses: oxidize-rb/actions/cross-gem@v1
+        with:
+          platform: ${{ matrix.platform }}
+
+      - name: Upload platform gem artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-gem-${{ matrix.platform }}
+          path: ${{ steps.cross.outputs.gem-path }}
+          if-no-files-found: error
+
+  publish-release-assets:
+    needs:
+      - release-please
+      - build-ruby-gem
+      - build-native-gems
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List collected artifacts
+        run: ls -R artifacts
+
+      - name: Attach gems to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.gem
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
