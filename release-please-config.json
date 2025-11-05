@@ -1,9 +1,17 @@
 {
+  "plugins": ["cargo-workspace"],
   "packages": {
     ".": {
       "release-type": "ruby",
       "package-name": "breaker_machines",
-      "bump-patch-for-minor-pre-major": true
+      "extra-files": [
+        "lib/breaker_machines/version.rb"
+      ]
+    },
+    "ext/breaker_machines_native/core": {
+      "release-type": "rust",
+      "package-name": "breaker-machines",
+      "changelog-path": "CHANGELOG.md"
     }
   }
 }

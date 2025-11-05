@@ -6,7 +6,7 @@
 //! - Complete circuit breaker with state machine
 
 use breaker_machines::{CircuitBreaker, Config, EventKind, MemoryStorage, StorageBackend};
-use magnus::{function, method, Error, Module, Object, RArray, RHash, Ruby};
+use magnus::{Error, Module, Object, RArray, RHash, Ruby, function, method};
 use std::sync::Arc;
 
 /// Ruby wrapper for the native storage backend

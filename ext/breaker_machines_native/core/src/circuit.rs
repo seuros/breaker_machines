@@ -3,8 +3,8 @@
 //! This module provides a complete circuit breaker with state management.
 
 use crate::{
-    bulkhead::BulkheadSemaphore, callbacks::Callbacks, classifier::FailureClassifier,
-    errors::CircuitError, StorageBackend,
+    StorageBackend, bulkhead::BulkheadSemaphore, callbacks::Callbacks,
+    classifier::FailureClassifier, errors::CircuitError,
 };
 use state_machines::state_machine;
 use std::sync::Arc;
