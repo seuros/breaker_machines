@@ -3,8 +3,8 @@
 //! This module provides a complete circuit breaker with state management.
 
 use crate::{
-    StorageBackend, bulkhead::BulkheadSemaphore, callbacks::Callbacks,
-    classifier::FailureClassifier, errors::CircuitError,
+    bulkhead::BulkheadSemaphore, callbacks::Callbacks, classifier::FailureClassifier,
+    errors::CircuitError, StorageBackend,
 };
 use state_machines::state_machine;
 use std::sync::Arc;
@@ -62,10 +62,13 @@ pub struct FallbackContext {
     pub state: &'static str,
 }
 
+/// Type alias for fallback function
+pub type FallbackFn<T, E> = Box<dyn FnOnce(&FallbackContext) -> Result<T, E> + Send>;
+
 /// Options for circuit breaker calls
 pub struct CallOptions<T, E> {
     /// Optional fallback function called when circuit is open
-    pub fallback: Option<Box<dyn FnOnce(&FallbackContext) -> Result<T, E> + Send>>,
+    pub fallback: Option<FallbackFn<T, E>>,
 }
 
 impl<T, E> Default for CallOptions<T, E> {
@@ -90,9 +93,12 @@ impl<T, E> CallOptions<T, E> {
     }
 }
 
+/// Type alias for callable function
+pub type CallableFn<T, E> = Box<dyn FnOnce() -> Result<T, E>>;
+
 /// Trait for converting into CallOptions - allows flexible call() API
 pub trait IntoCallOptions<T, E> {
-    fn into_call_options(self) -> (Box<dyn FnOnce() -> Result<T, E>>, CallOptions<T, E>);
+    fn into_call_options(self) -> (CallableFn<T, E>, CallOptions<T, E>);
 }
 
 /// Implement for plain closures (backward compatibility)
@@ -204,10 +210,10 @@ impl Circuit<Closed> {
             .failure_count(&ctx.name, ctx.config.failure_window_secs);
 
         // Check absolute count threshold
-        if let Some(threshold) = ctx.config.failure_threshold {
-            if failures >= threshold {
-                return true;
-            }
+        if let Some(threshold) = ctx.config.failure_threshold
+            && failures >= threshold
+        {
+            return true;
         }
 
         // Check rate-based threshold
@@ -243,10 +249,10 @@ impl Circuit<HalfOpen> {
             .failure_count(&ctx.name, ctx.config.failure_window_secs);
 
         // Check absolute count threshold
-        if let Some(threshold) = ctx.config.failure_threshold {
-            if failures >= threshold {
-                return true;
-            }
+        if let Some(threshold) = ctx.config.failure_threshold
+            && failures >= threshold
+        {
+            return true;
         }
 
         // Check rate-based threshold
@@ -411,12 +417,12 @@ impl CircuitBreaker {
             }
             "HalfOpen" => {
                 // Check if we've reached the success threshold
-                if let Some(data) = self.machine.half_open_data() {
-                    if data.consecutive_successes >= self.context.config.success_threshold {
-                        return Err(CircuitError::HalfOpenLimitReached {
-                            circuit: self.context.name.clone(),
-                        });
-                    }
+                if let Some(data) = self.machine.half_open_data()
+                    && data.consecutive_successes >= self.context.config.success_threshold
+                {
+                    return Err(CircuitError::HalfOpenLimitReached {
+                        circuit: self.context.name.clone(),
+                    });
                 }
                 self.execute_call(f)
             }
@@ -1002,7 +1008,10 @@ mod tests {
         let classifier = Arc::new(PredicateClassifier::new(|ctx| {
             ctx.error
                 .downcast_ref::<ApiError>()
-                .map(|e| matches!(e, ApiError::ServerError(_)))
+                .map(|e| match e {
+                    ApiError::ServerError(code) => *code >= 500,
+                    ApiError::ClientError(code) => *code >= 500, // Should never happen, but validates field
+                })
                 .unwrap_or(true)
         }));
 

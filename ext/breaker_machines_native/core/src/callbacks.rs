@@ -2,12 +2,15 @@
 
 use std::sync::Arc;
 
+/// Type alias for circuit breaker callback functions
+pub type CallbackFn = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Callbacks for circuit breaker events
 #[derive(Clone)]
 pub struct Callbacks {
-    pub on_open: Option<Arc<dyn Fn(&str) + Send + Sync>>,
-    pub on_close: Option<Arc<dyn Fn(&str) + Send + Sync>>,
-    pub on_half_open: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    pub on_open: Option<CallbackFn>,
+    pub on_close: Option<CallbackFn>,
+    pub on_half_open: Option<CallbackFn>,
 }
 
 impl Callbacks {
