@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.3.0...breaker-machines-v0.6.0) (2025-11-05)
+
+
+### Features
+
+* add native storage backend with Rust v0.3.0 and Rails 8+ support ([#21](https://github.com/seuros/breaker_machines/issues/21)) ([cf45b0a](https://github.com/seuros/breaker_machines/commit/cf45b0aa8444a86b5ce20e1627013c532c56169e))
+
+
+### Bug Fixes
+
+* configure release-please for monorepo with Ruby and Rust packages ([656127c](https://github.com/seuros/breaker_machines/commit/656127c4588010f33822ca5114ba3e9ebbeb6df5))
+* version ([c69d413](https://github.com/seuros/breaker_machines/commit/c69d41371ea9b72c63b0cce11825f6059a45b8f3))
+
+
+### Code Refactoring
+
+* fix clippy warnings in Rust crate ([7dd1230](https://github.com/seuros/breaker_machines/commit/7dd1230bdfc1beff377c4b9c332727beabb996ab))
+
 ## [0.2.0] - 2025-01-XX
 
 ### Added
