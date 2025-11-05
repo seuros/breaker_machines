@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.6.0...breaker_machines/v0.6.1) (2025-11-05)
+
+
+### Bug Fixes
+
+* bundle rb_sys for source installs ([#24](https://github.com/seuros/breaker_machines/issues/24)) ([adeed7e](https://github.com/seuros/breaker_machines/commit/adeed7e7eac2f974d95ffb7ca93c02a4183d36f0))
+
 ## [0.6.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.5.0...breaker_machines/v0.6.0) (2025-11-05)
 
 
