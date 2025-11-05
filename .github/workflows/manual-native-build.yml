@@ -1,0 +1,36 @@
+name: Manual Native Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'rb-sys target platform (e.g. aarch64-linux)'
+        required: true
+        default: aarch64-linux
+
+jobs:
+  cross-gem:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure gem installation directory
+        run: |
+          GEM_HOME="$HOME/.gem"
+          mkdir -p "$GEM_HOME/bin"
+          echo "GEM_HOME=$GEM_HOME" >> "$GITHUB_ENV"
+          echo "GEM_PATH=$GEM_HOME" >> "$GITHUB_ENV"
+          echo "$GEM_HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Cross-compile native gem
+        uses: oxidize-rb/actions/cross-gem@v1
+        with:
+          platform: ${{ github.event.inputs.platform }}
+          ruby-versions: '3.4'
+
+      - name: Upload native gem artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-gem-${{ github.event.inputs.platform }}
+          path: pkg/*-${{ github.event.inputs.platform }}.gem
+          if-no-files-found: error
