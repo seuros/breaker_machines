@@ -18,7 +18,7 @@ Gem::Specification.new do |spec|
   DESC
   spec.homepage = 'https://github.com/seuros/breaker_machines'
   spec.license = 'MIT'
-  spec.required_ruby_version = '>= 3.2.0'
+  spec.required_ruby_version = '>= 3.3.0'
 
   # Platform support
   spec.platform = Gem::Platform::RUBY
@@ -32,9 +32,12 @@ Gem::Specification.new do |spec|
   spec.metadata['bug_tracker_uri'] = 'https://github.com/seuros/breaker_machines/issues'
   spec.metadata['documentation_uri'] = 'https://github.com/seuros/breaker_machines#readme'
   spec.metadata['rubygems_mfa_required'] = 'true'
+  spec.metadata['cargo_crate_name'] = 'breaker_machines_native'
+  spec.metadata['cargo_manifest_path'] = 'ext/breaker_machines_native/ffi/Cargo.toml'
 
   # Specify which files should be added to the gem
-  spec.files = Dir['lib/**/*'] + Dir['sig/**/*'] + Dir['ext/**/*.{rb,rs,toml}'] + %w[LICENSE.txt README.md]
+  lib_files = Dir['lib/**/*'].reject { |path| path =~ /\.(bundle|so|dll)\z/ }
+  spec.files = lib_files + Dir['sig/**/*'] + Dir['ext/**/*.{rb,rs,toml}'] + %w[LICENSE.txt README.md]
   spec.require_paths = ['lib']
 
   # Add native extension (only on CRuby/TruffleRuby)
@@ -46,9 +49,10 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'concurrent-ruby', '~> 1.3'
   spec.add_dependency 'state_machines', '>= 0.100.4'
   spec.add_dependency 'zeitwerk', '~> 2.7'
+  spec.add_dependency 'rb_sys', '~> 0.9' unless RUBY_ENGINE == 'jruby'
 
   # Development dependencies
   spec.add_development_dependency 'minitest', '~> 5.16'
   spec.add_development_dependency 'rake', '~> 13.0'
-  spec.add_development_dependency 'rb_sys', '~> 0.9' unless RUBY_ENGINE == 'jruby'
+  spec.add_development_dependency 'rake-compiler', '~> 1.3'
 end
