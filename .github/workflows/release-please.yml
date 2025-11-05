@@ -59,6 +59,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Configure gem installation directory
+        run: |
+          GEM_HOME="$HOME/.gem"
+          mkdir -p "$GEM_HOME/bin"
+          echo "GEM_HOME=$GEM_HOME" >> "$GITHUB_ENV"
+          echo "GEM_PATH=$GEM_HOME" >> "$GITHUB_ENV"
+          echo "$GEM_HOME/bin" >> "$GITHUB_PATH"
+
       - name: Cross-compile native gem
         id: cross
         uses: oxidize-rb/actions/cross-gem@v1
