@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.6.1...breaker_machines/v0.6.2) (2025-11-05)
+
+
+### Bug Fixes
+
+* install rb_sys to user gem home in release ([#26](https://github.com/seuros/breaker_machines/issues/26)) ([909ae50](https://github.com/seuros/breaker_machines/commit/909ae505a68fe3ea96648f626eefc33ae3470eb8))
+
 ## [0.6.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.6.0...breaker_machines/v0.6.1) (2025-11-05)
 
 
