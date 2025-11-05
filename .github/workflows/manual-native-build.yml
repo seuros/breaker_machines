@@ -26,7 +26,7 @@ jobs:
         uses: oxidize-rb/actions/cross-gem@v1
         with:
           platform: ${{ github.event.inputs.platform }}
-          ruby-versions: 'default'
+          ruby-versions: '3.4'
 
       - name: Upload native gem artifact
         uses: actions/upload-artifact@v4
