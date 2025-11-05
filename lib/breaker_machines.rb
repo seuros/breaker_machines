@@ -15,30 +15,92 @@ loader.ignore("#{__dir__}/breaker_machines/console.rb")
 loader.ignore("#{__dir__}/breaker_machines/async_support.rb")
 loader.ignore("#{__dir__}/breaker_machines/hedged_async_support.rb")
 loader.ignore("#{__dir__}/breaker_machines/circuit/async_state_management.rb")
+loader.ignore("#{__dir__}/breaker_machines/native_speedup.rb")
+loader.ignore("#{__dir__}/breaker_machines/native_extension.rb")
 loader.setup
 
 # BreakerMachines provides a thread-safe implementation of the Circuit Breaker pattern
 # for Ruby applications, helping to prevent cascading failures in distributed systems.
 module BreakerMachines
+  # Global configuration class for BreakerMachines
+  class Configuration
+    attr_accessor :default_storage,
+                  :default_timeout,
+                  :default_reset_timeout,
+                  :default_failure_threshold,
+                  :log_events,
+                  :fiber_safe
+
+    def initialize
+      @default_storage = :bucket_memory
+      @default_timeout = nil
+      @default_reset_timeout = 60.seconds
+      @default_failure_threshold = 5
+      @log_events = true
+      @fiber_safe = false
+    end
+  end
+
   class << self
     def loader
       loader
     end
-  end
 
-  # Global configuration
-  include ActiveSupport::Configurable
+    def config
+      @config ||= Configuration.new
+    end
 
-  config_accessor :default_storage, default: :bucket_memory
-  config_accessor :default_timeout, default: nil
-  config_accessor :default_reset_timeout, default: 60.seconds
-  config_accessor :default_failure_threshold, default: 5
-  config_accessor :log_events, default: true
-  config_accessor :fiber_safe, default: false
-
-  class << self
     def configure
       yield config
+    end
+
+    # Delegate config attributes to config object for backward compatibility
+    def default_storage
+      config.default_storage
+    end
+
+    def default_storage=(value)
+      config.default_storage = value
+    end
+
+    def default_timeout
+      config.default_timeout
+    end
+
+    def default_timeout=(value)
+      config.default_timeout = value
+    end
+
+    def default_reset_timeout
+      config.default_reset_timeout
+    end
+
+    def default_reset_timeout=(value)
+      config.default_reset_timeout = value
+    end
+
+    def default_failure_threshold
+      config.default_failure_threshold
+    end
+
+    def default_failure_threshold=(value)
+      config.default_failure_threshold = value
+    end
+
+    def log_events
+      config.log_events
+    end
+
+    def log_events=(value)
+      config.log_events = value
+    end
+
+    def fiber_safe
+      config.fiber_safe
+    end
+
+    def fiber_safe=(value)
+      config.fiber_safe = value
     end
 
     def setup_notifications
@@ -65,10 +127,25 @@ module BreakerMachines
 
     attr_writer :logger
 
+    # Centralized logging helper
+    # @param level [Symbol] log level (:debug, :info, :warn, :error)
+    # @param message [String] message to log
+    def log(level, message)
+      return unless config.log_events && logger
+
+      logger.public_send(level, "[BreakerMachines] #{message}")
+    end
+
     def instrument(event, payload = {})
       return unless config.log_events
 
       ActiveSupport::Notifications.instrument("breaker_machines.#{event}", payload)
+    end
+
+    # Check if native extension is available
+    # @return [Boolean] true if native extension loaded successfully
+    def native_available?
+      @native_available || false
     end
 
     # Launch the interactive console
@@ -110,4 +187,14 @@ module BreakerMachines
 
   # Set up notifications on first use
   setup_notifications if config.log_events
+end
+
+# Load optional native speedup after core is loaded
+# Opt-in with BREAKER_MACHINES_NATIVE=1 to enable native extensions
+if ENV['BREAKER_MACHINES_NATIVE'] == '1'
+  begin
+    require_relative 'breaker_machines/native_speedup'
+  rescue LoadError
+    # Native gem not available, skip native support
+  end
 end

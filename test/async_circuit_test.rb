@@ -7,8 +7,14 @@ class AsyncCircuitTest < ActiveSupport::TestCase
     skip_async_dependent_test
 
     BreakerMachines.reset!
-    @storage = BreakerMachines::Storage::Memory.new
-    BreakerMachines.default_storage = @storage
+    BreakerMachines.default_storage = :memory
+    BreakerMachines.config.log_events = false
+  end
+
+  def teardown
+    BreakerMachines.reset!
+    BreakerMachines.config.log_events = false
+    super
   end
 
   def test_async_circuit_basic_functionality

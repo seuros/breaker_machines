@@ -18,3 +18,11 @@ Gemfile.lock
 *.log
 /test/dummy/log/
 /test/dummy/tmp/
+
+# Native extension build artifacts
+/ext/**/*.bundle
+/ext/**/*.so
+/ext/**/*.dSYM/
+/ext/**/.sitearchdir.time
+/ext/**/Makefile
+/ext/**/target/

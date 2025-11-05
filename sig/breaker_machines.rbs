@@ -1,14 +1,27 @@
 module BreakerMachines
   VERSION: String
 
-  # Global configuration
-  extend ActiveSupport::Configurable
+  class Configuration
+    attr_accessor default_storage: (:memory | :bucket_memory | :null | untyped)
+    attr_accessor default_timeout: Integer?
+    attr_accessor default_reset_timeout: Integer
+    attr_accessor default_failure_threshold: Integer
+    attr_accessor log_events: bool
+    attr_accessor fiber_safe: bool
 
-  # Configuration accessors
-  self.@config: untyped
-  def self.config: () -> ActiveSupport::Configurable::Configuration
+    def initialize: () -> void
+  end
+
+  # Global configuration
+  self.@config: Configuration?
+  def self.config: () -> Configuration
+
+  # Class methods
+  def self.configure: () { (Configuration config) -> void } -> void
+
+  # Delegated config accessors for backward compatibility
   def self.default_storage: () -> (:memory | :bucket_memory | :null | untyped)
-  def self.default_storage=: (:memory | :bucket_memory | :null | untyped value) -> void
+  def self.default_storage=: ((:memory | :bucket_memory | :null | untyped) value) -> void
   def self.default_timeout: () -> Integer?
   def self.default_timeout=: (Integer? value) -> void
   def self.default_reset_timeout: () -> Integer
@@ -17,9 +30,8 @@ module BreakerMachines
   def self.default_failure_threshold=: (Integer value) -> void
   def self.log_events: () -> bool
   def self.log_events=: (bool value) -> void
-
-  # Class methods
-  def self.configure: () { (untyped config) -> void } -> void
+  def self.fiber_safe: () -> bool
+  def self.fiber_safe=: (bool value) -> void
   def self.setup_notifications: () -> void
   def self.logger: () -> ActiveSupport::Logger?
   def self.logger=: (ActiveSupport::Logger? logger) -> void

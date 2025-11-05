@@ -21,6 +21,8 @@ module BreakerMachines
         @event_logs = Concurrent::Map.new
         @bucket_count = options[:bucket_count] || 300 # Default 5 minutes
         @max_events = options[:max_events] || 100
+        # Store creation time as anchor for relative timestamps (like Rust implementation)
+        @start_time = BreakerMachines.monotonic_time
       end
 
       def get_status(circuit_name)
@@ -160,7 +162,8 @@ module BreakerMachines
       end
 
       def monotonic_time
-        BreakerMachines.monotonic_time
+        # Return time relative to storage creation (matches Rust implementation)
+        BreakerMachines.monotonic_time - @start_time
       end
 
       def with_timeout(_timeout_ms)

@@ -1,0 +1,16 @@
+[package]
+name = "breaker_machines_native"
+version = "0.5.0"
+edition = "2024"
+authors = ["Abdelkader Boudih <terminale@gmail.com>"]
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+breaker-machines = { workspace = true }
+magnus = { version = "0.7", features = ["embed"] }
+
+[build-dependencies]
+rb-sys = "0.9"

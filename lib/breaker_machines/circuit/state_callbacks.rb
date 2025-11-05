@@ -47,13 +47,25 @@ module BreakerMachines
       def reset_timeout_elapsed?
         return false unless @opened_at.value
 
-        # Add jitter to prevent thundering herd
-        jitter_factor = @config[:reset_timeout_jitter] || 0.25
-        # Calculate random jitter between -jitter_factor and +jitter_factor
-        jitter_multiplier = 1.0 + (((rand * 2) - 1) * jitter_factor)
-        timeout_with_jitter = @config[:reset_timeout] * jitter_multiplier
+        # Add jitter to prevent thundering herd using ChronoMachines
+        # This matches the Rust implementation which uses chrono-machines for jitter
+        timeout_with_jitter = if (jitter_factor = @config[:reset_timeout_jitter]) && jitter_factor.positive?
+                                calculate_timeout_with_jitter(@config[:reset_timeout], jitter_factor)
+                              else
+                                @config[:reset_timeout]
+                              end
 
         BreakerMachines.monotonic_time - @opened_at.value >= timeout_with_jitter
+      end
+
+      # Calculate timeout with jitter using ChronoMachines algorithm
+      # Matches the Rust implementation: timeout * (1 - jitter + rand * jitter)
+      def calculate_timeout_with_jitter(base_timeout, jitter_factor)
+        # Use full jitter strategy from ChronoMachines
+        # Formula: base * (1 - jitter + rand * jitter)
+        # This gives values in range [base * (1-jitter), base]
+        normalized_jitter = [jitter_factor.to_f, 1.0].min
+        base_timeout * (1.0 - normalized_jitter + (rand * normalized_jitter))
       end
     end
   end

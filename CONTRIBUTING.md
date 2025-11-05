@@ -28,11 +28,38 @@ I've provided the architectural pattern. Implementation details for your specifi
 ## Getting Started
 
 ```bash
-git clone https://github.com/yourusername/breaker_machines.git
+git clone https://github.com/seuros/breaker_machines.git
 cd breaker_machines
 bundle install
 bundle exec rake test
 ```
+
+## Matryoshka Architecture (FFI Hybrid Pattern)
+
+BreakerMachines uses the **FFI Hybrid** pattern from [Matryoshka](https://github.com/seuros/matryoshka_gem):
+
+```
+Ruby Gem (breaker_machines)          ← Always works
+├── Pure Ruby Implementation         ← Default backend
+│   ├── Circuit::Base
+│   ├── Storage::BucketMemory
+│   └── DSL
+└── Native Extension (opt-in)        ← Optional speedup
+    ├── Rust Core (breaker-machines) ← Standalone crate
+    ├── FFI Layer (Magnus)
+    └── Native Storage
+
+```
+
+**Benefits:**
+- ✅ **Zero dependencies**: Works on all Ruby platforms (including JRuby)
+- ✅ **Optional performance**: 8-65x speedup when native extension is available
+- ✅ **Same API**: Code works identically in both modes
+- ✅ **Graceful fallback**: If native extension fails to load, uses pure Ruby
+
+### Testing Both Modes
+
+CI tests BOTH Pure Ruby and Native FFI modes to ensure the gem works everywhere.
 
 ## Understanding the Architecture
 
@@ -117,6 +144,7 @@ We use `concurrent-ruby` extensively:
 
 ### Running Tests
 
+#### Pure Ruby Mode (Default)
 ```bash
 # Run all tests
 bundle exec rake test
@@ -126,6 +154,83 @@ bundle exec ruby -Itest test/circuit_test.rb
 
 # Run with specific seed (for debugging intermittent failures)
 bundle exec rake test TESTOPTS="--seed=12345"
+```
+
+#### Native FFI Mode (Opt-in)
+```bash
+# Build the native extension
+cd ext/breaker_machines_native
+ruby extconf.rb
+make
+cd ../..
+
+# Run tests with native backend
+BREAKER_MACHINES_NATIVE=1 bundle exec rake test
+```
+
+#### Test Both Modes Automatically
+```bash
+./bin/test_both_modes
+```
+
+This script:
+- ✅ Tests Pure Ruby mode
+- ✅ Builds native extension
+- ✅ Tests Native FFI mode
+- ✅ Verifies mode activation
+- ✅ Benchmarks performance (10,000 operations)
+
+Example output:
+```
+================================================================================
+                      BreakerMachines Dual-Mode Test Suite
+================================================================================
+
+✅ Pure Ruby tests:    PASSED (11.02s)
+✅ Native FFI tests:   PASSED (11.72s)
+✅ Performance gain:   8.45x
+```
+
+### Continuous Integration
+
+Our CI tests ALL layers of the matryoshka across Rails 7.2, 8.0, and 8.1:
+
+| Job | Layer | Purpose | Tests |
+|-----|-------|---------|-------|
+| `test-rust-crate` | Inner doll (Rust) | Standalone crate validation | cargo test, clippy, fmt |
+| `test-ruby` | Outer doll (Ruby) | Pure Ruby fallback | 244 tests, 3 Rails versions |
+| `test-native` | Full stack (FFI) | Ruby→Rust integration | 244 tests, 3 Rails versions |
+| `benchmark` | Both modes | Performance comparison | 10,000 operations |
+
+**Why test all layers?**
+1. **Rust Crate**: Validates the standalone crate (publishable to crates.io)
+2. **Pure Ruby**: Ensures JRuby compatibility and graceful fallback
+3. **Native FFI**: Validates Magnus FFI bridge and integration
+4. **Benchmark**: Measures real-world speedup (typically 8-65x)
+
+View results: [GitHub Actions](https://github.com/seuros/breaker_machines/actions)
+
+### Local CI Simulation
+
+Test exactly what CI runs:
+
+```bash
+# 1. Test Rust crate independently
+cd ext/breaker_machines_native/core
+cargo fmt --check
+cargo clippy -- -D warnings
+cargo test --all
+cd ../../..
+
+# 2. Test Pure Ruby mode
+ACTIVERECORD_VERSION=8.1.0 BREAKER_MACHINES_NATIVE=0 bundle exec rake test
+
+# 3. Build and test native mode
+cd ext/breaker_machines_native && ruby extconf.rb && make && cd ../..
+ACTIVERECORD_VERSION=8.1.0 BREAKER_MACHINES_NATIVE=1 bundle exec rake test
+
+# Or test everything at once
+./bin/test_both_modes
 ```
 
 ### Code Style

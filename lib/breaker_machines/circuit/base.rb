@@ -16,7 +16,8 @@ module BreakerMachines
         include Circuit::Callbacks
         include Circuit::StateCallbacks
 
-        attr_reader :name, :config, :opened_at, :storage, :metrics, :semaphore
+        # name/config/opened_at readers are defined in Circuit::Configuration
+        attr_reader :storage, :metrics, :semaphore
         attr_reader :half_open_attempts, :half_open_successes, :mutex
         attr_reader :last_failure_at, :last_error
       end

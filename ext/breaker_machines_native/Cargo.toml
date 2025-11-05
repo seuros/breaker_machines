@@ -1,0 +1,8 @@
+[workspace]
+members = ["core", "ffi"]
+resolver = "2"
+
+[workspace.dependencies]
+breaker-machines = { path = "./core" }
+state-machines = "0.6"
+chrono-machines = "0.2.1"

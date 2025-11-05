@@ -7,28 +7,300 @@ on:
 
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  # Test the Rust crate independently
+  test-rust-crate:
     runs-on: ubuntu-latest
-    name: Ruby ${{ matrix.ruby }} / Rails ${{ matrix.rails }}
+    name: Rust Crate Tests
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ext/breaker_machines_native/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check Rust formatting
+        run: |
+          cd ext/breaker_machines_native/core
+          cargo fmt --check
+
+      - name: Run Clippy
+        run: |
+          cd ext/breaker_machines_native/core
+          cargo clippy
+
+      - name: Build Rust crate
+        run: |
+          echo "::group::Building Rust crate"
+          cd ext/breaker_machines_native/core
+          time cargo build --release
+          echo "::endgroup::"
+
+      - name: Run Rust tests
+        run: |
+          echo "::group::Running Rust tests"
+          cd ext/breaker_machines_native/core
+          time cargo test --all
+          echo "::endgroup::"
+
+      - name: Check crate can be published
+        run: |
+          cd ext/breaker_machines_native/core
+          cargo package --allow-dirty
+
+  # Test with pure Ruby backend (no native extension)
+  test-ruby:
+    runs-on: ubuntu-latest
+    name: Ruby ${{ matrix.ruby }} / Rails ${{ matrix.rails }} (Pure Ruby)
     strategy:
       fail-fast: false
       matrix:
         ruby:
           - "3.4.4"
         rails:
-          - "7.2.0"
-          - "8.0.2"
-          - "8.1.0.beta1"
+          - "8.0.4"
+          - "8.1.1"
     env:
       ACTIVERECORD_VERSION: ${{ matrix.rails }}
+      BREAKER_MACHINES_NATIVE: "0"  # Disable native extension
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
-      - name: Run tests
-        run: bin/rails test
+
+      - name: Run tests (Pure Ruby)
+        run: |
+          echo "::group::Running tests with Pure Ruby backend"
+          time bin/rails test
+          echo "::endgroup::"
+
+      - name: Verify pure Ruby mode
+        run: |
+          bundle exec ruby -Ilib -e "
+            require 'breaker_machines'
+            if BreakerMachines.native_available?
+              puts '❌ ERROR: Native extension should not be available'
+              exit 1
+            else
+              puts '✅ Pure Ruby backend active'
+            end
+          "
+
+  # Test with native FFI backend
+  test-native:
+    runs-on: ubuntu-latest
+    name: Ruby ${{ matrix.ruby }} / Rails ${{ matrix.rails }} (Native FFI)
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby:
+          - "3.4.4"
+        rails:
+          - "8.0.4"
+          - "8.1.1"
+    env:
+      ACTIVERECORD_VERSION: ${{ matrix.rails }}
+      BREAKER_MACHINES_NATIVE: "1"  # Enable native extension
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ext/breaker_machines_native/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+
+      - name: Build native extension
+        run: |
+          echo "::group::Building native extension"
+          cd ext/breaker_machines_native
+          bundle exec ruby extconf.rb
+          make
+          mkdir -p breaker_machines_native
+          cp breaker_machines_native.* breaker_machines_native/ 2>/dev/null || true
+          cd ../..
+          echo "::endgroup::"
+
+      - name: Run tests (Native FFI)
+        run: |
+          echo "::group::Running tests with Native FFI backend"
+          time ruby -Ilib:ext/breaker_machines_native bin/rails test
+          echo "::endgroup::"
+
+      - name: Verify native mode
+        run: |
+          bundle exec ruby -Ilib:ext/breaker_machines_native -e "
+            require 'breaker_machines'
+            ENV['BREAKER_MACHINES_NATIVE'] = '1'
+            require 'breaker_machines/native_speedup'
+            if BreakerMachines.native_available?
+              puts '✅ Native FFI backend active'
+            else
+              puts '❌ ERROR: Native extension should be available'
+              exit 1
+            end
+          "
+
+  # Performance comparison job
+  benchmark:
+    runs-on: ubuntu-latest
+    name: Performance Benchmark
+    needs: [test-rust-crate, test-ruby, test-native]  # Run after all tests pass
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ext/breaker_machines_native/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4.4"
+          bundler-cache: true
+
+      - name: Build native extension
+        run: |
+          cd ext/breaker_machines_native
+          bundle exec ruby extconf.rb
+          make
+          mkdir -p breaker_machines_native
+          cp breaker_machines_native.* breaker_machines_native/ 2>/dev/null || true
+          cd ../..
+
+      - name: Run benchmarks
+        run: |
+          bundle exec ruby -Ilib:ext/breaker_machines_native << 'RUBY'
+            require 'benchmark'
+            require 'breaker_machines'
+
+            puts "\n" + "=" * 80
+            puts "PERFORMANCE COMPARISON: Pure Ruby vs Native FFI"
+            puts "=" * 80
+
+            iterations = 10_000
+
+            # Pure Ruby benchmark
+            puts "\n📊 Testing Pure Ruby backend..."
+            BreakerMachines.instance_variable_set(:@native_available, false)
+            circuit_ruby = BreakerMachines::Circuit.new('benchmark_ruby', {
+              failure_threshold: 100,
+              failure_window_secs: 60.0,
+              reset_timeout_secs: 30.0
+            })
+
+            time_ruby = Benchmark.realtime do
+              iterations.times do |i|
+                # 90% success rate - realistic for most services
+                if i % 10 == 0
+                  circuit_ruby.call { raise "error" } rescue nil
+                else
+                  circuit_ruby.call { "success" }
+                end
+              end
+            end
+
+            # Native FFI benchmark
+            puts "\n📊 Testing Native FFI backend..."
+            ENV['BREAKER_MACHINES_NATIVE'] = '1'
+            require 'breaker_machines/native_speedup'
+
+            circuit_native = BreakerMachines::Circuit.new('benchmark_native', {
+              failure_threshold: 100,
+              failure_window_secs: 60.0,
+              reset_timeout_secs: 30.0
+            })
+
+            time_native = Benchmark.realtime do
+              iterations.times do |i|
+                # 90% success rate - realistic for most services
+                if i % 10 == 0
+                  circuit_native.call { raise "error" } rescue nil
+                else
+                  circuit_native.call { "success" }
+                end
+              end
+            end
+
+            # Results
+            puts "\n" + "=" * 80
+            puts "RESULTS (#{iterations} iterations)"
+            puts "=" * 80
+            printf "Pure Ruby:   %.4f seconds\n", time_ruby
+            printf "Native FFI:  %.4f seconds\n", time_native
+            speedup = time_ruby / time_native
+            printf "\n🚀 Native FFI is %.2fx faster\n", speedup
+            puts "=" * 80
+          RUBY
+
+      - name: Comment benchmark results on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = `## 🚀 Performance Benchmark Results
+
+            Native FFI extension tested successfully!
+
+            **Test Configuration:**
+            - Ruby: 3.4.4
+            - Iterations: 10,000
+            - Operations: Circuit breaker calls with mixed success/failure
+
+            See job logs for detailed timing comparison.
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
