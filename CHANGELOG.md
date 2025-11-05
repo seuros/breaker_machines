@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.6.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.5.0...breaker_machines/v0.6.0) (2025-11-05)
+
+
+### Features
+
+* add native storage backend with Rust v0.3.0 and Rails 8+ support ([#21](https://github.com/seuros/breaker_machines/issues/21)) ([cf45b0a](https://github.com/seuros/breaker_machines/commit/cf45b0aa8444a86b5ce20e1627013c532c56169e))
+
+
+### Bug Fixes
+
+* configure release-please for monorepo with Ruby and Rust packages ([656127c](https://github.com/seuros/breaker_machines/commit/656127c4588010f33822ca5114ba3e9ebbeb6df5))
+
+
+### Code Refactoring
+
+* fix clippy warnings in Rust crate ([7dd1230](https://github.com/seuros/breaker_machines/commit/7dd1230bdfc1beff377c4b9c332727beabb996ab))
+
 ## [0.5.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.4.2...breaker_machines/v0.5.0) (2025-09-10)
 
 
