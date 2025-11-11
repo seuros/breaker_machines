@@ -23,13 +23,13 @@ jobs:
           echo "$GEM_HOME/bin" >> "$GITHUB_PATH"
 
       - name: Cross-compile native gem
-        uses: oxidize-rb/actions/cross-gem@v1
+        uses: oxidize-rb/actions/cross-gem@v1.4.4
         with:
           platform: ${{ github.event.inputs.platform }}
           ruby-versions: '3.4'
 
       - name: Upload native gem artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: native-gem-${{ github.event.inputs.platform }}
           path: pkg/*-${{ github.event.inputs.platform }}.gem

@@ -19,7 +19,7 @@ jobs:
       tag_name: ${{ steps.release.outputs.tag_name }}
       upload_url: ${{ steps.release.outputs.upload_url }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v4.4.0
         id: release
 
   build-ruby-gem:
@@ -38,7 +38,7 @@ jobs:
         run: bundle exec rake build
 
       - name: Upload ruby gem artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ruby-gem
           path: pkg/*.gem
@@ -69,13 +69,13 @@ jobs:
 
       - name: Cross-compile native gem
         id: cross
-        uses: oxidize-rb/actions/cross-gem@v1
+        uses: oxidize-rb/actions/cross-gem@v1.4.4
         with:
           platform: ${{ matrix.platform }}
           ruby-versions: '3.4'
 
       - name: Upload platform gem artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: native-gem-${{ matrix.platform }}
           path: ${{ steps.cross.outputs.gem-path }}
@@ -89,7 +89,7 @@ jobs:
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           path: artifacts
 
@@ -97,7 +97,7 @@ jobs:
         run: ls -R artifacts
 
       - name: Attach gems to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2.4.2
         with:
           files: artifacts/**/*.gem
           tag_name: ${{ needs.release-please.outputs.tag_name }}
