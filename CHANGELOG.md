@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.6.2...breaker_machines/v0.7.0) (2025-11-11)
+
+
+### Bug Fixes
+
+* cross gem perms ([#28](https://github.com/seuros/breaker_machines/issues/28)) ([e35b9b7](https://github.com/seuros/breaker_machines/commit/e35b9b7fc0383aaf601bce24a492a63de5ff07ec))
+* Fix/release cross gem perms ([#30](https://github.com/seuros/breaker_machines/issues/30)) ([717a152](https://github.com/seuros/breaker_machines/commit/717a152b055d2df1c0d2d3b4697f553c09ea881d))
+
 ## [0.6.2](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.6.1...breaker_machines/v0.6.2) (2025-11-05)
 
 
