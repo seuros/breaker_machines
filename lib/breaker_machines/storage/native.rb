@@ -2,31 +2,41 @@
 
 module BreakerMachines
   module Storage
-    # Native extension storage backend for high-performance event tracking
+    # Native extension storage backend with graceful fallback to pure Ruby
     #
     # This backend provides identical functionality to Memory storage but with
-    # significantly better performance for sliding window calculations. It's
-    # particularly beneficial for high-throughput applications where circuit
-    # breaker state checks happen on every request.
+    # significantly better performance for sliding window calculations when the
+    # native extension is available. If the native extension isn't available
+    # (e.g., on JRuby or if Rust wasn't installed), it automatically falls back
+    # to the pure Ruby Memory storage backend.
     #
-    # Performance: ~63x faster than Memory storage for sliding window calculations
+    # Performance: ~63x faster than Memory storage when native extension is available
     #
     # Usage:
     #   BreakerMachines.configure do |config|
     #     config.default_storage = :native
     #   end
     #
-    # Fallback: If the native extension isn't available (e.g., on JRuby or if
-    # Rust wasn't installed during gem installation), this will raise LoadError.
-    # Use Storage::Memory as a fallback in such cases.
+    # FFI Hybrid Pattern: Always works, uses native if available, falls back gracefully
     class Native < Base
       def initialize(**options)
         super
-        unless defined?(BreakerMachinesNative::Storage)
-          raise LoadError, 'Native extension not available. Use Storage::Memory instead.'
-        end
 
-        @native = BreakerMachinesNative::Storage.new
+        # Try to use native extension if available, otherwise fallback to pure Ruby
+        if defined?(BreakerMachinesNative::Storage) && BreakerMachines.native_available?
+          @backend = BreakerMachinesNative::Storage.new
+          @using_native = true
+        else
+          # Graceful fallback to pure Ruby Memory storage
+          @backend = Memory.new(**options)
+          @using_native = false
+        end
+      end
+
+      # Check if using native backend
+      # @return [Boolean] true if using Rust native extension
+      def native?
+        @using_native
       end
 
       def get_status(_circuit_name)
@@ -41,27 +51,27 @@ module BreakerMachines
       end
 
       def record_success(circuit_name, duration)
-        @native.record_success(circuit_name.to_s, duration.to_f)
+        @backend.record_success(circuit_name.to_s, duration.to_f)
       end
 
       def record_failure(circuit_name, duration)
-        @native.record_failure(circuit_name.to_s, duration.to_f)
+        @backend.record_failure(circuit_name.to_s, duration.to_f)
       end
 
       def success_count(circuit_name, window_seconds)
-        @native.success_count(circuit_name.to_s, window_seconds.to_f)
+        @backend.success_count(circuit_name.to_s, window_seconds.to_f)
       end
 
       def failure_count(circuit_name, window_seconds)
-        @native.failure_count(circuit_name.to_s, window_seconds.to_f)
+        @backend.failure_count(circuit_name.to_s, window_seconds.to_f)
       end
 
       def clear(circuit_name)
-        @native.clear(circuit_name.to_s)
+        @backend.clear(circuit_name.to_s)
       end
 
       def clear_all
-        @native.clear_all
+        @backend.clear_all
       end
 
       def record_event_with_details(circuit_name, type, duration, error: nil, new_state: nil)
@@ -78,7 +88,7 @@ module BreakerMachines
       end
 
       def event_log(circuit_name, limit)
-        @native.event_log(circuit_name.to_s, limit)
+        @backend.event_log(circuit_name.to_s, limit)
       end
 
       def with_timeout(_timeout_ms)
