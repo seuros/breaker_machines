@@ -27,7 +27,7 @@ jobs:
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -38,7 +38,7 @@ jobs:
         run: bundle exec rake build
 
       - name: Upload ruby gem artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ruby-gem
           path: pkg/*.gem
@@ -57,7 +57,7 @@ jobs:
           - aarch64-linux
           - x86_64-linux
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure gem installation directory
         run: |
@@ -75,7 +75,7 @@ jobs:
           ruby-versions: '3.4'
 
       - name: Upload platform gem artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: native-gem-${{ matrix.platform }}
           path: ${{ steps.cross.outputs.gem-path }}
@@ -89,7 +89,7 @@ jobs:
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           path: artifacts
 

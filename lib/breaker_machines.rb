@@ -17,6 +17,7 @@ loader.ignore("#{__dir__}/breaker_machines/hedged_async_support.rb")
 loader.ignore("#{__dir__}/breaker_machines/circuit/async_state_management.rb")
 loader.ignore("#{__dir__}/breaker_machines/native_speedup.rb")
 loader.ignore("#{__dir__}/breaker_machines/native_extension.rb")
+loader.ignore("#{__dir__}/breaker_machines/storage/native.rb")
 loader.setup
 
 # BreakerMachines provides a thread-safe implementation of the Circuit Breaker pattern
@@ -190,11 +191,10 @@ module BreakerMachines
 end
 
 # Load optional native speedup after core is loaded
-# Opt-in with BREAKER_MACHINES_NATIVE=1 to enable native extensions
-if ENV['BREAKER_MACHINES_NATIVE'] == '1'
-  begin
-    require_relative 'breaker_machines/native_speedup'
-  rescue LoadError
-    # Native gem not available, skip native support
-  end
+# Automatically loads if available, gracefully falls back to pure Ruby if not
+begin
+  require_relative 'breaker_machines/native_speedup'
+rescue LoadError
+  # Native extension not available, using pure Ruby backend
+  # This is expected on JRuby or when Cargo is not available
 end

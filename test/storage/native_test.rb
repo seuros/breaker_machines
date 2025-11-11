@@ -143,3 +143,32 @@ class NativeStorageTest < ActiveSupport::TestCase
     assert_operator @storage.failure_count(:native_storage_test, 10.0), :>=, 5
   end
 end
+
+# Test that Storage::Native only exists when native is available (load-time fallback)
+class NativeStorageFallbackTest < ActiveSupport::TestCase
+  def test_native_class_only_exists_when_available
+    if BreakerMachines.native_available?
+      assert defined?(BreakerMachines::Storage::Native), 'Native class should exist when native available'
+      storage = BreakerMachines::Storage::Native.new
+      assert storage.native?, 'Should report as native'
+    else
+      refute defined?(BreakerMachines::Storage::Native), 'Native class should not exist when native unavailable'
+    end
+  end
+
+  def test_ffi_hybrid_pattern_load_time_fallback
+    # FFI Hybrid Pattern: Storage::Native loads at require-time only if native available
+    # This verifies the load-time fallback behavior
+    if BreakerMachines.native_available?
+      # When native is available, the class should exist and work
+      assert defined?(BreakerMachines::Storage::Native)
+      storage = BreakerMachines::Storage::Native.new
+      storage.record_success('test', 0.1)
+      assert_equal 1, storage.success_count('test', 60.0)
+    else
+      # When native is not available, the class should not exist at all
+      refute defined?(BreakerMachines::Storage::Native),
+             'Storage::Native should not be loaded when native unavailable (load-time fallback)'
+    end
+  end
+end
