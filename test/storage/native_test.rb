@@ -147,6 +147,7 @@ end
 # Test fallback behavior when native extension is not available
 class NativeStorageFallbackTest < ActiveSupport::TestCase
   def setup
+    skip 'Native extension not available' unless BreakerMachines.native_available?
     # Create storage regardless of native availability
     @storage = BreakerMachines::Storage::Native.new
   end
