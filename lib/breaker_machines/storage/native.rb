@@ -23,7 +23,7 @@ module BreakerMachines
         super
 
         # Try to use native extension if available, otherwise fallback to pure Ruby
-        if defined?(BreakerMachinesNative::Storage) && BreakerMachines.native_available?
+        if BreakerMachines.native_available?
           @backend = BreakerMachinesNative::Storage.new
           @using_native = true
         else
@@ -51,19 +51,19 @@ module BreakerMachines
       end
 
       def record_success(circuit_name, duration)
-        @backend.record_success(circuit_name.to_s, duration.to_f)
+        @backend.record_success(circuit_name.to_s, duration)
       end
 
       def record_failure(circuit_name, duration)
-        @backend.record_failure(circuit_name.to_s, duration.to_f)
+        @backend.record_failure(circuit_name.to_s, duration)
       end
 
       def success_count(circuit_name, window_seconds)
-        @backend.success_count(circuit_name.to_s, window_seconds.to_f)
+        @backend.success_count(circuit_name.to_s, window_seconds)
       end
 
       def failure_count(circuit_name, window_seconds)
-        @backend.failure_count(circuit_name.to_s, window_seconds.to_f)
+        @backend.failure_count(circuit_name.to_s, window_seconds)
       end
 
       def clear(circuit_name)
