@@ -143,3 +143,53 @@ class NativeStorageTest < ActiveSupport::TestCase
     assert_operator @storage.failure_count(:native_storage_test, 10.0), :>=, 5
   end
 end
+
+# Test fallback behavior when native extension is not available
+class NativeStorageFallbackTest < ActiveSupport::TestCase
+  def setup
+    # Create storage regardless of native availability
+    @storage = BreakerMachines::Storage::Native.new
+  end
+
+  def test_always_creates_storage_instance
+    assert_not_nil @storage
+    assert_instance_of BreakerMachines::Storage::Native, @storage
+  end
+
+  def test_reports_backend_type
+    # Should report whether using native or fallback
+    if BreakerMachines.native_available?
+      assert @storage.native?, 'Should use native when available'
+    else
+      refute @storage.native?, 'Should use fallback when native not available'
+    end
+  end
+
+  def test_works_correctly_regardless_of_backend
+    # Both backends should work identically
+    @storage.record_success('test_circuit', 0.1)
+    @storage.record_failure('test_circuit', 0.2)
+
+    assert_equal 1, @storage.success_count('test_circuit', 60.0)
+    assert_equal 1, @storage.failure_count('test_circuit', 60.0)
+  end
+
+  def test_clears_events_regardless_of_backend
+    @storage.record_success('test_circuit', 0.1)
+    @storage.clear('test_circuit')
+
+    assert_equal 0, @storage.success_count('test_circuit', 60.0)
+  end
+
+  def test_ffi_hybrid_pattern
+    # FFI Hybrid Pattern: Always works, uses native if available
+    storage_works = begin
+      @storage.record_success('test', 0.1)
+      @storage.success_count('test', 60.0) == 1
+    rescue StandardError
+      false
+    end
+
+    assert storage_works, 'Storage should always work (FFI Hybrid pattern)'
+  end
+end
