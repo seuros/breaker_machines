@@ -9,6 +9,14 @@ module BreakerMachines
       def load!
         return @loaded if defined?(@loaded)
 
+        # Respect explicit ENV flag to disable native (useful for testing)
+        if ENV['BREAKER_MACHINES_NATIVE'] == '0'
+          @loaded = false
+          BreakerMachines.instance_variable_set(:@native_available, false)
+          BreakerMachines.log(:info, 'Native extension disabled via ENV')
+          return false
+        end
+
         @loaded = true
         require 'breaker_machines_native/breaker_machines_native'
         BreakerMachines.instance_variable_set(:@native_available, true)
