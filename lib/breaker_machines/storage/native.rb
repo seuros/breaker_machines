@@ -17,26 +17,19 @@ module BreakerMachines
     #     config.default_storage = :native
     #   end
     #
-    # FFI Hybrid Pattern: Always works, uses native if available, falls back gracefully
+    # FFI Hybrid Pattern: This class is only loaded when native extension is available
+    # Fallback happens at load time (native_speedup.rb), not at runtime
     class Native < Base
       def initialize(**options)
         super
-
-        # Try to use native extension if available, otherwise fallback to pure Ruby
-        if BreakerMachines.native_available?
-          @backend = BreakerMachinesNative::Storage.new
-          @using_native = true
-        else
-          # Graceful fallback to pure Ruby Memory storage
-          @backend = Memory.new(**options)
-          @using_native = false
-        end
+        # Native extension is guaranteed to be available when this class is loaded
+        @backend = BreakerMachinesNative::Storage.new
       end
 
       # Check if using native backend
-      # @return [Boolean] true if using Rust native extension
+      # @return [Boolean] always true - this class only exists when native is available
       def native?
-        @using_native
+        true
       end
 
       def get_status(_circuit_name)

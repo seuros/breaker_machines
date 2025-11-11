@@ -3,4 +3,8 @@
 require_relative 'native_extension'
 
 # Load the native extension if available
-BreakerMachines::NativeExtension.load!
+if BreakerMachines::NativeExtension.load!
+  # Only load Storage::Native if native extension loaded successfully
+  # This prevents referencing BreakerMachinesNative::Storage when not available
+  require_relative 'storage/native'
+end

@@ -17,6 +17,7 @@ loader.ignore("#{__dir__}/breaker_machines/hedged_async_support.rb")
 loader.ignore("#{__dir__}/breaker_machines/circuit/async_state_management.rb")
 loader.ignore("#{__dir__}/breaker_machines/native_speedup.rb")
 loader.ignore("#{__dir__}/breaker_machines/native_extension.rb")
+loader.ignore("#{__dir__}/breaker_machines/storage/native.rb")
 loader.setup
 
 # BreakerMachines provides a thread-safe implementation of the Circuit Breaker pattern
