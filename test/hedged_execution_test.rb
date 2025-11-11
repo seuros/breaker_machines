@@ -115,24 +115,31 @@ class HedgedExecutionTest < ActiveSupport::TestCase
 
     results = Concurrent::Array.new
     threads = []
+    # Use latches to ensure proper synchronization
+    start_latch = Concurrent::CountDownLatch.new(2)
+    hold_latch = Concurrent::CountDownLatch.new(1)
 
     # Start 2 concurrent requests (filling bulkhead)
     2.times do
       threads << Thread.new do
         circuit.wrap do
-          sleep 0.1
+          start_latch.count_down # Signal we've started
+          hold_latch.wait # Wait for signal to complete
           results << 'concurrent'
         end
       end
     end
 
-    sleep 0.02 # Let threads start
+    # Wait for both threads to be inside the circuit block
+    start_latch.wait
 
-    # This should be rejected due to bulkhead
+    # Now bulkhead should be full - this should be rejected
     assert_raises(BreakerMachines::CircuitBulkheadError) do
       circuit.wrap { 'rejected' }
     end
 
+    # Release the threads
+    hold_latch.count_down
     threads.each(&:join)
 
     assert_equal %w[concurrent concurrent], results.to_a
