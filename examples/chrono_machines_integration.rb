@@ -113,7 +113,7 @@ class MonitoredAPIClient
                               puts "[FAILURE] Failed after #{ctx[:attempts]} attempts: #{ctx[:exception]}"
                             }
 
-  def call_api(endpoint)
+  def call_api(_endpoint)
     with_chrono_policy(:monitored_retry) do
       circuit(:monitored_api).call do
         # API call here

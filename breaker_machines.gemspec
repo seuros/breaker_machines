@@ -47,9 +47,9 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'activesupport', '>= 8.0'
   spec.add_dependency 'chrono_machines', '~> 0.2'
   spec.add_dependency 'concurrent-ruby', '~> 1.3'
+  spec.add_dependency 'rb_sys', '~> 0.9' unless RUBY_ENGINE == 'jruby'
   spec.add_dependency 'state_machines', '>= 0.100.4'
   spec.add_dependency 'zeitwerk', '~> 2.7'
-  spec.add_dependency 'rb_sys', '~> 0.9' unless RUBY_ENGINE == 'jruby'
 
   # Development dependencies
   spec.add_development_dependency 'minitest', '~> 5.16'

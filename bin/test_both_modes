@@ -8,15 +8,15 @@ require 'benchmark'
 require 'English'
 
 def header(title)
-  puts "\n" + "=" * 80
+  puts "\n" + ('=' * 80)
   puts title.center(80)
-  puts "=" * 80
+  puts '=' * 80
 end
 
 def section(title)
-  puts "\n" + "-" * 80
+  puts "\n" + ('-' * 80)
   puts title
-  puts "-" * 80
+  puts '-' * 80
 end
 
 def success(message)
@@ -28,19 +28,19 @@ def error(message)
   exit 1
 end
 
-header("BreakerMachines Dual-Mode Test Suite")
+header('BreakerMachines Dual-Mode Test Suite')
 
 # Clean up any previous builds
-section("Cleaning previous builds...")
+section('Cleaning previous builds...')
 system('rm -rf ext/breaker_machines_native/target/release')
 system('rm -f ext/breaker_machines_native/breaker_machines_native.bundle')
-success("Clean complete")
+success('Clean complete')
 
 # Test 1: Pure Ruby mode
-header("TEST 1: Pure Ruby Backend")
+header('TEST 1: Pure Ruby Backend')
 
 ENV['BREAKER_MACHINES_NATIVE'] = '0'
-section("Running tests in Pure Ruby mode...")
+section('Running tests in Pure Ruby mode...')
 
 ruby_start = Time.now
 result = system('bundle exec rake test')
@@ -49,35 +49,31 @@ ruby_time = Time.now - ruby_start
 if result
   success("Pure Ruby tests passed in #{ruby_time.round(2)}s")
 else
-  error("Pure Ruby tests failed!")
+  error('Pure Ruby tests failed!')
 end
 
-section("Verifying Pure Ruby mode...")
+section('Verifying Pure Ruby mode...')
 verification = `ruby -Ilib -e "
   require 'breaker_machines'
   puts BreakerMachines.native_available? ? 'NATIVE' : 'RUBY'
 "`
 
 if verification.strip == 'RUBY'
-  success("Pure Ruby backend confirmed")
+  success('Pure Ruby backend confirmed')
 else
   error("Expected Pure Ruby mode but got: #{verification.strip}")
 end
 
 # Test 2: Build native extension
-header("TEST 2: Building Native Extension")
+header('TEST 2: Building Native Extension')
 
-section("Building Rust extension...")
+section('Building Rust extension...')
 Dir.chdir('ext/breaker_machines_native') do
   build_start = Time.now
 
-  unless system('ruby extconf.rb')
-    error("extconf.rb failed!")
-  end
+  error('extconf.rb failed!') unless system('ruby extconf.rb')
 
-  unless system('make')
-    error("make failed!")
-  end
+  error('make failed!') unless system('make')
 
   # Create subdirectory structure for require to work
   system('mkdir -p breaker_machines_native')
@@ -88,10 +84,10 @@ Dir.chdir('ext/breaker_machines_native') do
 end
 
 # Test 3: Native FFI mode
-header("TEST 3: Native FFI Backend")
+header('TEST 3: Native FFI Backend')
 
 ENV['BREAKER_MACHINES_NATIVE'] = '1'
-section("Running tests in Native FFI mode...")
+section('Running tests in Native FFI mode...')
 
 native_start = Time.now
 result = system('bundle exec rake test')
@@ -100,10 +96,10 @@ native_time = Time.now - native_start
 if result
   success("Native FFI tests passed in #{native_time.round(2)}s")
 else
-  error("Native FFI tests failed!")
+  error('Native FFI tests failed!')
 end
 
-section("Verifying Native FFI mode...")
+section('Verifying Native FFI mode...')
 verification = `ruby -Ilib:ext/breaker_machines_native -e "
   require 'breaker_machines'
   BreakerMachines.config.log_events = false  # Suppress logging for verification
@@ -120,13 +116,13 @@ verification = `ruby -Ilib:ext/breaker_machines_native -e "
 result = verification.lines.reject { |l| l.strip.start_with?('[') }.last&.strip
 
 if result == 'NATIVE'
-  success("Native FFI backend confirmed")
+  success('Native FFI backend confirmed')
 else
   error("Expected Native FFI mode but got: #{verification.strip}")
 end
 
 # Performance comparison
-header("PERFORMANCE COMPARISON")
+header('PERFORMANCE COMPARISON')
 
 iterations = 10_000
 section("Running #{iterations} circuit breaker operations...")
@@ -196,15 +192,15 @@ if ruby_benchmark && native_benchmark && speedup
   puts
   puts "🚀 Native FFI is #{speedup.round(2)}x faster"
 else
-  error("Benchmark failed to produce results")
+  error('Benchmark failed to produce results')
 end
 
 # Summary
-header("SUMMARY")
+header('SUMMARY')
 puts
 puts "✅ Pure Ruby tests:    PASSED (#{ruby_time.round(2)}s)"
 puts "✅ Native FFI tests:   PASSED (#{native_time.round(2)}s)"
 puts "✅ Performance gain:   #{speedup.round(2)}x"
 puts
-puts "All tests completed successfully!"
-puts "=" * 80
+puts 'All tests completed successfully!'
+puts '=' * 80
