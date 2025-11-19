@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.7.0...breaker_machines/v0.7.1) (2025-11-19)
+
+
+### Bug Fixes
+
+* detect platform binary ([#31](https://github.com/seuros/breaker_machines/issues/31)) ([4f71383](https://github.com/seuros/breaker_machines/commit/4f71383d40e203f8b520b38331abca37941e086c))
+
 ## [0.7.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.6.2...breaker_machines/v0.7.0) (2025-11-11)
 
 
