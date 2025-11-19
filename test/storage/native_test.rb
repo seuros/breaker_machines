@@ -150,7 +150,8 @@ class NativeStorageFallbackTest < ActiveSupport::TestCase
     if BreakerMachines.native_available?
       assert defined?(BreakerMachines::Storage::Native), 'Native class should exist when native available'
       storage = BreakerMachines::Storage::Native.new
-      assert storage.native?, 'Should report as native'
+
+      assert_predicate storage, :native?, 'Should report as native'
     else
       refute defined?(BreakerMachines::Storage::Native), 'Native class should not exist when native unavailable'
     end
@@ -164,6 +165,7 @@ class NativeStorageFallbackTest < ActiveSupport::TestCase
       assert defined?(BreakerMachines::Storage::Native)
       storage = BreakerMachines::Storage::Native.new
       storage.record_success('test', 0.1)
+
       assert_equal 1, storage.success_count('test', 60.0)
     else
       # When native is not available, the class should not exist at all

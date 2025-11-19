@@ -27,9 +27,7 @@ def create_noop_makefile(message)
   exit 0
 end
 
-unless cargo_available?
-  create_noop_makefile('Skipping native extension (Cargo not found)')
-end
+create_noop_makefile('Skipping native extension (Cargo not found)') unless cargo_available?
 
 # Use rb_sys to compile the Rust extension
 require 'mkmf'
@@ -55,7 +53,7 @@ begin
   if File.exist?(makefile_path)
     manifest_path = File.expand_path(__dir__)
     contents = File.read(makefile_path)
-    contents.gsub!(%r{^RB_SYS_CARGO_MANIFEST_DIR \?=.*$}, "RB_SYS_CARGO_MANIFEST_DIR ?= #{manifest_path}")
+    contents.gsub!(/^RB_SYS_CARGO_MANIFEST_DIR \?=.*$/, "RB_SYS_CARGO_MANIFEST_DIR ?= #{manifest_path}")
     File.write(makefile_path, contents)
   end
 rescue LoadError => e
