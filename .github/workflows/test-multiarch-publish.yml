@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       test_version_suffix:
-        description: 'Version suffix for test gem (e.g., pre.test1)'
+        description: 'Version suffix for test gem (e.g., test1, alpha1)'
         required: true
-        default: 'pre.test1'
+        default: 'test1'
       publish_to_github_packages:
         description: 'Publish to GitHub Packages (or just build)'
         required: true
@@ -39,9 +39,12 @@ jobs:
         id: version
         run: |
           VERSION=$(ruby -e "require './lib/breaker_machines/version'; puts BreakerMachines::VERSION")
-          TEST_VERSION="${VERSION}-${{ inputs.test_version_suffix }}"
+          TEST_VERSION="${VERSION}.${{ inputs.test_version_suffix }}"
+          # RubyGems normalizes version format, so we need to check what it will actually be
+          NORMALIZED_VERSION=$(ruby -e "require 'rubygems'; puts Gem::Version.new('${TEST_VERSION}').to_s")
           echo "version=${TEST_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Building test version: ${TEST_VERSION}"
+          echo "normalized_version=${NORMALIZED_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building test version: ${TEST_VERSION} (normalized: ${NORMALIZED_VERSION})"
 
       - name: Update version for test build
         run: |
@@ -54,10 +57,15 @@ jobs:
       - name: Verify gem was built
         run: |
           ls -lh pkg/
-          if [ ! -f pkg/breaker_machines-${{ steps.version.outputs.version }}.gem ]; then
-            echo "::error::Expected gem file not found"
+          # Check for the gem file - RubyGems may normalize the version
+          EXPECTED_FILE="pkg/breaker_machines-${{ steps.version.outputs.normalized_version }}.gem"
+          if [ ! -f "$EXPECTED_FILE" ]; then
+            echo "::error::Expected gem file not found: $EXPECTED_FILE"
+            echo "Files in pkg/:"
+            ls -la pkg/
             exit 1
           fi
+          echo "✓ Found expected gem: $EXPECTED_FILE"
 
       - name: Upload test gem artifact
         uses: actions/upload-artifact@v4
