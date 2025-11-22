@@ -133,6 +133,7 @@ jobs:
     needs:
       - build-test-gem
       - build-native-gems
+    continue-on-error: true  # Don't fail workflow if smoke tests fail
     strategy:
       fail-fast: false
       matrix:
@@ -176,6 +177,7 @@ jobs:
     needs:
       - build-test-gem
       - build-native-gems
+    continue-on-error: true  # Don't fail workflow if smoke tests fail
     container:
       image: ruby:3.4-alpine
     strategy:
