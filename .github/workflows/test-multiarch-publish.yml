@@ -262,10 +262,10 @@ jobs:
 
             if [ "$DRY_RUN" = "true" ]; then
               echo "[DRY RUN] Would publish: $gem"
-              gem push --key github --host "https://rubygems.pkg.github.com/${OWNER}" "$gem" --dry-run || true
+              gem push --key github --host "https://rubygems.pkg.github.com/${OWNER}" "$gem" --dry-run --force || true
             else
               echo "Publishing: $gem"
-              gem push --key github --host "https://rubygems.pkg.github.com/${OWNER}" "$gem"
+              gem push --key github --host "https://rubygems.pkg.github.com/${OWNER}" "$gem" --force
             fi
           done
 
