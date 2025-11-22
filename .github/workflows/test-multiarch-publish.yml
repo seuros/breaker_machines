@@ -52,6 +52,8 @@ jobs:
           rm lib/breaker_machines/version.rb.bak
 
       - name: Build test gem
+        env:
+          GEM_PUSH_HOST: https://rubygems.pkg.github.com/${{ github.repository_owner }}
         run: bundle exec rake build
 
       - name: Verify gem was built
@@ -108,6 +110,8 @@ jobs:
       - name: Cross-compile native gem
         id: cross
         uses: oxidize-rb/actions/cross-gem@v1
+        env:
+          GEM_PUSH_HOST: https://rubygems.pkg.github.com/${{ github.repository_owner }}
         with:
           platform: ${{ matrix.platform }}
           ruby-versions: '3.4'
@@ -262,10 +266,10 @@ jobs:
 
             if [ "$DRY_RUN" = "true" ]; then
               echo "[DRY RUN] Would publish: $gem"
-              gem push --key github --host "https://rubygems.pkg.github.com/${OWNER}" "$gem" --dry-run --force || true
+              gem push --key github --host "https://rubygems.pkg.github.com/${OWNER}" "$gem" --dry-run || true
             else
               echo "Publishing: $gem"
-              gem push --key github --host "https://rubygems.pkg.github.com/${OWNER}" "$gem" --force
+              gem push --key github --host "https://rubygems.pkg.github.com/${OWNER}" "$gem"
             fi
           done
 

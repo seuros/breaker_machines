@@ -24,8 +24,8 @@ Gem::Specification.new do |spec|
   spec.platform = Gem::Platform::RUBY
   # NOTE: This gem supports JRuby and TruffleRuby, but async features require MRI
 
-  # Allow push to RubyGems.org
-  spec.metadata['allowed_push_host'] = 'https://rubygems.org'
+  # Allow push to RubyGems.org (can be overridden with GEM_PUSH_HOST env var)
+  spec.metadata['allowed_push_host'] = ENV.fetch('GEM_PUSH_HOST', 'https://rubygems.org')
 
   spec.metadata['homepage_uri'] = spec.homepage
   spec.metadata['source_code_uri'] = 'https://github.com/seuros/breaker_machines'
