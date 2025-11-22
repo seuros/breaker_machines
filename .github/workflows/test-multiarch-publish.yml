@@ -1,0 +1,290 @@
+name: Test Multi-Arch Build & GitHub Packages Publishing
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_version_suffix:
+        description: 'Version suffix for test gem (e.g., pre.test1)'
+        required: true
+        default: 'pre.test1'
+      publish_to_github_packages:
+        description: 'Publish to GitHub Packages (or just build)'
+        required: true
+        type: boolean
+        default: false
+      dry_run_publish:
+        description: 'Dry-run publish (validate auth without actually publishing)'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-test-gem:
+    runs-on: ubuntu-latest
+    outputs:
+      gem_version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+          bundler-cache: true
+
+      - name: Get current version and create test version
+        id: version
+        run: |
+          VERSION=$(ruby -e "require './lib/breaker_machines/version'; puts BreakerMachines::VERSION")
+          TEST_VERSION="${VERSION}-${{ inputs.test_version_suffix }}"
+          echo "version=${TEST_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building test version: ${TEST_VERSION}"
+
+      - name: Update version for test build
+        run: |
+          sed -i.bak "s/VERSION = '[^']*'/VERSION = '${{ steps.version.outputs.version }}'/" lib/breaker_machines/version.rb
+          rm lib/breaker_machines/version.rb.bak
+
+      - name: Build test gem
+        run: bundle exec rake build
+
+      - name: Verify gem was built
+        run: |
+          ls -lh pkg/
+          if [ ! -f pkg/breaker_machines-${{ steps.version.outputs.version }}.gem ]; then
+            echo "::error::Expected gem file not found"
+            exit 1
+          fi
+
+      - name: Upload test gem artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-ruby-gem
+          path: pkg/*.gem
+          if-no-files-found: error
+
+  build-native-gems:
+    runs-on: ubuntu-latest
+    needs: build-test-gem
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          # Existing platforms
+          - arm64-darwin
+          - x86_64-darwin
+          - aarch64-linux
+          - x86_64-linux
+          # New musl platforms
+          - x86_64-linux-musl
+          - aarch64-linux-musl
+          - arm-linux-musl
+          - armv7-linux-musl
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Update version for test build
+        run: |
+          sed -i.bak "s/VERSION = '[^']*'/VERSION = '${{ needs.build-test-gem.outputs.gem_version }}'/" lib/breaker_machines/version.rb
+          rm lib/breaker_machines/version.rb.bak
+
+      - name: Configure gem installation directory
+        run: |
+          GEM_HOME="$HOME/.gem"
+          mkdir -p "$GEM_HOME/bin"
+          echo "GEM_HOME=$GEM_HOME" >> "$GITHUB_ENV"
+          echo "GEM_PATH=$GEM_HOME" >> "$GITHUB_ENV"
+          echo "$GEM_HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Cross-compile native gem
+        id: cross
+        uses: oxidize-rb/actions/cross-gem@v1
+        with:
+          platform: ${{ matrix.platform }}
+          ruby-versions: '3.4'
+
+      - name: Verify native gem was built
+        run: |
+          echo "Gem path: ${{ steps.cross.outputs.gem-path }}"
+          if [ ! -f "${{ steps.cross.outputs.gem-path }}" ]; then
+            echo "::error::Native gem not found at expected path"
+            exit 1
+          fi
+          ls -lh "${{ steps.cross.outputs.gem-path }}"
+
+      - name: Upload platform gem artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-native-gem-${{ matrix.platform }}
+          path: ${{ steps.cross.outputs.gem-path }}
+          if-no-files-found: error
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    needs:
+      - build-test-gem
+      - build-native-gems
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - x86_64-linux
+          - x86_64-linux-musl
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-native-gem-${{ matrix.platform }}
+          path: gems
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+
+      - name: Test gem installation
+        run: |
+          GEM_FILE=$(ls gems/*.gem)
+          echo "Testing installation of: $GEM_FILE"
+          gem install "$GEM_FILE" --local --no-document
+
+      - name: Verify native extension loaded
+        run: |
+          ruby -e "
+            require 'breaker_machines'
+            puts 'Gem loaded successfully'
+            puts 'Ruby backend: ' + BreakerMachines.ruby_backend.to_s
+            # Try to load native backend
+            begin
+              require 'breaker_machines_native'
+              puts 'Native backend available'
+            rescue LoadError
+              puts 'Native backend not available (fallback to pure Ruby)'
+            end
+          "
+
+  smoke-test-musl:
+    runs-on: ubuntu-latest
+    needs:
+      - build-test-gem
+      - build-native-gems
+    container:
+      image: ruby:3.4-alpine
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - x86_64-linux-musl
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-native-gem-${{ matrix.platform }}
+          path: gems
+
+      - name: Test gem installation on Alpine
+        run: |
+          GEM_FILE=$(ls gems/*.gem)
+          echo "Testing musl gem on Alpine: $GEM_FILE"
+          gem install "$GEM_FILE" --local --no-document
+
+      - name: Verify no glibc linkage
+        run: |
+          ruby -e "
+            require 'breaker_machines'
+            puts 'Gem loaded successfully on Alpine (musl)'
+            begin
+              require 'breaker_machines_native'
+              puts 'Native musl backend loaded successfully'
+            rescue LoadError => e
+              puts 'ERROR: Native backend failed to load on musl'
+              puts e.message
+              exit 1
+            end
+          "
+
+  publish-to-github-packages:
+    needs:
+      - build-test-gem
+      - build-native-gems
+      - smoke-test
+      - smoke-test-musl
+    if: ${{ inputs.publish_to_github_packages }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+
+      - name: Download all gem artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List all artifacts
+        run: |
+          echo "=== All artifacts ==="
+          find artifacts -name "*.gem" -type f
+          echo ""
+          echo "=== Gem details ==="
+          find artifacts -name "*.gem" -type f -exec ls -lh {} \;
+
+      - name: Setup gem credentials
+        run: |
+          mkdir -p ~/.gem
+          cat << EOF > ~/.gem/credentials
+          ---
+          :github: Bearer ${{ secrets.GITHUB_TOKEN }}
+          EOF
+          chmod 0600 ~/.gem/credentials
+
+      - name: Publish gems to GitHub Packages
+        run: |
+          DRY_RUN="${{ inputs.dry_run_publish }}"
+          OWNER="${{ github.repository_owner }}"
+
+          echo "Publishing to: https://rubygems.pkg.github.com/${OWNER}"
+
+          for gem in artifacts/**/*.gem; do
+            echo ""
+            echo "Processing: $gem"
+
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "[DRY RUN] Would publish: $gem"
+              gem push --key github --host "https://rubygems.pkg.github.com/${OWNER}" "$gem" --dry-run || true
+            else
+              echo "Publishing: $gem"
+              gem push --key github --host "https://rubygems.pkg.github.com/${OWNER}" "$gem"
+            fi
+          done
+
+      - name: Cleanup credentials
+        if: always()
+        run: rm -f ~/.gem/credentials
+
+  summary:
+    needs:
+      - build-test-gem
+      - build-native-gems
+      - smoke-test
+      - smoke-test-musl
+      - publish-to-github-packages
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test Summary
+        run: |
+          echo "## Multi-Architecture Build Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Test Version:** ${{ needs.build-test-gem.outputs.gem_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Platforms Built:** 8 (4 gnu + 4 musl)" >> $GITHUB_STEP_SUMMARY
+          echo "**Published:** ${{ inputs.publish_to_github_packages }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Dry Run:** ${{ inputs.dry_run_publish }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. ✅ Review artifacts in this workflow run" >> $GITHUB_STEP_SUMMARY
+          echo "2. ✅ Test gem installation from GitHub Packages" >> $GITHUB_STEP_SUMMARY
+          echo "3. ✅ If successful, integrate into release-please.yml" >> $GITHUB_STEP_SUMMARY

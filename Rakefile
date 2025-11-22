@@ -20,6 +20,10 @@ SUPPORTED_NATIVE_PLATFORMS = %w[
   x86_64-darwin
   aarch64-linux
   x86_64-linux
+  x86_64-linux-musl
+  aarch64-linux-musl
+  arm-linux-musl
+  armv7-linux-musl
 ].freeze
 
 if defined?(RbSys::ExtensionTask)
