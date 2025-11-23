@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.2](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.8.1...breaker_machines/v0.8.2) (2025-11-23)
+
+
+### Bug Fixes
+
+* add JRuby and TruffleRuby CI testing ([#11](https://github.com/seuros/breaker_machines/issues/11)) ([8aa1c99](https://github.com/seuros/breaker_machines/commit/8aa1c995a6b75c5fa6d392ce58243b818c2df27e))
+* Make native extension opt-in with BREAKER_MACHINES_NATIVE=1 ([#36](https://github.com/seuros/breaker_machines/issues/36)) ([126d631](https://github.com/seuros/breaker_machines/commit/126d63158e83fc7e6ca62cd7392ef62d9a592c5e))
+
 ## [0.8.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.8.0...breaker_machines/v0.8.1) (2025-11-23)
 
 
