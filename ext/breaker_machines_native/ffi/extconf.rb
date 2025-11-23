@@ -1,20 +1,5 @@
 # frozen_string_literal: true
 
-# Skip native extension compilation on JRuby
-if RUBY_ENGINE == 'jruby'
-  puts 'Skipping native extension compilation on JRuby'
-  puts 'BreakerMachines will use pure Ruby backend'
-  makefile_content = "all:\n\t@echo 'Skipping native extension on JRuby'\n" \
-                     "install:\n\t@echo 'Skipping native extension on JRuby'\n"
-  File.write('Makefile', makefile_content)
-  exit 0
-end
-
-# Check if Cargo is available
-def cargo_available?
-  system('cargo --version > /dev/null 2>&1')
-end
-
 def create_noop_makefile(message)
   warn message
   warn 'BreakerMachines will fall back to pure Ruby backend.'
@@ -27,7 +12,24 @@ def create_noop_makefile(message)
   exit 0
 end
 
-create_noop_makefile('Skipping native extension (Cargo not found)') unless cargo_available?
+# Native extension is opt-in: require BREAKER_MACHINES_NATIVE=1
+unless ENV['BREAKER_MACHINES_NATIVE'] == '1'
+  create_noop_makefile('Skipping native extension (set BREAKER_MACHINES_NATIVE=1 to enable)')
+end
+
+# Skip native extension compilation on JRuby
+if RUBY_ENGINE == 'jruby'
+  create_noop_makefile('Skipping native extension on JRuby')
+end
+
+# Check if Cargo is available
+def cargo_available?
+  system('cargo --version > /dev/null 2>&1')
+end
+
+unless cargo_available?
+  create_noop_makefile('Skipping native extension (Cargo not found)')
+end
 
 # Use rb_sys to compile the Rust extension
 require 'mkmf'

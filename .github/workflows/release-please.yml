@@ -74,6 +74,7 @@ jobs:
         uses: oxidize-rb/actions/cross-gem@v1
         env:
           CARGO_TARGET_DIR: target/${{ matrix.platform }}
+          BREAKER_MACHINES_NATIVE: "1"
         with:
           platform: ${{ matrix.platform }}
           ruby-versions: '3.4'

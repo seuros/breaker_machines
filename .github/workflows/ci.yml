@@ -146,6 +146,8 @@ jobs:
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
+        env:
+          BREAKER_MACHINES_NATIVE: "1"
 
       - name: Build native extension
         run: |
