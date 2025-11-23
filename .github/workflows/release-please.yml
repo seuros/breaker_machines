@@ -55,7 +55,6 @@ jobs:
         platform:
           - arm64-darwin
           - x86_64-darwin
-          - aarch64-linux
           - x86_64-linux
           - x86_64-linux-musl
     steps:
@@ -84,11 +83,39 @@ jobs:
           path: ${{ steps.cross.outputs.gem-path }}
           if-no-files-found: error
 
+  build-native-gems-arm:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-24.04-arm64
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+          bundler-cache: true
+
+      - name: Build native gem
+        run: |
+          bundle exec rake native gem
+
+      - name: Upload ARM gem artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: native-gem-aarch64-linux
+          path: pkg/*-aarch64-linux.gem
+          if-no-files-found: error
+
   publish-release-assets:
     needs:
       - release-please
       - build-ruby-gem
       - build-native-gems
+      - build-native-gems-arm
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
     steps:
@@ -112,6 +139,7 @@ jobs:
       - release-please
       - build-ruby-gem
       - build-native-gems
+      - build-native-gems-arm
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
     steps:
