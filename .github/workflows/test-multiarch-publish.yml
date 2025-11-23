@@ -158,7 +158,9 @@ jobs:
       - name: Install dependencies
         run: |
           # Install dependencies from rubygems.org first
-          gem install zeitwerk:~2.7 activesupport:">= 8.0" concurrent-ruby:~1.3 --no-document
+          gem install zeitwerk -v "~> 2.7" --no-document
+          gem install activesupport -v ">= 8.0" --no-document
+          gem install concurrent-ruby -v "~> 1.3" --no-document
 
       - name: Test gem installation
         run: |
@@ -203,7 +205,9 @@ jobs:
       - name: Install dependencies on Alpine
         run: |
           # Install dependencies from rubygems.org first
-          gem install zeitwerk:~2.7 activesupport:">= 8.0" concurrent-ruby:~1.3 --no-document
+          gem install zeitwerk -v "~> 2.7" --no-document
+          gem install activesupport -v ">= 8.0" --no-document
+          gem install concurrent-ruby -v "~> 1.3" --no-document
 
       - name: Test gem installation on Alpine
         run: |
@@ -280,7 +284,10 @@ jobs:
               gem push --key github --host "${HOST}" "$gem" --dry-run || true
             else
               echo "Publishing: $gem"
-              if gem push --key github --host "${HOST}" "$gem" 2>&1 | tee /tmp/push.log; then
+              gem push --key github --host "${HOST}" "$gem" 2>&1 | tee /tmp/push.log
+              EXIT_CODE=$?
+
+              if [ $EXIT_CODE -eq 0 ]; then
                 echo "✓ Successfully pushed $gem"
               elif grep -q "already been pushed" /tmp/push.log; then
                 echo "⊘ Skipping $gem (already published)"
