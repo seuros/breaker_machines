@@ -10,6 +10,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  packages: write
 
 jobs:
   release-please:
@@ -56,6 +57,7 @@ jobs:
           - x86_64-darwin
           - aarch64-linux
           - x86_64-linux
+          - x86_64-linux-musl
     steps:
       - uses: actions/checkout@v5
 
@@ -103,3 +105,69 @@ jobs:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-to-github-packages:
+    needs:
+      - release-please
+      - build-ruby-gem
+      - build-native-gems
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+
+      - name: Download all gem artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+
+      - name: List all artifacts
+        run: |
+          echo "=== All artifacts ==="
+          find artifacts -name "*.gem" -type f
+          echo ""
+          echo "=== Gem details ==="
+          find artifacts -name "*.gem" -type f -exec ls -lh {} \;
+
+      - name: Setup gem credentials
+        run: |
+          mkdir -p ~/.gem
+          cat << EOF > ~/.gem/credentials
+          ---
+          :github: Bearer ${{ secrets.GITHUB_TOKEN }}
+          EOF
+          chmod 0600 ~/.gem/credentials
+
+      - name: Publish gems to GitHub Packages
+        run: |
+          OWNER="${{ github.repository_owner }}"
+          HOST="https://rubygems.pkg.github.com/${OWNER}"
+
+          echo "Publishing to: ${HOST}"
+
+          for gem in artifacts/**/*.gem; do
+            echo ""
+            echo "Processing: $gem"
+            echo "Publishing: $gem"
+
+            gem push --key github --host "${HOST}" "$gem" 2>&1 | tee /tmp/push.log
+            EXIT_CODE=$?
+
+            if [ $EXIT_CODE -eq 0 ]; then
+              echo "✓ Successfully pushed $gem"
+            elif grep -q "already been pushed" /tmp/push.log; then
+              echo "⊘ Skipping $gem (already published)"
+            else
+              echo "✗ Failed to push $gem"
+              cat /tmp/push.log
+              exit 1
+            fi
+          done
+
+      - name: Cleanup credentials
+        if: always()
+        run: rm -f ~/.gem/credentials
