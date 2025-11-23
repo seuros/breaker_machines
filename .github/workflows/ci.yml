@@ -18,7 +18,7 @@ jobs:
     name: Rust Crate Tests
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -82,7 +82,7 @@ jobs:
       BREAKER_MACHINES_NATIVE: "0"  # Disable native extension
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
@@ -125,7 +125,7 @@ jobs:
       BREAKER_MACHINES_NATIVE: "1"  # Enable native extension
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable

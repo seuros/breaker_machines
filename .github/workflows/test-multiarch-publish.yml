@@ -28,7 +28,7 @@ jobs:
     outputs:
       gem_version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -92,7 +92,7 @@ jobs:
           # Note: aarch64-linux excluded due to cache corruption issues in test workflow
           # It works in release-please.yml, so we'll add it there directly
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Update version for test build
         run: |
@@ -239,7 +239,7 @@ jobs:
     if: ${{ inputs.publish_to_github_packages }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - uses: ruby/setup-ruby@v1
         with:
