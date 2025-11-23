@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.3](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.9.2...breaker_machines/v0.9.3) (2025-11-23)
+
+
+### Bug Fixes
+
+* Remove empty env block in manual-native-build.yml ([2487c95](https://github.com/seuros/breaker_machines/commit/2487c953e6e799c538842c9cc1ed8573e349948a))
+* Set BREAKER_MACHINES_NATIVE env var before require in CI test ([62a2eca](https://github.com/seuros/breaker_machines/commit/62a2eca430bc0e963c3e87a581556074b48cd695))
+
 ## [0.9.2](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.9.1...breaker_machines/v0.9.2) (2025-11-23)
 
 
