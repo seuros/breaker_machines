@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.8.0...breaker_machines/v0.8.1) (2025-11-23)
+
+
+### Bug Fixes
+
+* Isolate aarch64-linux build with platform-specific cache and target dir ([653ec42](https://github.com/seuros/breaker_machines/commit/653ec427077fe5072e868b2b0c303952217a584f))
+
 ## [0.8.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.7.1...breaker_machines/v0.8.0) (2025-11-23)
 
 
