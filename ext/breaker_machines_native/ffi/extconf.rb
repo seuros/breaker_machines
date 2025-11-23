@@ -12,11 +12,6 @@ def create_noop_makefile(message)
   exit 0
 end
 
-# Native extension is opt-in: require BREAKER_MACHINES_NATIVE=1
-unless ENV['BREAKER_MACHINES_NATIVE'] == '1'
-  create_noop_makefile('Skipping native extension (set BREAKER_MACHINES_NATIVE=1 to enable)')
-end
-
 # Skip native extension compilation on JRuby
 if RUBY_ENGINE == 'jruby'
   create_noop_makefile('Skipping native extension on JRuby')

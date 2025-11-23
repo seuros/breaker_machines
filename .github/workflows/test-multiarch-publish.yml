@@ -112,7 +112,6 @@ jobs:
         uses: oxidize-rb/actions/cross-gem@v1
         env:
           GEM_PUSH_HOST: https://rubygems.pkg.github.com/${{ github.repository_owner }}
-          BREAKER_MACHINES_NATIVE: "1"
         with:
           platform: ${{ matrix.platform }}
           ruby-versions: '3.4'

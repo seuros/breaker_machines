@@ -122,7 +122,6 @@ jobs:
           - "8.1.1"
     env:
       ACTIVERECORD_VERSION: ${{ matrix.rails }}
-      BREAKER_MACHINES_NATIVE: "1"  # Enable native extension
 
     steps:
       - uses: actions/checkout@v6
@@ -146,8 +145,6 @@ jobs:
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
-        env:
-          BREAKER_MACHINES_NATIVE: "1"
 
       - name: Build native extension
         run: |
