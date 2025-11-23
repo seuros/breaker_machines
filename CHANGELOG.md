@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.8.4...breaker_machines/v0.9.0) (2025-11-23)
+
+
+### Features
+
+* Make native extension opt-in at runtime ([5fba9af](https://github.com/seuros/breaker_machines/commit/5fba9afd9c81ab1e00c154b80e62d50bfdd1127e))
+
+
+### Bug Fixes
+
+* Re-add aarch64-linux with platform-specific cache isolation ([b3e8de3](https://github.com/seuros/breaker_machines/commit/b3e8de37dffe79e56d7ca492c6e58135ca2dc9fc))
+* Remove aarch64-linux from build matrix ([aa2d02b](https://github.com/seuros/breaker_machines/commit/aa2d02b22b5ac9b72d8bfd03b11bf51de207e181))
+
 ## [0.8.4](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.8.3...breaker_machines/v0.8.4) (2025-11-23)
 
 
