@@ -24,6 +24,8 @@ jobs:
 
       - name: Cross-compile native gem
         uses: oxidize-rb/actions/cross-gem@v1
+        env:
+          BREAKER_MACHINES_NATIVE: "1"
         with:
           platform: ${{ github.event.inputs.platform }}
           ruby-versions: '3.4'
