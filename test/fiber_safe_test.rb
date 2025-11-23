@@ -2,6 +2,11 @@
 
 require 'test_helper'
 
+unless ASYNC_AVAILABLE
+  warn "Skipping FiberSafeTest: async gem not available on #{RUBY_ENGINE}"
+  return
+end
+
 class FiberSafeTest < ActiveSupport::TestCase
   def setup
     BreakerMachines.config.fiber_safe = true

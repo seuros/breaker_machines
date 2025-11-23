@@ -7,10 +7,11 @@ require 'minitest/autorun'
 require 'active_support/test_case'
 
 # Require async for fiber tests
-begin
+ASYNC_AVAILABLE = begin
   require 'async'
+  true
 rescue LoadError
-  # Async not available (e.g., on JRuby)
+  false
 end
 
 # Suppress notifications during tests unless explicitly testing them
@@ -22,19 +23,21 @@ BreakerMachines.config.fiber_safe = false
 # Disable logger output during tests
 BreakerMachines.logger = Logger.new(nil)
 
-# Load Rails environment
-begin
-  ENV['RAILS_ENV'] ||= 'test'
-  require_relative 'dummy/config/environment'
-  require 'rails/test_help'
-  require 'state_machines/integrations/active_record'
+# Load Rails environment (MRI only - JRuby doesn't support ActiveRecord 7.2+)
+if RUBY_ENGINE == 'ruby'
+  begin
+    ENV['RAILS_ENV'] ||= 'test'
+    require_relative 'dummy/config/environment'
+    require 'rails/test_help'
+    require 'state_machines/integrations/active_record'
 
-  # Load the schema
-  ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: ':memory:')
-  ActiveRecord::Schema.verbose = false
-  load File.expand_path('dummy/db/schema.rb', __dir__)
-rescue LoadError
-  # Rails not available (e.g., on JRuby)
+    # Load the schema
+    ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: ':memory:')
+    ActiveRecord::Schema.verbose = false
+    load File.expand_path('dummy/db/schema.rb', __dir__)
+  rescue LoadError => e
+    warn "Rails not available: #{e.message}"
+  end
 end
 
 # Skip platform-dependent tests helper
@@ -66,7 +69,7 @@ module ActiveSupport
       # Clear the circuit registry after every test to prevent state leakage
       BreakerMachines.registry.clear
       # Clear Rails cache to prevent storage state leakage
-      Rails.cache.clear if defined?(Rails)
+      Rails.cache.clear if defined?(Rails) && Rails.respond_to?(:cache) && Rails.cache
     end
   end
 end

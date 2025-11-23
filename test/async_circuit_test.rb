@@ -2,6 +2,11 @@
 
 require 'test_helper'
 
+unless ASYNC_AVAILABLE
+  warn "Skipping AsyncCircuitTest: async gem not available on #{RUBY_ENGINE}"
+  return
+end
+
 class AsyncCircuitTest < ActiveSupport::TestCase
   def setup
     skip_async_dependent_test
