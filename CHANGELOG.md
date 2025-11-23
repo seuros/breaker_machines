@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.9.1...breaker_machines/v0.9.2) (2025-11-23)
+
+
+### Bug Fixes
+
+* Use ubuntu-24.04-arm (not arm64) ([1ea562c](https://github.com/seuros/breaker_machines/commit/1ea562cc2c387a3b3f525804af0641f626f6d13f))
+
 ## [0.9.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.9.0...breaker_machines/v0.9.1) (2025-11-23)
 
 
