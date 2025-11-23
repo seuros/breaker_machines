@@ -12,11 +12,10 @@ module BreakerMachines
       def load!
         return @loaded if defined?(@loaded)
 
-        # Respect explicit ENV flag to disable native (useful for testing)
-        if ENV['BREAKER_MACHINES_NATIVE'] == '0'
+        # Native extension is opt-in: only load if explicitly enabled
+        unless ENV['BREAKER_MACHINES_NATIVE'] == '1'
           @loaded = false
           BreakerMachines.instance_variable_set(:@native_available, false)
-          BreakerMachines.log(:info, 'Native extension disabled via ENV')
           return false
         end
 
@@ -34,11 +33,7 @@ module BreakerMachines
 
         @loaded = false
         BreakerMachines.instance_variable_set(:@native_available, false)
-
-        if RUBY_ENGINE != 'jruby'
-          BreakerMachines.log(:warn, "Native extension not available: #{errors.join(' | ')}") unless errors.empty?
-          BreakerMachines.log(:warn, 'Using pure Ruby backend (slower but functional)')
-        end
+        BreakerMachines.log(:warn, "Native extension not available: #{errors.join(' | ')}") unless errors.empty?
 
         false
       end

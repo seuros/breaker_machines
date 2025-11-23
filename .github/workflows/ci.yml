@@ -79,7 +79,6 @@ jobs:
           - "8.1.1"
     env:
       ACTIVERECORD_VERSION: ${{ matrix.rails }}
-      BREAKER_MACHINES_NATIVE: "0"  # Disable native extension
 
     steps:
       - uses: actions/checkout@v6
