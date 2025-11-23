@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.8.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.7.1...breaker_machines/v0.8.0) (2025-11-23)
+
+
+### Features
+
+* Add GEM_PUSH_HOST env var for flexible gem publishing ([16530d6](https://github.com/seuros/breaker_machines/commit/16530d6ec00a44d69e7a84712b07e496ea13d993))
+* Add multi-architecture test workflow with musl support ([70017e9](https://github.com/seuros/breaker_machines/commit/70017e900ae068213793512e355e28df85cc47a2))
+* Add x86_64-linux-musl platform and GitHub Packages publishing to release workflow ([b661d1a](https://github.com/seuros/breaker_machines/commit/b661d1a9430ebde285214865177e042949bd278f))
+
+
+### Bug Fixes
+
+* Add --force flag to bypass allowed_push_host restriction ([7edd9b1](https://github.com/seuros/breaker_machines/commit/7edd9b13d1e79d50a0eacda309a9c8bf1024c207))
+* Correct publish idempotent logic and gem install syntax ([cab2826](https://github.com/seuros/breaker_machines/commit/cab2826e9dee72fb41fac1e6f8a8edf48a0e3063))
+* Handle RubyGems version normalization in test workflow ([b641418](https://github.com/seuros/breaker_machines/commit/b641418222d6822a0051b6c1a9502bdf841f30e8))
+* Make publish idempotent and fix smoke test dependencies ([addc7b7](https://github.com/seuros/breaker_machines/commit/addc7b74b26ea73f2dce6247ec3fce67003737ce))
+* Make smoke tests non-blocking ([3d22dea](https://github.com/seuros/breaker_machines/commit/3d22dea550b7c4e3c845be401736fe21f2cc4558))
+* Reduce to working platforms only - 5 total ([e0ed30b](https://github.com/seuros/breaker_machines/commit/e0ed30bc9098b5e42a2df17806a1671e026ae3c8))
+* Remove aarch64-linux from test workflow due to cache corruption ([8315eff](https://github.com/seuros/breaker_machines/commit/8315effc4d5bd5a926f8ca3f623d6601b610df8d))
+* Remove unsupported armv7-linux-musl and arm-linux-musl platforms ([a075b6c](https://github.com/seuros/breaker_machines/commit/a075b6ccf6943139549edabf67e5ac12bb1ca0b8))
+* Use --allowed-push-host flag to override gemspec restriction ([37e3291](https://github.com/seuros/breaker_machines/commit/37e3291801ed0c2d68ded21eeb234bd2fa841f75))
+
 ## [0.7.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.7.0...breaker_machines/v0.7.1) (2025-11-19)
 
 
