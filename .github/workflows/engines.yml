@@ -1,0 +1,32 @@
+name: Alternative Ruby Engines
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ruby-version: "jruby-10.0.2.0"
+            name: "JRuby 10.0.2.0"
+          - ruby-version: "truffleruby"
+            name: "TruffleRuby"
+
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby-version }}
+          bundler-cache: true
+
+      - name: Run tests
+        run: bundle exec ruby -Ilib:test test/*_test.rb
