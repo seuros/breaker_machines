@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.4](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.8.3...breaker_machines/v0.8.4) (2025-11-23)
+
+
+### Bug Fixes
+
+* Use platform-specific cache-version to prevent cross-contamination ([a5c53d7](https://github.com/seuros/breaker_machines/commit/a5c53d737184209c80c007d8d009203f7b1923bf))
+
 ## [0.8.3](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.8.2...breaker_machines/v0.8.3) (2025-11-23)
 
 
