@@ -72,9 +72,12 @@ jobs:
       - name: Cross-compile native gem
         id: cross
         uses: oxidize-rb/actions/cross-gem@v1
+        env:
+          CARGO_TARGET_DIR: target/${{ matrix.platform }}
         with:
           platform: ${{ matrix.platform }}
           ruby-versions: '3.4'
+          cache-key: ${{ matrix.platform }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Upload platform gem artifact
         uses: actions/upload-artifact@v5
