@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.3](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.8.2...breaker_machines/v0.8.3) (2025-11-23)
+
+
+### Bug Fixes
+
+* Revert opt-in native extension and remove invalid cache-key ([2e6a03f](https://github.com/seuros/breaker_machines/commit/2e6a03f308469dbe4d0c43a3a055573037ce53af))
+
 ## [0.8.2](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.8.1...breaker_machines/v0.8.2) (2025-11-23)
 
 
