@@ -165,8 +165,8 @@ jobs:
       - name: Verify native mode
         run: |
           bundle exec ruby -Ilib:ext/breaker_machines_native -e "
-            require 'breaker_machines'
             ENV['BREAKER_MACHINES_NATIVE'] = '1'
+            require 'breaker_machines'
             require 'breaker_machines/native_speedup'
             if BreakerMachines.native_available?
               puts '✅ Native FFI backend active'
