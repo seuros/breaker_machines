@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.9.0...breaker_machines/v0.9.1) (2025-11-23)
+
+
+### Bug Fixes
+
+* Use native ARM runner for aarch64-linux builds ([82f4abb](https://github.com/seuros/breaker_machines/commit/82f4abbf095753fb4000197213d8e7ab7a00c326))
+
 ## [0.9.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.8.4...breaker_machines/v0.9.0) (2025-11-23)
 
 
