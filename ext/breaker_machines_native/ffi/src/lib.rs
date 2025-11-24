@@ -54,27 +54,23 @@ impl RubyStorage {
     }
 
     /// Get event log for a circuit (returns array of hashes)
-    fn event_log(&self, circuit_name: String, limit: usize) -> RArray {
-        let events = self.inner.event_log(&circuit_name, limit);
-        let array = RArray::new();
+    fn event_log(ruby: &Ruby, storage: &RubyStorage, circuit_name: String, limit: usize) -> RArray {
+        let events = storage.inner.event_log(&circuit_name, limit);
+        let array = ruby.ary_new();
 
         for event in events {
-            // Create a Ruby hash for each event
-            let hash = RHash::new();
-
-            // Set event type
+            let hash = ruby.hash_new();
             let type_sym = match event.kind {
                 EventKind::Success => "success",
                 EventKind::Failure => "failure",
             };
 
-            let _ = hash.aset(magnus::Symbol::new("type"), type_sym);
-            let _ = hash.aset(magnus::Symbol::new("timestamp"), event.timestamp);
+            let _ = hash.aset(ruby.to_symbol("type"), type_sym);
+            let _ = hash.aset(ruby.to_symbol("timestamp"), event.timestamp);
             let _ = hash.aset(
-                magnus::Symbol::new("duration_ms"),
+                ruby.to_symbol("duration_ms"),
                 (event.duration * 1000.0).round(),
             );
-
             let _ = array.push(hash);
         }
 
@@ -97,41 +93,41 @@ impl RubyCircuit {
     ///   - failure_window_secs: Time window for counting failures (default: 60.0)
     ///   - half_open_timeout_secs: Timeout before attempting reset (default: 30.0)
     ///   - success_threshold: Successes needed to close from half-open (default: 2)
-    fn new(name: String, config_hash: RHash) -> Result<Self, Error> {
+    fn new(ruby: &Ruby, name: String, config_hash: RHash) -> Result<Self, Error> {
         use magnus::TryConvert;
 
         // Extract config values with proper type conversion
         let failure_threshold: usize = config_hash
-            .get(magnus::Symbol::new("failure_threshold"))
+            .get(ruby.to_symbol("failure_threshold"))
             .and_then(|v| usize::try_convert(v).ok())
             .unwrap_or(5);
 
         let failure_window_secs: f64 = config_hash
-            .get(magnus::Symbol::new("failure_window_secs"))
+            .get(ruby.to_symbol("failure_window_secs"))
             .and_then(|v| f64::try_convert(v).ok())
             .unwrap_or(60.0);
 
         let half_open_timeout_secs: f64 = config_hash
-            .get(magnus::Symbol::new("half_open_timeout_secs"))
+            .get(ruby.to_symbol("half_open_timeout_secs"))
             .and_then(|v| f64::try_convert(v).ok())
             .unwrap_or(30.0);
 
         let success_threshold: usize = config_hash
-            .get(magnus::Symbol::new("success_threshold"))
+            .get(ruby.to_symbol("success_threshold"))
             .and_then(|v| usize::try_convert(v).ok())
             .unwrap_or(2);
 
         let jitter_factor: f64 = config_hash
-            .get(magnus::Symbol::new("jitter_factor"))
+            .get(ruby.to_symbol("jitter_factor"))
             .and_then(|v| f64::try_convert(v).ok())
             .unwrap_or(0.0);
 
         let failure_rate_threshold: Option<f64> = config_hash
-            .get(magnus::Symbol::new("failure_rate_threshold"))
+            .get(ruby.to_symbol("failure_rate_threshold"))
             .and_then(|v| f64::try_convert(v).ok());
 
         let minimum_calls: usize = config_hash
-            .get(magnus::Symbol::new("minimum_calls"))
+            .get(ruby.to_symbol("minimum_calls"))
             .and_then(|v| usize::try_convert(v).ok())
             .unwrap_or(20);
 
@@ -152,14 +148,16 @@ impl RubyCircuit {
 
     /// Record a successful operation
     fn record_success(&self, duration: f64) {
-        self.inner.borrow().record_success(duration);
+        self.inner
+            .borrow_mut()
+            .record_success_and_maybe_close(duration);
     }
 
     /// Record a failed operation and attempt to trip the circuit
     fn record_failure(&self, duration: f64) {
-        let mut circuit = self.inner.borrow_mut();
-        circuit.record_failure(duration);
-        circuit.check_and_trip();
+        self.inner
+            .borrow_mut()
+            .record_failure_and_maybe_trip(duration);
     }
 
     /// Check if circuit is open

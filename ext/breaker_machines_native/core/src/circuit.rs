@@ -482,16 +482,50 @@ impl CircuitBreaker {
                     // Try to trip the circuit
                     let result = self.machine.handle(CircuitEvent::Trip);
                     if result.is_ok() {
-                        // Transition succeeded - update opened_at timestamp
-                        if let Some(data) = self.machine.open_data_mut() {
-                            data.opened_at = self.context.storage.monotonic_time();
+                        self.mark_open();
+                    } else if self.machine.current_state() == "HalfOpen" {
+                        // Failure did not reopen the circuit; reset consecutive successes
+                        if let Some(data) = self.machine.half_open_data_mut() {
+                            data.consecutive_successes = 0;
                         }
-                        self.callbacks.trigger_open(&self.context.name);
                     }
                 }
 
                 Err(CircuitError::Execution(e))
             }
+        }
+    }
+
+    /// Record a successful operation and drive HalfOpen -> Closed transitions
+    pub fn record_success_and_maybe_close(&mut self, duration: f64) {
+        self.context
+            .storage
+            .record_success(&self.context.name, duration);
+
+        if self.machine.current_state() == "HalfOpen" {
+            if let Some(data) = self.machine.half_open_data_mut() {
+                data.consecutive_successes += 1;
+            }
+
+            if self.machine.handle(CircuitEvent::Close).is_ok() {
+                self.callbacks.trigger_close(&self.context.name);
+            }
+        }
+    }
+
+    /// Record a failed operation and attempt to trip the circuit
+    pub fn record_failure_and_maybe_trip(&mut self, duration: f64) {
+        self.context
+            .storage
+            .record_failure(&self.context.name, duration);
+
+        let result = self.machine.handle(CircuitEvent::Trip);
+        if result.is_ok() {
+            self.mark_open();
+        } else if self.machine.current_state() == "HalfOpen"
+            && let Some(data) = self.machine.half_open_data_mut()
+        {
+            data.consecutive_successes = 0;
         }
     }
 
@@ -512,7 +546,12 @@ impl CircuitBreaker {
     /// Check failure threshold and attempt to trip the circuit
     /// This should be called after record_failure() when not using call()
     pub fn check_and_trip(&mut self) -> bool {
-        self.machine.handle(CircuitEvent::Trip).is_ok()
+        if self.machine.handle(CircuitEvent::Trip).is_ok() {
+            self.mark_open();
+            true
+        } else {
+            false
+        }
     }
 
     /// Check if circuit is open
@@ -535,6 +574,14 @@ impl CircuitBreaker {
         self.context.storage.clear(&self.context.name);
         // Recreate machine in Closed state
         self.machine = DynamicCircuit::new(self.context.clone());
+    }
+
+    /// Apply Open-state bookkeeping (timestamp + callback)
+    fn mark_open(&mut self) {
+        if let Some(data) = self.machine.open_data_mut() {
+            data.opened_at = self.context.storage.monotonic_time();
+        }
+        self.callbacks.trigger_open(&self.context.name);
     }
 }
 
@@ -1152,5 +1199,100 @@ mod tests {
         // Even with bulkhead capacity, open circuit rejects calls
         let result = circuit.call(|| Ok::<_, String>("should fail"));
         assert!(matches!(result, Err(CircuitError::Open { .. })));
+    }
+
+    #[test]
+    fn test_check_and_trip_sets_opened_at_and_callback() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let opened = Arc::new(AtomicBool::new(false));
+        let opened_clone = opened.clone();
+
+        let mut circuit = CircuitBreaker::builder("test")
+            .failure_threshold(1)
+            .on_open(move |_name| {
+                opened_clone.store(true, Ordering::SeqCst);
+            })
+            .build();
+
+        circuit.record_failure(0.1);
+        let tripped = circuit.check_and_trip();
+
+        assert!(tripped, "Trip should succeed");
+        assert!(circuit.is_open(), "Circuit should be open after trip");
+
+        let opened_at = circuit
+            .machine
+            .open_data()
+            .expect("Open data should be present")
+            .opened_at;
+
+        assert!(opened_at > 0.0, "opened_at should be set");
+        assert!(
+            opened.load(Ordering::SeqCst),
+            "on_open callback should fire"
+        );
+    }
+
+    #[test]
+    fn test_half_open_failure_resets_consecutive_successes() {
+        let mut circuit = CircuitBreaker::builder("test")
+            .failure_threshold(2)
+            .half_open_timeout_secs(0.001)
+            .success_threshold(2)
+            .build();
+
+        // Open the circuit
+        let _ = circuit.call(|| Err::<(), _>("error 1"));
+        let _ = circuit.call(|| Err::<(), _>("error 2"));
+        assert!(circuit.is_open());
+
+        // Move to HalfOpen
+        if let Some(data) = circuit.machine.open_data_mut() {
+            data.opened_at = circuit.context.storage.monotonic_time();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        circuit
+            .machine
+            .handle(CircuitEvent::AttemptReset)
+            .expect("Should transition to HalfOpen");
+        assert_eq!(circuit.machine.current_state(), "HalfOpen");
+
+        // Clear counts to simulate expired failure window
+        circuit.context.storage.clear("test");
+
+        // First success increments consecutive count
+        let _ = circuit.call(|| Ok::<_, String>("ok"));
+        assert_eq!(
+            circuit
+                .machine
+                .half_open_data()
+                .expect("HalfOpen data")
+                .consecutive_successes,
+            1
+        );
+
+        // Failure below threshold should not reopen circuit but should reset counter
+        let _ = circuit.call(|| Err::<(), _>("fail"));
+        assert_eq!(circuit.machine.current_state(), "HalfOpen");
+        assert_eq!(
+            circuit
+                .machine
+                .half_open_data()
+                .expect("HalfOpen data")
+                .consecutive_successes,
+            0
+        );
+
+        // Next success starts count from 1 again
+        let _ = circuit.call(|| Ok::<_, String>("ok2"));
+        assert_eq!(
+            circuit
+                .machine
+                .half_open_data()
+                .expect("HalfOpen data")
+                .consecutive_successes,
+            1
+        );
     }
 }
