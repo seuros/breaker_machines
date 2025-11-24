@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.9.4...breaker_machines/v0.10.0) (2025-11-24)
+
+
+### Features
+
+* circuit breaker bookkeeping and HalfOpen counter reset ([#44](https://github.com/seuros/breaker_machines/issues/44)) ([ef2bac7](https://github.com/seuros/breaker_machines/commit/ef2bac77d6c0024265498d2173816e906fa4fb39))
+
 ## [0.9.4](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.9.3...breaker_machines/v0.9.4) (2025-11-24)
 
 
