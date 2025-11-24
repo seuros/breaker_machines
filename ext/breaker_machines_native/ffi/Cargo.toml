@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 breaker-machines = { workspace = true }
-magnus = { version = "0.7", features = ["embed"] }
+magnus = { version = "0.8", features = ["embed"] }
 
 [build-dependencies]
 rb-sys = "0.9"
