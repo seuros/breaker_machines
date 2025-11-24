@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.6.0...breaker-machines-v0.7.0) (2025-11-24)
+
+
+### Features
+
+* circuit breaker bookkeeping and HalfOpen counter reset ([#44](https://github.com/seuros/breaker_machines/issues/44)) ([ef2bac7](https://github.com/seuros/breaker_machines/commit/ef2bac77d6c0024265498d2173816e906fa4fb39))
+
 ## [0.6.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.3.0...breaker-machines-v0.6.0) (2025-11-05)
 
 
