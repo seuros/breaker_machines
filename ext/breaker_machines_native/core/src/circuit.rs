@@ -1295,4 +1295,142 @@ mod tests {
             1
         );
     }
+
+    #[test]
+    fn test_jitter_distribution_within_bounds() {
+        // Test that jitter produces values within expected bounds
+        // With 25% jitter on 1000ms base, expect 750-1000ms range
+        let storage = Arc::new(crate::MemoryStorage::new());
+        let base_timeout = 1.0; // 1 second
+        let jitter_factor = 0.25;
+
+        let config = Config {
+            failure_threshold: Some(1),
+            half_open_timeout_secs: base_timeout,
+            jitter_factor,
+            ..Default::default()
+        };
+
+        let ctx = CircuitContext {
+            failure_classifier: None,
+            bulkhead: None,
+            name: "jitter_test".to_string(),
+            config,
+            storage: storage.clone(),
+        };
+
+        // Run 50 iterations and collect timeout values
+        let mut min_seen = f64::MAX;
+        let mut max_seen = f64::MIN;
+
+        for _ in 0..50 {
+            storage.record_failure("jitter_test", 0.1);
+            let mut circuit = DynamicCircuit::new(ctx.clone());
+            circuit.handle(CircuitEvent::Trip).expect("Should open");
+
+            if let Some(data) = circuit.open_data_mut() {
+                data.opened_at = storage.monotonic_time();
+            }
+
+            // Calculate what the jittered timeout would be
+            let policy = chrono_machines::Policy {
+                max_attempts: 1,
+                base_delay_ms: (base_timeout * 1000.0) as u64,
+                multiplier: 1.0,
+                max_delay_ms: (base_timeout * 1000.0) as u64,
+            };
+            let timeout_ms = policy.calculate_delay(1, jitter_factor);
+            let timeout_secs = (timeout_ms as f64) / 1000.0;
+
+            min_seen = min_seen.min(timeout_secs);
+            max_seen = max_seen.max(timeout_secs);
+
+            storage.clear("jitter_test");
+        }
+
+        // With 25% jitter, minimum should be ~0.75s (75% of base)
+        // Maximum should be ~1.0s (100% of base)
+        let min_expected = base_timeout * (1.0 - jitter_factor);
+        let max_expected = base_timeout;
+
+        assert!(
+            min_seen >= min_expected - 0.01,
+            "Minimum jittered timeout {} should be >= {}",
+            min_seen,
+            min_expected
+        );
+        assert!(
+            max_seen <= max_expected + 0.01,
+            "Maximum jittered timeout {} should be <= {}",
+            max_seen,
+            max_expected
+        );
+    }
+
+    #[test]
+    fn test_jitter_produces_variance() {
+        // Test that jitter actually produces different values (not all same)
+        let storage = Arc::new(crate::MemoryStorage::new());
+
+        let config = Config {
+            failure_threshold: Some(1),
+            half_open_timeout_secs: 1.0,
+            jitter_factor: 0.5, // 50% jitter for more variance
+            ..Default::default()
+        };
+
+        let ctx = CircuitContext {
+            failure_classifier: None,
+            bulkhead: None,
+            name: "jitter_variance".to_string(),
+            config,
+            storage: storage.clone(),
+        };
+
+        let mut values = std::collections::HashSet::new();
+
+        for _ in 0..20 {
+            let policy = chrono_machines::Policy {
+                max_attempts: 1,
+                base_delay_ms: 1000,
+                multiplier: 1.0,
+                max_delay_ms: 1000,
+            };
+            let timeout_ms = policy.calculate_delay(1, 0.5);
+            values.insert(timeout_ms);
+        }
+
+        // With 50% jitter over 20 iterations, we should see at least 2 different values
+        // (statistically, seeing all same values is extremely unlikely)
+        assert!(
+            values.len() >= 2,
+            "Jitter should produce variance, got {} unique values",
+            values.len()
+        );
+    }
+
+    #[test]
+    fn test_zero_jitter_produces_constant_timeout() {
+        // Test that 0% jitter always produces the same timeout
+        let policy = chrono_machines::Policy {
+            max_attempts: 1,
+            base_delay_ms: 1000,
+            multiplier: 1.0,
+            max_delay_ms: 1000,
+        };
+
+        let mut values = std::collections::HashSet::new();
+
+        for _ in 0..10 {
+            let timeout_ms = policy.calculate_delay(1, 0.0);
+            values.insert(timeout_ms);
+        }
+
+        assert_eq!(
+            values.len(),
+            1,
+            "Zero jitter should produce constant timeout"
+        );
+        assert!(values.contains(&1000), "Timeout should be exactly 1000ms");
+    }
 }
