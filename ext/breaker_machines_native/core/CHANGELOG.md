@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.7.0...breaker-machines-v0.7.1) (2025-11-25)
+
+
+### Bug Fixes
+
+* callback panic safety and expanded test coverage ([#46](https://github.com/seuros/breaker_machines/issues/46)) ([5414bc6](https://github.com/seuros/breaker_machines/commit/5414bc6d60e102dca4ba78bf13134f48e2c22de3))
+* callback panic safety and expanded test coverage ([#48](https://github.com/seuros/breaker_machines/issues/48)) ([6dbeb3d](https://github.com/seuros/breaker_machines/commit/6dbeb3d3653b2d1208f119fcebe7f3a9015193cc))
+
 ## [0.7.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.6.0...breaker-machines-v0.7.0) (2025-11-24)
 
 
