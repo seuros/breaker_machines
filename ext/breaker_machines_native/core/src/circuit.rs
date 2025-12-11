@@ -1379,7 +1379,7 @@ mod tests {
             ..Default::default()
         };
 
-        let ctx = CircuitContext {
+        let _ctx = CircuitContext {
             failure_classifier: None,
             bulkhead: None,
             name: "jitter_variance".to_string(),
