@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.2](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.1...breaker_machines/v0.10.2) (2025-12-11)
+
+
+### Bug Fixes
+
+* remove unused variable in jitter variance test ([cfbd8e0](https://github.com/seuros/breaker_machines/commit/cfbd8e00118db8b93464ef8cc65ba894e809ce44))
+
 ## [0.10.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.0...breaker_machines/v0.10.1) (2025-11-25)
 
 
