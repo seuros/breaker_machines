@@ -73,10 +73,15 @@ jobs:
       fail-fast: false
       matrix:
         ruby:
-          - "3.4.4"
+          - "3.4"
+          - "4.0.0-preview3"
         rails:
-          - "8.0.4"
-          - "8.1.1"
+          - "8.0"
+          - "8.1"
+        exclude:
+          # Ruby 4 preview may have compatibility issues with some Rails versions
+          - ruby: "4.0.0-preview3"
+            rails: "8.0"
     env:
       ACTIVERECORD_VERSION: ${{ matrix.rails }}
 
@@ -115,10 +120,10 @@ jobs:
       fail-fast: false
       matrix:
         ruby:
-          - "3.4.4"
+          - "3.4"
         rails:
-          - "8.0.4"
-          - "8.1.1"
+          - "8.0"
+          - "8.1"
     env:
       ACTIVERECORD_VERSION: ${{ matrix.rails }}
 
