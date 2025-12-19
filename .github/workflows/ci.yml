@@ -121,9 +121,13 @@ jobs:
       matrix:
         ruby:
           - "3.4"
+          - "4.0.0-preview3"
         rails:
           - "8.0"
           - "8.1"
+        exclude:
+          - ruby: "4.0.0-preview3"
+            rails: "8.0"
     env:
       ACTIVERECORD_VERSION: ${{ matrix.rails }}
 
