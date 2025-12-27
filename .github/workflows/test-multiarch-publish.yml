@@ -114,7 +114,7 @@ jobs:
           GEM_PUSH_HOST: https://rubygems.pkg.github.com/${{ github.repository_owner }}
         with:
           platform: ${{ matrix.platform }}
-          ruby-versions: '3.4'
+          ruby-versions: '3.4, 4.0'
 
       - name: Verify native gem was built
         run: |

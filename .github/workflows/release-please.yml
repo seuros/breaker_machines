@@ -73,7 +73,7 @@ jobs:
         uses: oxidize-rb/actions/cross-gem@v1
         with:
           platform: ${{ matrix.platform }}
-          ruby-versions: '3.4'
+          ruby-versions: '3.4, 4.0'
           cache-version: ${{ matrix.platform }}-v0
 
       - name: Upload platform gem artifact
