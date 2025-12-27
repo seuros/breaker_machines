@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.3](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.2...breaker_machines/v0.10.3) (2025-12-27)
+
+
+### Bug Fixes
+
+* add Ruby 4.0.0-preview3 to test matrix ([#50](https://github.com/seuros/breaker_machines/issues/50)) ([dc73a38](https://github.com/seuros/breaker_machines/commit/dc73a38846b4e8816bbb43cfaf5ea62529f56053))
+
 ## [0.10.2](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.1...breaker_machines/v0.10.2) (2025-12-11)
 
 
