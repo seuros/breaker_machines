@@ -2,7 +2,7 @@
 name = "breaker-machines"
 version = "0.7.2"
 edition = "2024"
-authors = ["Abdelkader Boudih <terminale@gmail.com>"]
+authors = ["Abdelkader Boudih <oss@seuros.com>"]
 license = "MIT"
 description = "High-performance circuit breaker with fallback support and rate-based thresholds"
 repository = "https://github.com/seuros/breaker_machines"
