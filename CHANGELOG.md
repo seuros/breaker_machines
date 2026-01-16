@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.4](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.3...breaker_machines/v0.10.4) (2026-01-16)
+
+
+### Bug Fixes
+
+* update crate dependencies ([#52](https://github.com/seuros/breaker_machines/issues/52)) ([2c5e382](https://github.com/seuros/breaker_machines/commit/2c5e382edc08d7d283334c57af3a4b97b1315dd7))
+
 ## [0.10.3](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.2...breaker_machines/v0.10.3) (2025-12-27)
 
 
