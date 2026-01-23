@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.7](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.6...breaker_machines/v0.10.7) (2026-01-23)
+
+
+### Bug Fixes
+
+* add version to workspace breaker-machines dependency ([b87f538](https://github.com/seuros/breaker_machines/commit/b87f538a8512b1f5b3221a036dc3d12caf502c7f))
+
 ## [0.10.6](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.5...breaker_machines/v0.10.6) (2026-01-23)
 
 
