@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.6](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.5...breaker_machines/v0.10.6) (2026-01-23)
+
+
+### Bug Fixes
+
+* update state machines ([#56](https://github.com/seuros/breaker_machines/issues/56)) ([cc630de](https://github.com/seuros/breaker_machines/commit/cc630deb675b8ec7e78b8af699244d8b59ab8fde))
+
 ## [0.10.5](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.4...breaker_machines/v0.10.5) (2026-01-23)
 
 
