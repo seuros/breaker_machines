@@ -3,6 +3,6 @@ members = ["ext/breaker_machines_native/core", "ext/breaker_machines_native/ffi"
 resolver = "2"
 
 [workspace.dependencies]
-breaker-machines = { path = "./ext/breaker_machines_native/core" }
+breaker-machines = { path = "./ext/breaker_machines_native/core", version = "0.7" }
 state-machines = '0.8'
 chrono-machines = "0.3"
