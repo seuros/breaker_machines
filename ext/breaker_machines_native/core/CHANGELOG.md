@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.7.3...breaker-machines-v0.7.4) (2026-01-23)
+
+
+### Bug Fixes
+
+* update state-machines ([#54](https://github.com/seuros/breaker_machines/issues/54)) ([108af96](https://github.com/seuros/breaker_machines/commit/108af96df17df7773bc35dedd512a3a3cbb0251f))
+
 ## [0.7.3](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.7.2...breaker-machines-v0.7.3) (2026-01-16)
 
 
