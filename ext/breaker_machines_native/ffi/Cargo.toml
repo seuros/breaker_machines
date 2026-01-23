@@ -4,6 +4,8 @@ version = "0.5.5"
 edition = "2024"
 authors = ["Abdelkader Boudih <oss@seuros.com>"]
 license = "MIT"
+description = "Ruby FFI bindings for breaker-machines circuit breaker"
+repository = "https://github.com/seuros/breaker_machines"
 
 [lib]
 crate-type = ["cdylib"]
