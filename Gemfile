@@ -16,13 +16,21 @@ gem 'rubocop', '~> 1.77'
 gem 'rubocop-minitest', '~> 0.30'
 gem 'rubocop-rake', '~> 0.6'
 
-gem 'railties', "~> #{ENV.fetch('ACTIVERECORD_VERSION', '8.0.4')}"
+if ENV['ACTIVERECORD_VERSION'] == 'edge'
+  gem 'railties', github: 'rails/rails', branch: 'main'
+else
+  gem 'railties', "~> #{ENV.fetch('ACTIVERECORD_VERSION', '8.0.4')}"
+end
 
 # Optional dependency for fiber-safe mode tests (MRI only)
 
 # Platform specific gems (MRI Ruby only)
 platforms :mri do
-  gem 'activerecord', "~> #{ENV.fetch('ACTIVERECORD_VERSION', '8.0.4')}"
+  if ENV['ACTIVERECORD_VERSION'] == 'edge'
+    gem 'activerecord', github: 'rails/rails', branch: 'main'
+  else
+    gem 'activerecord', "~> #{ENV.fetch('ACTIVERECORD_VERSION', '8.0.4')}"
+  end
   gem 'async', '~> 2.31.0'
   gem 'rbs', '~> 3.0'
   gem 'sqlite3', '~> 2.0'

@@ -69,6 +69,7 @@ jobs:
   test-ruby:
     runs-on: ubuntu-latest
     name: Ruby ${{ matrix.ruby }} / Rails ${{ matrix.rails }} (Pure Ruby)
+    continue-on-error: ${{ matrix.experimental || false }}
     strategy:
       fail-fast: false
       matrix:
@@ -78,6 +79,13 @@ jobs:
         rails:
           - "8.0"
           - "8.1"
+        include:
+          - ruby: "3.4"
+            rails: "edge"
+            experimental: true
+          - ruby: "4.0"
+            rails: "edge"
+            experimental: true
     env:
       ACTIVERECORD_VERSION: ${{ matrix.rails }}
 
@@ -112,6 +120,7 @@ jobs:
   test-native:
     runs-on: ubuntu-latest
     name: Ruby ${{ matrix.ruby }} / Rails ${{ matrix.rails }} (Native FFI)
+    continue-on-error: ${{ matrix.experimental || false }}
     strategy:
       fail-fast: false
       matrix:
@@ -121,6 +130,13 @@ jobs:
         rails:
           - "8.0"
           - "8.1"
+        include:
+          - ruby: "3.4"
+            rails: "edge"
+            experimental: true
+          - ruby: "4.0"
+            rails: "edge"
+            experimental: true
     env:
       ACTIVERECORD_VERSION: ${{ matrix.rails }}
 
