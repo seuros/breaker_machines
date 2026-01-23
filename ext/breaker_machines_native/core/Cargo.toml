@@ -13,6 +13,9 @@ categories = ["concurrency"]
 [lib]
 crate-type = ["lib"]
 
+[features]
+inspect = ["state-machines/inspect"]
+
 [dependencies]
-state-machines = { workspace = true, features = ["inspect"] }
+state-machines = { workspace = true }
 chrono-machines = { workspace = true }

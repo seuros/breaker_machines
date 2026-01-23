@@ -70,7 +70,7 @@ jobs:
           echo "✓ Found expected gem: $EXPECTED_FILE"
 
       - name: Upload test gem artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: test-ruby-gem
           path: pkg/*.gem
@@ -126,7 +126,7 @@ jobs:
           ls -lh "${{ steps.cross.outputs.gem-path }}"
 
       - name: Upload platform gem artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: test-native-gem-${{ matrix.platform }}
           path: ${{ steps.cross.outputs.gem-path }}
@@ -145,7 +145,7 @@ jobs:
           - x86_64-linux
           - x86_64-linux-musl
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: test-native-gem-${{ matrix.platform }}
           path: gems
@@ -197,7 +197,7 @@ jobs:
         platform:
           - x86_64-linux-musl
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: test-native-gem-${{ matrix.platform }}
           path: gems
@@ -246,7 +246,7 @@ jobs:
           ruby-version: '3.4'
 
       - name: Download all gem artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: artifacts
 
