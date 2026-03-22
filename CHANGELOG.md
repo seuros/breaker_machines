@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.8](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.7...breaker_machines/v0.10.8) (2026-03-22)
+
+
+### Bug Fixes
+
+* add state-machine keyword, upgrade state-machines to 0.9 ([0157a3c](https://github.com/seuros/breaker_machines/commit/0157a3c4decc0cac51a528af710018ea39604cf2))
+
 ## [0.10.7](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.6...breaker_machines/v0.10.7) (2026-03-22)
 
 
