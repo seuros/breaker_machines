@@ -1,6 +1,6 @@
 [package]
 name = "breaker_machines_native"
-version = "0.5.7"
+version = "0.5.8"
 edition = "2024"
 authors = ["Abdelkader Boudih <oss@seuros.com>"]
 license = "MIT"
