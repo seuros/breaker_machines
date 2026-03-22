@@ -7,7 +7,7 @@ license = "MIT"
 description = "High-performance circuit breaker with fallback support and rate-based thresholds"
 repository = "https://github.com/seuros/breaker_machines"
 readme = "README.md"
-keywords = ["circuit-breaker", "reliability", "fault-tolerance"]
+keywords = ["circuit-breaker", "reliability", "fault-tolerance", "state-machine"]
 categories = ["concurrency"]
 
 [lib]
