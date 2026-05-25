@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.11.0...breaker_machines/v0.12.0) (2026-05-25)
+
+
+### Bug Fixes
+
+* ship pure ruby fallback gem ([7103928](https://github.com/seuros/breaker_machines/commit/71039286d00ebf308adfdc893e968110100cae29))
+
 ## [0.11.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.9...breaker_machines/v0.11.0) (2026-05-25)
 
 
