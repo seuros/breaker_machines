@@ -22,8 +22,6 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
 
       - name: Cache Rust dependencies
         uses: actions/cache@v5
@@ -33,31 +31,19 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            ext/breaker_machines_native/target/
+            target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Check Rust formatting
-        run: |
-          cd ext/breaker_machines_native/core
-          cargo fmt --check
-
-      - name: Run Clippy
-        run: |
-          cd ext/breaker_machines_native/core
-          cargo clippy
 
       - name: Build Rust crate
         run: |
           echo "::group::Building Rust crate"
-          cd ext/breaker_machines_native/core
           time cargo build --release
           echo "::endgroup::"
 
       - name: Run Rust tests
         run: |
           echo "::group::Running Rust tests"
-          cd ext/breaker_machines_native/core
-          time cargo test --all
+          time cargo test --workspace
           echo "::endgroup::"
 
       - name: Check crate can be published

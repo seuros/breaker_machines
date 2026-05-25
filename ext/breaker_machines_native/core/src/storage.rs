@@ -6,7 +6,7 @@
 
 use crate::{Event, EventKind};
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Instant;
 
 /// Abstract storage backend for circuit breaker events
@@ -64,8 +64,20 @@ impl MemoryStorage {
 
     // Private helper methods
 
+    fn events_read(&self) -> RwLockReadGuard<'_, HashMap<String, Vec<Event>>> {
+        self.events
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn events_write(&self) -> RwLockWriteGuard<'_, HashMap<String, Vec<Event>>> {
+        self.events
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn record_event(&self, circuit_name: &str, kind: EventKind, duration: f64) {
-        let mut events = self.events.write().unwrap();
+        let mut events = self.events_write();
         let circuit_events = events.entry(circuit_name.to_string()).or_default();
 
         circuit_events.push(Event {
@@ -84,7 +96,7 @@ impl MemoryStorage {
     }
 
     fn count_events(&self, circuit_name: &str, kind: EventKind, window_seconds: f64) -> usize {
-        let events = self.events.read().unwrap();
+        let events = self.events_read();
         let cutoff = self.monotonic_time() - window_seconds;
 
         events
@@ -122,17 +134,17 @@ impl StorageBackend for MemoryStorage {
     }
 
     fn clear(&self, circuit_name: &str) {
-        let mut events = self.events.write().unwrap();
+        let mut events = self.events_write();
         events.remove(circuit_name);
     }
 
     fn clear_all(&self) {
-        let mut events = self.events.write().unwrap();
+        let mut events = self.events_write();
         events.clear();
     }
 
     fn event_log(&self, circuit_name: &str, limit: usize) -> Vec<Event> {
-        let events = self.events.read().unwrap();
+        let events = self.events_read();
         events
             .get(circuit_name)
             .map(|ev| {

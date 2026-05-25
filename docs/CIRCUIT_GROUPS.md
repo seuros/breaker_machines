@@ -77,7 +77,7 @@ end
 Add custom guard conditions with `guard_with`:
 
 ```ruby
-services.circuit :premium_features, 
+services.circuit :premium_features,
                  depends_on: :payment_service,
                  guard_with: -> { feature_enabled?(:premium) } do
   threshold failures: 3
@@ -189,25 +189,25 @@ class EcommercePlatform
       fallback { { users: [], status: 'degraded' } }
     end
 
-    @systems.circuit :product_catalog, 
+    @systems.circuit :product_catalog,
                      depends_on: [:postgres_primary, :elasticsearch] do
       threshold failures: 10
       fallback { cached_products }
     end
 
-    @systems.circuit :cart_service, 
+    @systems.circuit :cart_service,
                      depends_on: [:redis_cache, :postgres_primary] do
       threshold failures: 7
     end
   end
 
   def setup_api_layer
-    @systems.circuit :rest_api, 
+    @systems.circuit :rest_api,
                      depends_on: [:user_service, :product_catalog] do
       threshold failures: 20
     end
 
-    @systems.circuit :graphql_api, 
+    @systems.circuit :graphql_api,
                      depends_on: [:user_service, :product_catalog, :cart_service] do
       threshold failures: 15
     end
@@ -229,7 +229,7 @@ end
 class FeatureAwarePlatform
   def initialize
     @features = BreakerMachines::CircuitGroup.new('features')
-    
+
     # Core services
     @features.circuit :authentication do
       threshold failures: 5
@@ -306,13 +306,13 @@ class MultiRegionService
 
   def call_with_failover(region, service, &block)
     primary = @regions[region]
-    
+
     begin
       primary[service].call(&block)
     rescue BreakerMachines::CircuitOpenError, BreakerMachines::CircuitDependencyError
       # Failover to another region
       failover_region = find_healthy_region(exclude: region)
-      
+
       if failover_region
         Rails.logger.warn("Failing over from #{region} to #{failover_region}")
         @regions[failover_region][service].call(&block)
@@ -340,11 +340,11 @@ require 'test_helper'
 class CircuitGroupTest < ActiveSupport::TestCase
   def setup
     @group = BreakerMachines::CircuitGroup.new('test_group')
-    
+
     @group.circuit :database do
       threshold failures: 1
     end
-    
+
     @group.circuit :api, depends_on: :database do
       threshold failures: 2
     end
@@ -355,29 +355,29 @@ class CircuitGroupTest < ActiveSupport::TestCase
     assert_raises(StandardError) do
       @group[:database].call { raise "DB Error" }
     end
-    
+
     assert @group[:database].open?
-    
+
     # API should not be callable
     error = assert_raises(BreakerMachines::CircuitDependencyError) do
       @group[:api].call { "Should not execute" }
     end
-    
+
     assert_match(/Dependencies not met/, error.message)
   end
 
   test "group operations affect all circuits" do
     # Trip all circuits
     @group.trip_all!
-    
+
     assert @group[:database].open?
     assert @group[:api].open?
     assert @group.any_open?
     refute @group.all_healthy?
-    
+
     # Reset all circuits
     @group.reset_all!
-    
+
     assert @group[:database].closed?
     assert @group[:api].closed?
     assert @group.all_healthy?
@@ -391,20 +391,20 @@ end
 class ComplexDependencyTest < ActiveSupport::TestCase
   def setup
     @services = BreakerMachines::CircuitGroup.new('services')
-    
+
     # Create a dependency chain
     @services.circuit :infrastructure do
       threshold failures: 1
     end
-    
+
     @services.circuit :platform, depends_on: :infrastructure do
       threshold failures: 1
     end
-    
+
     @services.circuit :api, depends_on: :platform do
       threshold failures: 1
     end
-    
+
     @services.circuit :web, depends_on: :api do
       threshold failures: 1
     end
@@ -415,16 +415,16 @@ class ComplexDependencyTest < ActiveSupport::TestCase
     assert_raises(StandardError) do
       @services[:infrastructure].call { raise "Infrastructure down" }
     end
-    
+
     # All dependent services should be affected
     [:platform, :api, :web].each do |service|
       assert_raises(BreakerMachines::CircuitDependencyError) do
         @services[service].call { "Should not run" }
       end
-      
+
       # The circuits themselves are still closed
       assert @services[service].closed?
-      
+
       # But dependencies are not met
       refute @services.dependencies_met?(service)
     end
@@ -478,7 +478,7 @@ def recover_services
   # Start with infrastructure
   @services[:database].reset! if @services[:database].open?
   sleep 1
-  
+
   # Then dependent services
   [:cache, :user_service, :api].each do |service|
     if @services[service].open? && @services.dependencies_met?(service)
@@ -521,16 +521,16 @@ Always test both failure and recovery scenarios:
 test "service recovery respects dependencies" do
   # Break everything
   break_database
-  
+
   # Verify cascade effect
   assert @group[:database].open?
   assert_raises(BreakerMachines::CircuitDependencyError) do
     @group[:api].call { }
   end
-  
+
   # Recover database
   @group[:database].reset!
-  
+
   # API should now work
   assert_nothing_raised do
     @group[:api].call { "Works!" }
@@ -544,7 +544,7 @@ Circuit groups support async mode for fiber-safe operations:
 
 ```ruby
 # Enable async mode for all circuits
-async_services = BreakerMachines::CircuitGroup.new('async_services', 
+async_services = BreakerMachines::CircuitGroup.new('async_services',
                                                    async_mode: true)
 
 async_services.circuit :async_api do
@@ -554,8 +554,8 @@ end
 
 # Use with async/await
 Async do
-  result = async_services[:async_api].call_async { 
-    fetch_data_async 
+  result = async_services[:async_api].call_async {
+    fetch_data_async
   }.wait
 end
 ```

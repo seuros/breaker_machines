@@ -44,7 +44,7 @@ class PaymentProcessor
       failure_threshold: 5,
       reset_timeout: 60.seconds
     })
-    
+
     # Payment gateway depends on database
     @payment_gateway.dependent_circuits = [:payment_db]
   end
@@ -69,7 +69,7 @@ class InfrastructureManager
   cascade_circuit :main_database do
     threshold failures: 3
     cascades_to :cache_layer, :search_index
-    
+
     # Main database won't attempt recovery if backup is down
     dependent_circuits [:backup_database]
   end
@@ -117,12 +117,12 @@ Override `recovery_allowed?` for custom logic:
 class SmartCircuit < BreakerMachines::CoordinatedCircuit
   def recovery_allowed?
     return false unless super
-    
+
     # Additional custom checks
     return false if maintenance_mode?
     return false if peak_traffic?
     return false unless minimum_resources_available?
-    
+
     true
   end
 
@@ -176,13 +176,13 @@ Override `reset_allowed?` for custom reset conditions:
 class DataProcessingCircuit < BreakerMachines::CoordinatedCircuit
   def reset_allowed?
     return false unless super
-    
+
     # Don't reset if we have pending work
     return false if pending_jobs_count > 0
-    
+
     # Don't reset during data migration
     return false if migration_in_progress?
-    
+
     true
   end
 
@@ -214,14 +214,14 @@ class DatabaseCluster
     # Read replicas depend on primary
     @replica1 = create_replica_circuit('db_replica1')
     @replica2 = create_replica_circuit('db_replica2')
-    
+
     # Cache depends on primary being healthy
     @cache = BreakerMachines::CoordinatedCircuit.new('db_cache', {
       failure_threshold: 10,
       reset_timeout: 30.seconds
     })
     @cache.dependent_circuits = [:db_primary]
-    
+
     register_all_circuits
   end
 
@@ -255,7 +255,7 @@ class DatabaseCluster
 
   def load_balanced_read(query)
     replicas = [@replica1, @replica2].select(&:closed?)
-    
+
     if replicas.any?
       replica = replicas.sample
       replica.call { run_on_replica(query, replica) }
@@ -295,16 +295,16 @@ class ServiceMeshCircuitManager
     # Core infrastructure
     create_circuit('consul', dependencies: [])
     create_circuit('vault', dependencies: [:consul])
-    
+
     # Platform services
     create_circuit('auth_service', dependencies: [:consul, :vault])
     create_circuit('config_service', dependencies: [:consul])
-    
+
     # Business services
     create_circuit('user_service', dependencies: [:auth_service, :config_service])
     create_circuit('order_service', dependencies: [:auth_service, :config_service])
     create_circuit('payment_service', dependencies: [:auth_service, :vault])
-    
+
     # API Gateway depends on all business services
     create_circuit('api_gateway', dependencies: [
       :user_service, :order_service, :payment_service
@@ -316,7 +316,7 @@ class ServiceMeshCircuitManager
       failure_threshold: threshold_for_service(name),
       reset_timeout: timeout_for_service(name)
     })
-    
+
     circuit.dependent_circuits = dependencies
     BreakerMachines.register(circuit)
     @circuits[name] = circuit
@@ -344,7 +344,7 @@ class ServiceMeshCircuitManager
   def call_service(name, &block)
     circuit = @circuits[name]
     raise "Unknown service: #{name}" unless circuit
-    
+
     circuit.call(&block)
   rescue BreakerMachines::CircuitOpenError => e
     handle_circuit_open(name, e)
@@ -352,12 +352,12 @@ class ServiceMeshCircuitManager
 
   def handle_circuit_open(service, error)
     Rails.logger.error("Circuit open for #{service}: #{error.message}")
-    
+
     # Check why it might be open
     if circuit = @circuits[service]
       deps = circuit.dependent_circuits
       down_deps = deps.select { |d| @circuits[d]&.open? }
-      
+
       if down_deps.any?
         raise "Service #{service} unavailable due to dependencies: #{down_deps.join(', ')}"
       else
@@ -370,20 +370,20 @@ class ServiceMeshCircuitManager
     # Determine safe recovery order based on dependencies
     ordered = []
     remaining = @circuits.keys
-    
+
     while remaining.any?
       # Find services with no remaining dependencies
       ready = remaining.select do |service|
         deps = @circuits[service].dependent_circuits
         deps.empty? || deps.all? { |d| ordered.include?(d) }
       end
-      
+
       break if ready.empty? # Circular dependency
-      
+
       ordered.concat(ready.sort)
       remaining -= ready
     end
-    
+
     ordered
   end
 
@@ -391,7 +391,7 @@ class ServiceMeshCircuitManager
     recovery_order.each do |service|
       circuit = @circuits[service]
       next unless circuit.open?
-      
+
       if circuit.recovery_allowed?
         Rails.logger.info("Attempting recovery for #{service}")
         circuit.attempt_recovery!
@@ -454,7 +454,7 @@ class DataPipeline
   def handle_pipeline_failure(error, data)
     # Determine which stage failed
     failed_stage = detect_failed_stage
-    
+
     # Queue for retry when pipeline recovers
     RetryQueue.push(
       data: data,
@@ -462,7 +462,7 @@ class DataPipeline
       error: error.message,
       retry_after: Time.current + 5.minutes
     )
-    
+
     Rails.logger.error("Pipeline failed at #{failed_stage}: #{error.message}")
   end
 
@@ -495,13 +495,13 @@ class CoordinatedCircuitTest < ActiveSupport::TestCase
       failure_threshold: 1,
       reset_timeout: 0.1
     })
-    
+
     @dependent = BreakerMachines::CoordinatedCircuit.new('dependent', {
       failure_threshold: 1,
       reset_timeout: 0.1
     })
     @dependent.dependent_circuits = [:primary]
-    
+
     BreakerMachines.register(@primary)
     BreakerMachines.register(@dependent)
   end
@@ -513,22 +513,22 @@ class CoordinatedCircuitTest < ActiveSupport::TestCase
         circuit.call { raise "Error" }
       end
     end
-    
+
     assert @primary.open?
     assert @dependent.open?
-    
+
     # Wait for reset timeout
     sleep 0.2
-    
+
     # Dependent should not auto-recover
     refute @dependent.reset_timeout_elapsed?
     refute @dependent.recovery_allowed?
-    
+
     # Primary can recover
     assert @primary.recovery_allowed?
     @primary.attempt_recovery!
     assert @primary.half_open?
-    
+
     # Now dependent can attempt recovery
     assert @dependent.recovery_allowed?
   end
@@ -538,18 +538,18 @@ class CoordinatedCircuitTest < ActiveSupport::TestCase
     assert_raises(StandardError) do
       @primary.call { raise "Error" }
     end
-    
+
     # Force dependent open
     @dependent.force_open!
-    
+
     # Try to reset dependent
     refute @dependent.reset_allowed?
     @dependent.reset! # No-op
     assert @dependent.open? # Still open
-    
+
     # Fix primary
     @primary.reset!
-    
+
     # Now reset works
     assert @dependent.reset_allowed?
     @dependent.reset!
@@ -566,7 +566,7 @@ class ComplexCoordinationTest < ActiveSupport::TestCase
     # Create a dependency graph:
     # A -> B -> C
     #   -> D -> E
-    
+
     @circuits = {}
     create_circuit(:a, dependencies: [])
     create_circuit(:b, dependencies: [:a])
@@ -589,21 +589,21 @@ class ComplexCoordinationTest < ActiveSupport::TestCase
     assert_raises(StandardError) do
       @circuits[:a].call { raise "Error" }
     end
-    
+
     # All dependent circuits should not be recoverable
     [:b, :c, :d, :e].each do |name|
       @circuits[name].force_open!
       refute @circuits[name].recovery_allowed?,
              "#{name} should not be recoverable"
     end
-    
+
     # Fix root
     @circuits[:a].reset!
-    
+
     # Direct dependencies can recover
     assert @circuits[:b].recovery_allowed?
     assert @circuits[:d].recovery_allowed?
-    
+
     # But transitive dependencies still can't
     refute @circuits[:c].recovery_allowed?
     refute @circuits[:e].recovery_allowed?
@@ -646,8 +646,8 @@ Services should handle dependency failures gracefully:
 
 ```ruby
 def get_user_preferences(user_id)
-  preferences_circuit.call { 
-    PreferencesService.get(user_id) 
+  preferences_circuit.call {
+    PreferencesService.get(user_id)
   }
 rescue BreakerMachines::CircuitDependencyError
   # Return defaults when dependencies are down
@@ -663,23 +663,23 @@ Track when coordination prevents operations:
 class InstrumentedCoordinatedCircuit < BreakerMachines::CoordinatedCircuit
   def recovery_allowed?
     allowed = super
-    
+
     unless allowed
-      StatsD.increment('circuit.recovery_blocked', 
+      StatsD.increment('circuit.recovery_blocked',
                       tags: ["circuit:#{name}"])
     end
-    
+
     allowed
   end
 
   def reset_allowed?
     allowed = super
-    
+
     unless allowed
       StatsD.increment('circuit.reset_blocked',
                       tags: ["circuit:#{name}"])
     end
-    
+
     allowed
   end
 end

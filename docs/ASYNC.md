@@ -285,7 +285,7 @@ threads.each(&:join)
 
 ```ruby
 # Enable async mode for all circuits in a group
-async_services = BreakerMachines::CircuitGroup.new('services', 
+async_services = BreakerMachines::CircuitGroup.new('services',
                                                    async_mode: true)
 
 async_services.circuit :database do

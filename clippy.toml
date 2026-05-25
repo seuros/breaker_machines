@@ -1,0 +1,12 @@
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+
+# Keep this in sync with the workspace lint policy. These are the lock guard
+# types that should never be held across await points if async code is added.
+await-holding-invalid-types = [
+    "std::sync::MutexGuard",
+    "std::sync::RwLockReadGuard",
+    "std::sync::RwLockWriteGuard",
+]
+
+large-error-threshold = 256

@@ -20,19 +20,15 @@ impl<E: fmt::Display> fmt::Display for CircuitError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CircuitError::Open { circuit, opened_at } => {
-                write!(f, "Circuit '{}' is open (opened at {})", circuit, opened_at)
+                write!(f, "Circuit '{circuit}' is open (opened at {opened_at})")
             }
             CircuitError::HalfOpenLimitReached { circuit } => {
-                write!(f, "Circuit '{}' half-open request limit reached", circuit)
+                write!(f, "Circuit '{circuit}' half-open request limit reached")
             }
             CircuitError::BulkheadFull { circuit, limit } => {
-                write!(
-                    f,
-                    "Circuit '{}' bulkhead is full (limit: {})",
-                    circuit, limit
-                )
+                write!(f, "Circuit '{circuit}' bulkhead is full (limit: {limit})")
             }
-            CircuitError::Execution(e) => write!(f, "Circuit execution failed: {}", e),
+            CircuitError::Execution(e) => write!(f, "Circuit execution failed: {e}"),
         }
     }
 }

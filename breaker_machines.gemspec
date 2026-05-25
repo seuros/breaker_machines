@@ -35,24 +35,22 @@ Gem::Specification.new do |spec|
   spec.metadata['cargo_crate_name'] = 'breaker_machines_native'
   spec.metadata['cargo_manifest_path'] = 'ext/breaker_machines_native/ffi/Cargo.toml'
 
-  # Specify which files should be added to the gem
+  # Specify which files should be added to the gem. The generic `ruby` gem is
+  # pure Ruby; native binaries are shipped only in platform gems built by rb_sys.
   lib_files = Dir['lib/**/*'].reject { |path| path =~ /\.(bundle|so|dll)\z/ }
-  spec.files = lib_files + Dir['sig/**/*'] + Dir['ext/**/*.{rb,rs,toml}'] + %w[LICENSE.txt README.md]
+  spec.files = lib_files + Dir['sig/**/*'] + %w[LICENSE.txt README.md]
   spec.require_paths = ['lib']
-
-  # Add native extension only on CRuby.
-  spec.extensions = ['ext/breaker_machines_native/extconf.rb'] if RUBY_ENGINE == 'ruby'
 
   # Core dependencies
   spec.add_dependency 'activesupport', '>= 8.0'
   spec.add_dependency 'chrono_machines', '~> 0.2'
   spec.add_dependency 'concurrent-ruby', '~> 1.3'
-  spec.add_dependency 'rb_sys', '~> 0.9' if RUBY_ENGINE == 'ruby'
   spec.add_dependency 'state_machines', '>= 0.100.4'
   spec.add_dependency 'zeitwerk', '~> 2.7'
 
   # Development dependencies
   spec.add_development_dependency 'minitest', '~> 5.16'
+  spec.add_development_dependency 'rb_sys', '~> 0.9'
   spec.add_development_dependency 'rake', '~> 13.0'
   spec.add_development_dependency 'rake-compiler', '~> 1.3'
 end

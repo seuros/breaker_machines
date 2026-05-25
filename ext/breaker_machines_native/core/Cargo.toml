@@ -16,6 +16,9 @@ crate-type = ["lib"]
 [features]
 inspect = ["state-machines/inspect"]
 
+[lints]
+workspace = true
+
 [dependencies]
-state-machines = { workspace = true }
-chrono-machines = { workspace = true }
+state-machines = "0.9"
+chrono-machines = "0.3"

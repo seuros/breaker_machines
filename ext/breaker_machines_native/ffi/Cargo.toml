@@ -10,8 +10,11 @@ repository = "https://github.com/seuros/breaker_machines"
 [lib]
 crate-type = ["cdylib"]
 
+[lints]
+workspace = true
+
 [dependencies]
-breaker-machines = { workspace = true }
+breaker-machines = { path = "../core", version = "0.7" }
 magnus = "0.8.2"
 
 [build-dependencies]

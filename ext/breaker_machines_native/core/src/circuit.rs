@@ -281,9 +281,9 @@ impl Circuit<HalfOpen> {
 
     /// Check if enough successes to close circuit
     fn should_close(&self, ctx: &CircuitContext) -> bool {
-        let data = self
-            .state_data_half_open()
-            .expect("HalfOpen state must have data");
+        let Some(data) = self.state_data_half_open() else {
+            return false;
+        };
         data.consecutive_successes >= ctx.config.success_threshold
     }
 }
@@ -291,7 +291,9 @@ impl Circuit<HalfOpen> {
 impl Circuit<Open> {
     /// Check if timeout has elapsed for Open -> HalfOpen transition
     fn timeout_elapsed(&self, ctx: &CircuitContext) -> bool {
-        let data = self.state_data_open().expect("Open state must have data");
+        let Some(data) = self.state_data_open() else {
+            return false;
+        };
         let current_time = ctx.storage.monotonic_time();
         let elapsed = current_time - data.opened_at;
 
@@ -650,7 +652,7 @@ mod tests {
             storage: storage.clone(),
         };
 
-        let mut circuit = DynamicCircuit::new(ctx.clone());
+        let mut circuit = DynamicCircuit::new(ctx);
 
         // Initially closed - trip should fail guard
         let result = circuit.handle(CircuitEvent::Trip);
@@ -690,7 +692,7 @@ mod tests {
         storage.record_failure("test_circuit", 0.1);
         storage.record_failure("test_circuit", 0.1);
 
-        let mut circuit = DynamicCircuit::new(ctx.clone());
+        let mut circuit = DynamicCircuit::new(ctx);
         circuit.handle(CircuitEvent::Trip).expect("Should open");
 
         // Set opened_at timestamp
@@ -739,7 +741,7 @@ mod tests {
         storage.record_failure("test_circuit", 0.1);
         storage.record_failure("test_circuit", 0.1);
 
-        let mut circuit = DynamicCircuit::new(ctx.clone());
+        let mut circuit = DynamicCircuit::new(ctx);
         circuit.handle(CircuitEvent::Trip).expect("Should open");
 
         // Set opened_at and wait for timeout
@@ -777,7 +779,7 @@ mod tests {
 
         // Open circuit
         storage.record_failure("test_circuit", 0.1);
-        let mut circuit = DynamicCircuit::new(ctx.clone());
+        let mut circuit = DynamicCircuit::new(ctx);
         circuit.handle(CircuitEvent::Trip).expect("Should open");
 
         // Set opened_at
@@ -1167,7 +1169,7 @@ mod tests {
                 assert_eq!(name, "test");
                 assert_eq!(limit, 2);
             }
-            _ => panic!("Expected BulkheadFull error, got: {:?}", result),
+            _ => panic!("Expected BulkheadFull error, got: {result:?}"),
         }
 
         // Drop guards to release permits
@@ -1355,15 +1357,11 @@ mod tests {
 
         assert!(
             min_seen >= min_expected - 0.01,
-            "Minimum jittered timeout {} should be >= {}",
-            min_seen,
-            min_expected
+            "Minimum jittered timeout {min_seen} should be >= {min_expected}"
         );
         assert!(
             max_seen <= max_expected + 0.01,
-            "Maximum jittered timeout {} should be <= {}",
-            max_seen,
-            max_expected
+            "Maximum jittered timeout {max_seen} should be <= {max_expected}"
         );
     }
 
@@ -1384,7 +1382,7 @@ mod tests {
             bulkhead: None,
             name: "jitter_variance".to_string(),
             config,
-            storage: storage.clone(),
+            storage,
         };
 
         let mut values = std::collections::HashSet::new();
