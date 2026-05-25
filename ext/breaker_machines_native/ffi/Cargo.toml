@@ -1,6 +1,6 @@
 [package]
 name = "breaker_machines_native"
-version = "0.5.8"
+version = "0.5.9"
 edition = "2024"
 authors = ["Abdelkader Boudih <oss@seuros.com>"]
 license = "MIT"
@@ -14,7 +14,7 @@ crate-type = ["cdylib"]
 workspace = true
 
 [dependencies]
-breaker-machines = { path = "../core", version = "0.7" }
+breaker-machines = { path = "../core", version = "0.12.0" }
 magnus = "0.8.2"
 
 [build-dependencies]

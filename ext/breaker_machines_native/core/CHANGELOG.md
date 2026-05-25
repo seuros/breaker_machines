@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.7.6...breaker-machines-v0.12.0) (2026-05-25)
+
+
+### Bug Fixes
+
+* ship pure ruby fallback gem ([7103928](https://github.com/seuros/breaker_machines/commit/71039286d00ebf308adfdc893e968110100cae29))
+
 ## [0.7.6](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.7.5...breaker-machines-v0.7.6) (2026-03-22)
 
 
