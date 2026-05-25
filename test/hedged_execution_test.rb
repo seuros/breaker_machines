@@ -41,12 +41,9 @@ class HedgedExecutionTest < ActiveSupport::TestCase
   end
 
   def test_multiple_backends
-    fast_backend = lambda {
-      sleep 0.01
-      'fast'
-    }
+    fast_backend = -> { 'fast' }
     slow_backend = lambda {
-      sleep 0.1
+      sleep 0.5
       'slow'
     }
 
@@ -55,14 +52,14 @@ class HedgedExecutionTest < ActiveSupport::TestCase
                                              hedging_delay: 5 # Start second backend after 5ms
                                            })
 
-    start_time = Time.now
+    start_time = BreakerMachines.monotonic_time
     result = circuit.wrap { 'ignored' }
-    duration = Time.now - start_time
+    duration = BreakerMachines.monotonic_time - start_time
 
     # Should get result from fast backend
     assert_equal 'fast', result
     # Should complete quickly (not wait for slow backend)
-    assert_operator duration, :<, 0.03
+    assert_operator duration, :<, 0.25
   end
 
   def test_hedged_request_with_failure
@@ -95,9 +92,9 @@ class HedgedExecutionTest < ActiveSupport::TestCase
                                              fallback: BreakerMachines::DSL::ParallelFallbackWrapper.new([fallback1, fallback2])
                                            })
 
-    start_time = Time.now
+    start_time = BreakerMachines.monotonic_time
     result = circuit.wrap(&primary)
-    duration = Time.now - start_time
+    duration = BreakerMachines.monotonic_time - start_time
 
     # Should get fastest fallback
     assert_equal 'fallback2', result

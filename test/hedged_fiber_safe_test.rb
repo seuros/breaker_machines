@@ -37,13 +37,10 @@ class HedgedFiberSafeTest < ActiveSupport::TestCase
   end
 
   def test_fiber_safe_multiple_backends
-    fast_backend = lambda do
-      sleep(0.01)
-      'fast'
-    end
+    fast_backend = -> { 'fast' }
 
     slow_backend = lambda do
-      sleep(0.1)
+      sleep(0.5)
       'slow'
     end
 
@@ -54,12 +51,12 @@ class HedgedFiberSafeTest < ActiveSupport::TestCase
                                            })
 
     Async do
-      start_time = Time.now
+      start_time = BreakerMachines.monotonic_time
       result = circuit.wrap { 'ignored' }
-      duration = Time.now - start_time
+      duration = BreakerMachines.monotonic_time - start_time
 
       assert_equal 'fast', result
-      assert_operator duration, :<, 0.05
+      assert_operator duration, :<, 0.25
     end.wait
   end
 
@@ -80,9 +77,9 @@ class HedgedFiberSafeTest < ActiveSupport::TestCase
                                            })
 
     Async do
-      start_time = Time.now
+      start_time = BreakerMachines.monotonic_time
       result = circuit.wrap(&primary)
-      duration = Time.now - start_time
+      duration = BreakerMachines.monotonic_time - start_time
 
       # Should get one of the fallbacks (order may vary due to async nature)
       assert_includes %w[fallback1 fallback2], result
