@@ -40,14 +40,14 @@ Gem::Specification.new do |spec|
   spec.files = lib_files + Dir['sig/**/*'] + Dir['ext/**/*.{rb,rs,toml}'] + %w[LICENSE.txt README.md]
   spec.require_paths = ['lib']
 
-  # Add native extension (only on CRuby/TruffleRuby)
-  spec.extensions = ['ext/breaker_machines_native/extconf.rb'] unless RUBY_ENGINE == 'jruby'
+  # Add native extension only on CRuby.
+  spec.extensions = ['ext/breaker_machines_native/extconf.rb'] if RUBY_ENGINE == 'ruby'
 
   # Core dependencies
   spec.add_dependency 'activesupport', '>= 8.0'
   spec.add_dependency 'chrono_machines', '~> 0.2'
   spec.add_dependency 'concurrent-ruby', '~> 1.3'
-  spec.add_dependency 'rb_sys', '~> 0.9' unless RUBY_ENGINE == 'jruby'
+  spec.add_dependency 'rb_sys', '~> 0.9' if RUBY_ENGINE == 'ruby'
   spec.add_dependency 'state_machines', '>= 0.100.4'
   spec.add_dependency 'zeitwerk', '~> 2.7'
 

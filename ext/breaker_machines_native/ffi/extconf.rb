@@ -12,9 +12,9 @@ def create_noop_makefile(message)
   exit 0
 end
 
-# Skip native extension compilation on JRuby
-if RUBY_ENGINE == 'jruby'
-  create_noop_makefile('Skipping native extension on JRuby')
+# Skip native extension compilation outside CRuby
+unless RUBY_ENGINE == 'ruby'
+  create_noop_makefile("Skipping native extension on #{RUBY_ENGINE}")
 end
 
 # Check if Cargo is available
