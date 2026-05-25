@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.9...breaker_machines/v0.11.0) (2026-05-25)
+
+
+### Bug Fixes
+
+* skip native extension outside CRuby ([2cbda6f](https://github.com/seuros/breaker_machines/commit/2cbda6fe828e39f1b7da8280f2d348a1e37464ec))
+* stabilize hedged execution timing tests ([9bec8f5](https://github.com/seuros/breaker_machines/commit/9bec8f59a1a29c6cab113854542086ded67d75c3))
+
 ## [0.10.9](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.8...breaker_machines/v0.10.9) (2026-05-25)
 
 
