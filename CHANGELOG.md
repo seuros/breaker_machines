@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.9](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.8...breaker_machines/v0.10.9) (2026-05-25)
+
+
+### Bug Fixes
+
+* load native extension without embedding Ruby ([ae00fce](https://github.com/seuros/breaker_machines/commit/ae00fceaeeed505570b3f077de0ca8306f6e77d7))
+
 ## [0.10.8](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.10.7...breaker_machines/v0.10.8) (2026-03-22)
 
 
