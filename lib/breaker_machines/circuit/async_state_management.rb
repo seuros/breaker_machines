@@ -14,11 +14,6 @@ module BreakerMachines
         # - Fiber-safe execution
         # - Concurrent transition handling
         state_machine :status, initial: :closed, async: true do
-          event :trip do
-            transition closed: :open
-            transition half_open: :open
-          end
-
           event :attempt_recovery do
             transition open: :half_open
           end
@@ -28,36 +23,7 @@ module BreakerMachines
             transition closed: :closed
           end
 
-          event :force_open do
-            transition any => :open
-          end
-
-          event :force_close do
-            transition any => :closed
-          end
-
-          event :hard_reset do
-            transition any => :closed
-          end
-
-          before_transition on: :hard_reset do |circuit|
-            circuit.storage&.clear(circuit.name)
-            circuit.half_open_attempts.value = 0
-            circuit.half_open_successes.value = 0
-          end
-
-          # Async-safe callbacks using modern API
-          after_transition to: :open do |circuit|
-            circuit.send(:on_circuit_open)
-          end
-
-          after_transition to: :closed do |circuit|
-            circuit.send(:on_circuit_close)
-          end
-
-          after_transition from: :open, to: :half_open do |circuit|
-            circuit.send(:on_circuit_half_open)
-          end
+          instance_eval(&StateMachineDefinition::COMMON)
         end
 
         # Additional async event methods are automatically generated:

@@ -95,17 +95,9 @@ module BreakerMachines
       @cascade_triggered_at.value = BreakerMachines.monotonic_time
 
       @dependent_circuits.each do |circuit_name|
-        # First try to find circuit in registry
-        circuit = BreakerMachines.registry.find(circuit_name)
-
-        # If not found and we have an owner, try to get it from the owner
-        if !circuit && @config[:owner]
-          owner = @config[:owner]
-          # Handle WeakRef if present
-          owner = owner.__getobj__ if owner.is_a?(WeakRef)
-
-          circuit = owner.circuit(circuit_name) if owner.respond_to?(:circuit)
-        end
+        # Resolve via registry, falling back to the owner (inherited from
+        # CoordinatedStateManagement).
+        circuit = find_dependent_circuit(circuit_name)
 
         next unless circuit
         next unless circuit.closed? || circuit.half_open?

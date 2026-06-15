@@ -11,6 +11,8 @@ module BreakerMachines
     # environments as memory is not shared between processes. Use Cache backend
     # with an external cache store (Redis, Memcached) for distributed setups.
     class Memory < Base
+      include MemorySupport
+
       def initialize(**options)
         super
         @circuits = Concurrent::Map.new
@@ -19,40 +21,6 @@ module BreakerMachines
         @max_events = options[:max_events] || 100
         # Store creation time as anchor for relative timestamps (like Rust implementation)
         @start_time = BreakerMachines.monotonic_time
-      end
-
-      def get_status(circuit_name)
-        circuit_data = @circuits[circuit_name]
-        return nil unless circuit_data
-
-        BreakerMachines::Status.new(
-          status: circuit_data[:status],
-          opened_at: circuit_data[:opened_at]
-        )
-      end
-
-      def set_status(circuit_name, status, opened_at = nil)
-        @circuits[circuit_name] = {
-          status: status,
-          opened_at: opened_at,
-          updated_at: monotonic_time
-        }
-      end
-
-      def record_success(circuit_name, duration)
-        record_event(circuit_name, :success, duration)
-      end
-
-      def record_failure(circuit_name, duration)
-        record_event(circuit_name, :failure, duration)
-      end
-
-      def success_count(circuit_name, window_seconds)
-        count_events(circuit_name, :success, window_seconds)
-      end
-
-      def failure_count(circuit_name, window_seconds)
-        count_events(circuit_name, :failure, window_seconds)
       end
 
       def clear(circuit_name)
@@ -65,32 +33,6 @@ module BreakerMachines
         @circuits.clear
         @events.clear
         @event_logs.clear
-      end
-
-      def record_event_with_details(circuit_name, type, duration, error: nil, new_state: nil)
-        events = @event_logs.compute_if_absent(circuit_name) { Concurrent::Array.new }
-
-        event = {
-          type: type,
-          timestamp: monotonic_time,
-          duration_ms: (duration * 1000).round(2)
-        }
-
-        event[:error_class] = error.class.name if error
-        event[:error_message] = error.message if error
-        event[:new_state] = new_state if new_state
-
-        events << event
-
-        # Keep only the most recent events
-        events.shift while events.size > @max_events
-      end
-
-      def event_log(circuit_name, limit)
-        events = @event_logs[circuit_name]
-        return [] unless events
-
-        events.last(limit).map(&:dup)
       end
 
       def with_timeout(_timeout_ms)
@@ -129,11 +71,6 @@ module BreakerMachines
 
         cutoff_time = monotonic_time - window_seconds
         events.count { |e| e[:type] == type && e[:timestamp] >= cutoff_time }
-      end
-
-      def monotonic_time
-        # Return time relative to storage creation (matches Rust implementation)
-        BreakerMachines.monotonic_time - @start_time
       end
     end
   end
