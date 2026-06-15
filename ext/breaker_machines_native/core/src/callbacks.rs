@@ -23,31 +23,28 @@ impl Callbacks {
         }
     }
 
-    /// Trigger the on_open callback safely, catching any panics to prevent
+    /// Invoke an optional callback safely, catching any panics to prevent
     /// unwinding across FFI boundaries.
+    fn trigger(callback: &Option<CallbackFn>, circuit: &str) {
+        if let Some(callback) = callback {
+            let cb = AssertUnwindSafe(callback);
+            let _ = catch_unwind(|| cb(circuit));
+        }
+    }
+
+    /// Trigger the on_open callback safely.
     pub fn trigger_open(&self, circuit: &str) {
-        if let Some(ref callback) = self.on_open {
-            let cb = AssertUnwindSafe(callback);
-            let _ = catch_unwind(|| cb(circuit));
-        }
+        Self::trigger(&self.on_open, circuit);
     }
 
-    /// Trigger the on_close callback safely, catching any panics to prevent
-    /// unwinding across FFI boundaries.
+    /// Trigger the on_close callback safely.
     pub fn trigger_close(&self, circuit: &str) {
-        if let Some(ref callback) = self.on_close {
-            let cb = AssertUnwindSafe(callback);
-            let _ = catch_unwind(|| cb(circuit));
-        }
+        Self::trigger(&self.on_close, circuit);
     }
 
-    /// Trigger the on_half_open callback safely, catching any panics to prevent
-    /// unwinding across FFI boundaries.
+    /// Trigger the on_half_open callback safely.
     pub fn trigger_half_open(&self, circuit: &str) {
-        if let Some(ref callback) = self.on_half_open {
-            let cb = AssertUnwindSafe(callback);
-            let _ = catch_unwind(|| cb(circuit));
-        }
+        Self::trigger(&self.on_half_open, circuit);
     }
 }
 

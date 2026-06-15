@@ -20,5 +20,5 @@ inspect = ["state-machines/inspect"]
 workspace = true
 
 [dependencies]
-state-machines = "0.9"
+state-machines = "0.20"
 chrono-machines = "0.3"

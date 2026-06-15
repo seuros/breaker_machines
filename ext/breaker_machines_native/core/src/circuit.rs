@@ -201,82 +201,59 @@ state_machine! {
     }
 }
 
+/// Check if the failure threshold is exceeded (absolute count or rate-based).
+///
+/// Shared by the `trip` guard for both the Closed and HalfOpen typestates; the
+/// decision depends only on the context (storage counters + config), not on the
+/// current state data.
+fn failure_threshold_exceeded(ctx: &CircuitContext) -> bool {
+    let failures = ctx
+        .storage
+        .failure_count(&ctx.name, ctx.config.failure_window_secs);
+
+    // Check absolute count threshold
+    if let Some(threshold) = ctx.config.failure_threshold
+        && failures >= threshold
+    {
+        return true;
+    }
+
+    // Check rate-based threshold
+    if let Some(rate_threshold) = ctx.config.failure_rate_threshold {
+        let successes = ctx
+            .storage
+            .success_count(&ctx.name, ctx.config.failure_window_secs);
+        let total = failures + successes;
+
+        // Only evaluate rate if we have minimum calls
+        if total >= ctx.config.minimum_calls {
+            let failure_rate = if total > 0 {
+                failures as f64 / total as f64
+            } else {
+                0.0
+            };
+
+            if failure_rate >= rate_threshold {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 // Guards for dynamic mode - implemented on typestate machines
 impl Circuit<Closed> {
     /// Check if failure threshold is exceeded (absolute count or rate-based)
     fn should_open(&self, ctx: &CircuitContext) -> bool {
-        let failures = ctx
-            .storage
-            .failure_count(&ctx.name, ctx.config.failure_window_secs);
-
-        // Check absolute count threshold
-        if let Some(threshold) = ctx.config.failure_threshold
-            && failures >= threshold
-        {
-            return true;
-        }
-
-        // Check rate-based threshold
-        if let Some(rate_threshold) = ctx.config.failure_rate_threshold {
-            let successes = ctx
-                .storage
-                .success_count(&ctx.name, ctx.config.failure_window_secs);
-            let total = failures + successes;
-
-            // Only evaluate rate if we have minimum calls
-            if total >= ctx.config.minimum_calls {
-                let failure_rate = if total > 0 {
-                    failures as f64 / total as f64
-                } else {
-                    0.0
-                };
-
-                if failure_rate >= rate_threshold {
-                    return true;
-                }
-            }
-        }
-
-        false
+        failure_threshold_exceeded(ctx)
     }
 }
 
 impl Circuit<HalfOpen> {
     /// Check if failure threshold is exceeded (absolute count or rate-based)
     fn should_open(&self, ctx: &CircuitContext) -> bool {
-        let failures = ctx
-            .storage
-            .failure_count(&ctx.name, ctx.config.failure_window_secs);
-
-        // Check absolute count threshold
-        if let Some(threshold) = ctx.config.failure_threshold
-            && failures >= threshold
-        {
-            return true;
-        }
-
-        // Check rate-based threshold
-        if let Some(rate_threshold) = ctx.config.failure_rate_threshold {
-            let successes = ctx
-                .storage
-                .success_count(&ctx.name, ctx.config.failure_window_secs);
-            let total = failures + successes;
-
-            // Only evaluate rate if we have minimum calls
-            if total >= ctx.config.minimum_calls {
-                let failure_rate = if total > 0 {
-                    failures as f64 / total as f64
-                } else {
-                    0.0
-                };
-
-                if failure_rate >= rate_threshold {
-                    return true;
-                }
-            }
-        }
-
-        false
+        failure_threshold_exceeded(ctx)
     }
 
     /// Check if enough successes to close circuit
@@ -390,16 +367,16 @@ impl CircuitBreaker {
         };
 
         // Check for timeout-based Open -> HalfOpen transition
-        if self.machine.current_state() == "Open" {
+        if self.machine.current_state() == CircuitState::Open {
             let _ = self.machine.handle(CircuitEvent::AttemptReset);
-            if self.machine.current_state() == "HalfOpen" {
+            if self.machine.current_state() == CircuitState::HalfOpen {
                 self.callbacks.trigger_half_open(&self.context.name);
             }
         }
 
         // Handle based on current state
         match self.machine.current_state() {
-            "Open" => {
+            CircuitState::Open => {
                 let opened_at = self.machine.open_data().map(|d| d.opened_at).unwrap_or(0.0);
 
                 // If fallback is provided, use it instead of returning error
@@ -417,7 +394,7 @@ impl CircuitBreaker {
                     opened_at,
                 })
             }
-            "HalfOpen" => {
+            CircuitState::HalfOpen => {
                 // Check if we've reached the success threshold
                 if let Some(data) = self.machine.half_open_data()
                     && data.consecutive_successes >= self.context.config.success_threshold
@@ -441,22 +418,7 @@ impl CircuitBreaker {
         match f() {
             Ok(val) => {
                 let duration = self.context.storage.monotonic_time() - start;
-                self.context
-                    .storage
-                    .record_success(&self.context.name, duration);
-
-                // Handle success in HalfOpen state
-                if self.machine.current_state() == "HalfOpen" {
-                    if let Some(data) = self.machine.half_open_data_mut() {
-                        data.consecutive_successes += 1;
-                    }
-
-                    // Try to close the circuit
-                    if self.machine.handle(CircuitEvent::Close).is_ok() {
-                        self.callbacks.trigger_close(&self.context.name);
-                    }
-                }
-
+                self.record_success_and_maybe_close(duration);
                 Ok(val)
             }
             Err(e) => {
@@ -475,22 +437,9 @@ impl CircuitBreaker {
                     true
                 };
 
-                // Only record failure and try to trip if classifier says we should
+                // Only record failure and try to trip if the classifier says we should
                 if should_trip {
-                    self.context
-                        .storage
-                        .record_failure(&self.context.name, duration);
-
-                    // Try to trip the circuit
-                    let result = self.machine.handle(CircuitEvent::Trip);
-                    if result.is_ok() {
-                        self.mark_open();
-                    } else if self.machine.current_state() == "HalfOpen" {
-                        // Failure did not reopen the circuit; reset consecutive successes
-                        if let Some(data) = self.machine.half_open_data_mut() {
-                            data.consecutive_successes = 0;
-                        }
-                    }
+                    self.record_failure_and_maybe_trip(duration);
                 }
 
                 Err(CircuitError::Execution(e))
@@ -504,7 +453,7 @@ impl CircuitBreaker {
             .storage
             .record_success(&self.context.name, duration);
 
-        if self.machine.current_state() == "HalfOpen" {
+        if self.machine.current_state() == CircuitState::HalfOpen {
             if let Some(data) = self.machine.half_open_data_mut() {
                 data.consecutive_successes += 1;
             }
@@ -524,7 +473,7 @@ impl CircuitBreaker {
         let result = self.machine.handle(CircuitEvent::Trip);
         if result.is_ok() {
             self.mark_open();
-        } else if self.machine.current_state() == "HalfOpen"
+        } else if self.machine.current_state() == CircuitState::HalfOpen
             && let Some(data) = self.machine.half_open_data_mut()
         {
             data.consecutive_successes = 0;
@@ -558,17 +507,17 @@ impl CircuitBreaker {
 
     /// Check if circuit is open
     pub fn is_open(&self) -> bool {
-        self.machine.current_state() == "Open"
+        self.machine.current_state() == CircuitState::Open
     }
 
     /// Check if circuit is closed
     pub fn is_closed(&self) -> bool {
-        self.machine.current_state() == "Closed"
+        self.machine.current_state() == CircuitState::Closed
     }
 
     /// Get current state name
     pub fn state_name(&self) -> &'static str {
-        self.machine.current_state()
+        self.machine.current_state().name()
     }
 
     /// Clear all events and reset circuit to Closed state
@@ -668,7 +617,7 @@ mod tests {
             .handle(CircuitEvent::Trip)
             .expect("Should open after reaching threshold");
 
-        assert_eq!(circuit.current_state(), "Open");
+        assert_eq!(circuit.current_state(), CircuitState::Open);
     }
 
     #[test]
@@ -715,7 +664,7 @@ mod tests {
             .expect("Should reset after timeout");
 
         // Verify we're in HalfOpen state
-        assert_eq!(circuit.current_state(), "HalfOpen");
+        assert_eq!(circuit.current_state(), CircuitState::HalfOpen);
         let data = circuit.half_open_data().expect("Should have HalfOpen data");
         assert_eq!(data.consecutive_successes, 0);
     }
@@ -794,7 +743,7 @@ mod tests {
         circuit
             .handle(CircuitEvent::AttemptReset)
             .expect("Should reset after exact timeout");
-        assert_eq!(circuit.current_state(), "HalfOpen");
+        assert_eq!(circuit.current_state(), CircuitState::HalfOpen);
     }
 
     #[test]
@@ -1258,7 +1207,7 @@ mod tests {
             .machine
             .handle(CircuitEvent::AttemptReset)
             .expect("Should transition to HalfOpen");
-        assert_eq!(circuit.machine.current_state(), "HalfOpen");
+        assert_eq!(circuit.machine.current_state(), CircuitState::HalfOpen);
 
         // Clear counts to simulate expired failure window
         circuit.context.storage.clear("test");
@@ -1276,7 +1225,7 @@ mod tests {
 
         // Failure below threshold should not reopen circuit but should reset counter
         let _ = circuit.call(|| Err::<(), _>("fail"));
-        assert_eq!(circuit.machine.current_state(), "HalfOpen");
+        assert_eq!(circuit.machine.current_state(), CircuitState::HalfOpen);
         assert_eq!(
             circuit
                 .machine
