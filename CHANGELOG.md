@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.12.0...breaker_machines/v0.13.0) (2026-06-15)
+
+
+### Features
+
+* adopt state-machines 0.20 typed-state API ([fcfcfee](https://github.com/seuros/breaker_machines/commit/fcfcfee9a3fd16ab34f0331b05cc0ee7d4f11e0a))
+
 ## [0.12.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.11.0...breaker_machines/v0.12.0) (2026-05-25)
 
 

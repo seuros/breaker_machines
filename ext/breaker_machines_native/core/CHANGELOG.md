@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.12.0...breaker-machines-v0.13.0) (2026-06-15)
+
+
+### Features
+
+* adopt state-machines 0.20 typed-state API ([fcfcfee](https://github.com/seuros/breaker_machines/commit/fcfcfee9a3fd16ab34f0331b05cc0ee7d4f11e0a))
+
 ## [0.12.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.7.6...breaker-machines-v0.12.0) (2026-05-25)
 
 
