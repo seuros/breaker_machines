@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.2](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.13.1...breaker_machines/v0.13.2) (2026-06-15)
+
+
+### Bug Fixes
+
+* **ci:** build aarch64-linux gem in cross-gem matrix on x86_64 host ([68cea75](https://github.com/seuros/breaker_machines/commit/68cea7529921365f4b2bcbf790d31a8f397d655d))
+
 ## [0.13.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.13.0...breaker_machines/v0.13.1) (2026-06-15)
 
 
