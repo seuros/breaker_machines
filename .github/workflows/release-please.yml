@@ -90,24 +90,27 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.4'
-          bundler-cache: true
-
-      - name: Build native gem
+      - name: Configure gem installation directory
         run: |
-          bundle exec rake native gem
+          GEM_HOME="$HOME/.gem"
+          mkdir -p "$GEM_HOME/bin"
+          echo "GEM_HOME=$GEM_HOME" >> "$GITHUB_ENV"
+          echo "GEM_PATH=$GEM_HOME" >> "$GITHUB_ENV"
+          echo "$GEM_HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Cross-compile native gem
+        id: cross
+        uses: oxidize-rb/actions/cross-gem@v1
+        with:
+          platform: aarch64-linux
+          ruby-versions: '3.4, 4.0'
+          cache-version: aarch64-linux-v0
 
       - name: Upload ARM gem artifact
         uses: actions/upload-artifact@v6
         with:
           name: native-gem-aarch64-linux
-          path: pkg/*-aarch64-linux.gem
+          path: ${{ steps.cross.outputs.gem-path }}
           if-no-files-found: error
 
   publish-release-assets:
