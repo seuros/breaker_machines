@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.13.0...breaker_machines/v0.13.1) (2026-06-15)
+
+
+### Bug Fixes
+
+* **ci:** cross-compile aarch64-linux gem for Ruby 3.4 and 4.0 ([6022fb7](https://github.com/seuros/breaker_machines/commit/6022fb75d3b9f62b80e9491600637bc0ea68f75e))
+
 ## [0.13.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.12.0...breaker_machines/v0.13.0) (2026-06-15)
 
 
