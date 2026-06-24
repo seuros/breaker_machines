@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.13.0...breaker-machines-v0.14.0) (2026-06-24)
+
+
+### Features
+
+* **native:** add async circuit support ([4a76604](https://github.com/seuros/breaker_machines/commit/4a76604b9f4737470d9e52083b19fe33d9101020))
+
 ## [0.13.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.12.0...breaker-machines-v0.13.0) (2026-06-15)
 
 

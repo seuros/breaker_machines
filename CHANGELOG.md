@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.13.2...breaker_machines/v0.14.0) (2026-06-24)
+
+
+### Features
+
+* **native:** add async circuit support ([4a76604](https://github.com/seuros/breaker_machines/commit/4a76604b9f4737470d9e52083b19fe33d9101020))
+
 ## [0.13.2](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.13.1...breaker_machines/v0.13.2) (2026-06-15)
 
 
