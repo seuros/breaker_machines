@@ -39,7 +39,7 @@ jobs:
         run: bundle exec rake build
 
       - name: Upload ruby gem artifact
-        uses: actions/upload-artifact@v8
+        uses: actions/upload-artifact@v7
         with:
           name: ruby-gem
           path: pkg/*.gem
@@ -78,7 +78,7 @@ jobs:
           cache-version: ${{ matrix.platform }}-v0
 
       - name: Upload platform gem artifact
-        uses: actions/upload-artifact@v8
+        uses: actions/upload-artifact@v7
         with:
           name: native-gem-${{ matrix.platform }}
           path: ${{ steps.cross.outputs.gem-path }}
