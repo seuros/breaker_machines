@@ -30,6 +30,12 @@
 //!     println!("Circuit is open, skipping call");
 //! }
 //! ```
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+#[cfg(feature = "std")]
+extern crate std;
 
 pub mod builder;
 pub mod bulkhead;
@@ -38,6 +44,7 @@ pub mod circuit;
 pub mod classifier;
 pub mod errors;
 pub mod storage;
+pub mod time;
 
 #[cfg(feature = "async")]
 pub mod async_circuit;
@@ -50,6 +57,9 @@ pub use circuit::{CallOptions, CircuitBreaker, Config, FallbackContext};
 pub use classifier::{DefaultClassifier, FailureClassifier, FailureContext, PredicateClassifier};
 pub use errors::CircuitError;
 pub use storage::{MemoryStorage, NullStorage, StorageBackend};
+pub use time::{Clock, ZeroClock};
+#[cfg(feature = "std")]
+pub use time::SystemClock;
 
 /// Event type for circuit breaker operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

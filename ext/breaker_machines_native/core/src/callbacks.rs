@@ -1,7 +1,6 @@
 //! Callback system for circuit breaker state transitions
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 /// Type alias for circuit breaker callback functions
 pub type CallbackFn = Arc<dyn Fn(&str) + Send + Sync>;
@@ -27,8 +26,13 @@ impl Callbacks {
     /// unwinding across FFI boundaries.
     fn trigger(callback: &Option<CallbackFn>, circuit: &str) {
         if let Some(callback) = callback {
-            let cb = AssertUnwindSafe(callback);
-            let _ = catch_unwind(|| cb(circuit));
+            #[cfg(feature = "std")]
+            {
+                let cb = std::panic::AssertUnwindSafe(callback);
+                let _ = std::panic::catch_unwind(|| cb(circuit));
+            }
+            #[cfg(not(feature = "std"))]
+            callback(circuit);
         }
     }
 
@@ -54,8 +58,8 @@ impl Default for Callbacks {
     }
 }
 
-impl std::fmt::Debug for Callbacks {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Callbacks {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Callbacks")
             .field("on_open", &self.on_open.is_some())
             .field("on_close", &self.on_close.is_some())

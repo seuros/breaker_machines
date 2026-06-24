@@ -1,7 +1,9 @@
 //! Error types for circuit breaker operations
 
-use std::error::Error;
-use std::fmt;
+use alloc::boxed::Box;
+use alloc::string::String;
+use core::error::Error;
+use core::fmt;
 
 /// Errors that can occur during circuit breaker operations
 #[derive(Debug)]

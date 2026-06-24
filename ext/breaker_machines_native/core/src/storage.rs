@@ -4,13 +4,33 @@
 //! - `MemoryStorage`: Thread-safe in-memory storage with sliding window
 //! - `NullStorage`: No-op storage for testing and benchmarking
 
+use crate::time::Clock;
+#[cfg(feature = "std")]
+use crate::time::SystemClock;
+#[cfg(not(feature = "std"))]
+use crate::time::ZeroClock;
 use crate::{Event, EventKind};
-use std::collections::HashMap;
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use alloc::boxed::Box;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use hashbrown::HashMap;
+use spin::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+#[cfg(feature = "std")]
 use std::time::Instant;
 
+fn default_clock() -> Box<dyn Clock> {
+    #[cfg(feature = "std")]
+    {
+        Box::new(SystemClock::new())
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        Box::new(ZeroClock)
+    }
+}
+
 /// Abstract storage backend for circuit breaker events
-pub trait StorageBackend: Send + Sync + std::fmt::Debug {
+pub trait StorageBackend: Send + Sync + core::fmt::Debug {
     /// Record a successful operation
     fn record_success(&self, circuit_name: &str, duration: f64);
 
@@ -43,8 +63,8 @@ pub struct MemoryStorage {
     events: RwLock<HashMap<String, Vec<Event>>>,
     /// Maximum events to keep per circuit
     max_events: usize,
-    /// Monotonic time anchor (prevents clock skew issues from NTP)
-    start_time: Instant,
+    /// Monotonic time source
+    clock: Box<dyn Clock>,
 }
 
 impl MemoryStorage {
@@ -55,25 +75,31 @@ impl MemoryStorage {
 
     /// Create storage with custom max events per circuit
     pub fn with_max_events(max_events: usize) -> Self {
+        Self::with_max_events_and_clock(max_events, default_clock())
+    }
+
+    /// Create storage with a custom [`Clock`].
+    pub fn with_clock(clock: Box<dyn Clock>) -> Self {
+        Self::with_max_events_and_clock(1000, clock)
+    }
+
+    /// Create storage with both a custom event cap and time source.
+    pub fn with_max_events_and_clock(max_events: usize, clock: Box<dyn Clock>) -> Self {
         Self {
             events: RwLock::new(HashMap::new()),
             max_events,
-            start_time: Instant::now(),
+            clock,
         }
     }
 
     // Private helper methods
 
     fn events_read(&self) -> RwLockReadGuard<'_, HashMap<String, Vec<Event>>> {
-        self.events
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.events.read()
     }
 
     fn events_write(&self) -> RwLockWriteGuard<'_, HashMap<String, Vec<Event>>> {
-        self.events
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.events.write()
     }
 
     fn record_event(&self, circuit_name: &str, kind: EventKind, duration: f64) {
@@ -159,7 +185,7 @@ impl StorageBackend for MemoryStorage {
     }
 
     fn monotonic_time(&self) -> f64 {
-        self.start_time.elapsed().as_secs_f64()
+        self.clock.now_secs()
     }
 }
 
@@ -184,6 +210,7 @@ impl StorageBackend for MemoryStorage {
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct NullStorage {
+    #[cfg(feature = "std")]
     start_time: Instant,
 }
 
@@ -191,6 +218,7 @@ impl NullStorage {
     /// Create a new null storage instance
     pub fn new() -> Self {
         Self {
+            #[cfg(feature = "std")]
             start_time: Instant::now(),
         }
     }
@@ -232,7 +260,14 @@ impl StorageBackend for NullStorage {
     }
 
     fn monotonic_time(&self) -> f64 {
-        self.start_time.elapsed().as_secs_f64()
+        #[cfg(feature = "std")]
+        {
+            self.start_time.elapsed().as_secs_f64()
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            0.0
+        }
     }
 }
 
@@ -286,7 +321,7 @@ mod tests {
             storage.record_success("test_circuit", i as f64 * 0.01);
         }
 
-        let events = storage.events.read().unwrap();
+        let events = storage.events.read();
         let circuit_events = events.get("test_circuit").unwrap();
 
         assert!(circuit_events.len() <= 100);
@@ -300,7 +335,7 @@ mod tests {
             storage.record_success("test_circuit", i as f64 * 0.01);
         }
 
-        let events = storage.events.read().unwrap();
+        let events = storage.events.read();
         let circuit_events = events.get("test_circuit").unwrap();
 
         assert!(

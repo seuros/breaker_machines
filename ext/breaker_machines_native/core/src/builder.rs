@@ -7,7 +7,8 @@ use crate::{
     circuit::{CircuitBreaker, CircuitContext, Config},
     classifier::FailureClassifier,
 };
-use std::sync::Arc;
+use alloc::string::String;
+use alloc::sync::Arc;
 
 /// Builder for creating circuit breakers with fluent API
 pub struct CircuitBuilder {

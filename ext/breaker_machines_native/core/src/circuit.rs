@@ -6,8 +6,10 @@ use crate::{
     StorageBackend, bulkhead::BulkheadSemaphore, callbacks::Callbacks,
     classifier::FailureClassifier, errors::CircuitError,
 };
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::sync::Arc;
 use state_machines::state_machine;
-use std::sync::Arc;
 
 /// Circuit breaker configuration
 #[derive(Debug, Clone)]
@@ -185,8 +187,8 @@ impl Default for CircuitContext {
     }
 }
 
-impl std::fmt::Debug for CircuitContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for CircuitContext {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CircuitContext")
             .field("name", &self.name)
             .field("config", &self.config)
@@ -325,7 +327,10 @@ impl Circuit<Open> {
                 multiplier: 1.0,
                 max_delay_ms: (ctx.config.half_open_timeout_secs * 1000.0) as u64,
             };
+            #[cfg(feature = "std")]
             let timeout_ms = policy.calculate_delay(1, ctx.config.jitter_factor);
+            #[cfg(not(feature = "std"))]
+            let timeout_ms = policy.base_delay_ms;
             (timeout_ms as f64) / 1000.0
         } else {
             ctx.config.half_open_timeout_secs
@@ -345,13 +350,10 @@ pub struct CircuitBreaker {
 impl CircuitBreaker {
     /// Create a new circuit breaker (use builder() for more options)
     pub fn new(name: String, config: Config) -> Self {
-        let storage = Arc::new(crate::MemoryStorage::new());
         let context = CircuitContext {
             name,
             config,
-            storage,
-            failure_classifier: None,
-            bulkhead: None,
+            ..CircuitContext::default()
         };
 
         let machine = DynamicCircuit::new(context.clone());
@@ -529,7 +531,7 @@ impl CircuitBreaker {
                 let should_trip = if let Some(classifier) = &self.context.failure_classifier {
                     let ctx = crate::classifier::FailureContext {
                         circuit_name: &self.context.name,
-                        error: &e as &dyn std::any::Any,
+                        error: &e as &dyn core::any::Any,
                         duration,
                     };
                     classifier.should_trip(&ctx)

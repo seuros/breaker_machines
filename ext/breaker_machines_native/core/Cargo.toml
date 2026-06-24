@@ -14,15 +14,20 @@ categories = ["concurrency"]
 crate-type = ["lib"]
 
 [features]
-async = ["state-machines/async"]
+default = ["std"]
+std = ["alloc", "state-machines/std", "chrono-machines/std"]
+alloc = ["chrono-machines/alloc"]
+async = ["std", "state-machines/async", "chrono-machines/async"]
 inspect = ["state-machines/inspect"]
 
 [lints]
 workspace = true
 
 [dependencies]
-state-machines = "0.20"
-chrono-machines = "0.3"
+state-machines = { version = "0.20", default-features = false }
+chrono-machines = { version = "0.4", default-features = false }
+hashbrown = "0.15"
+spin = { version = "0.12", default-features = false, features = ["rwlock"] }
 
 [dev-dependencies]
 pollster = "0.4"

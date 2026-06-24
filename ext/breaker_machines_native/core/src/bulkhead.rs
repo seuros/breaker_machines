@@ -3,8 +3,8 @@
 //! This module provides a semaphore-based bulkhead pattern to limit
 //! the number of concurrent calls through a circuit breaker.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// A semaphore-based bulkhead for limiting concurrent operations
 ///

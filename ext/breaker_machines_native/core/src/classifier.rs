@@ -3,7 +3,7 @@
 //! This module provides traits and types for determining which errors
 //! should trip the circuit breaker vs. being ignored.
 
-use std::any::Any;
+use core::any::Any;
 
 /// Context provided to failure classifiers for error evaluation
 #[derive(Debug)]
@@ -38,7 +38,7 @@ pub struct FailureContext<'a> {
 ///     }
 /// }
 /// ```
-pub trait FailureClassifier: Send + Sync + std::fmt::Debug {
+pub trait FailureClassifier: Send + Sync + core::fmt::Debug {
     /// Determine if this error should count as a failure for circuit breaker logic
     ///
     /// Returns `true` if the error should trip the circuit, `false` to ignore it.
@@ -90,11 +90,11 @@ where
     }
 }
 
-impl<F> std::fmt::Debug for PredicateClassifier<F>
+impl<F> core::fmt::Debug for PredicateClassifier<F>
 where
     F: Fn(&FailureContext<'_>) -> bool + Send + Sync,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PredicateClassifier")
             .field("predicate", &"<closure>")
             .finish()
