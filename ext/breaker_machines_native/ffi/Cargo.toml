@@ -6,6 +6,7 @@ authors = ["Abdelkader Boudih <oss@seuros.com>"]
 license = "MIT"
 description = "Ruby FFI bindings for breaker-machines circuit breaker"
 repository = "https://github.com/seuros/breaker_machines"
+publish = false
 
 [lib]
 crate-type = ["cdylib"]
