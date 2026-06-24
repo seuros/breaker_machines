@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.14.0...breaker_machines/v0.15.0) (2026-06-24)
+
+
+### Features
+
+* **native:** no_std support ([9256931](https://github.com/seuros/breaker_machines/commit/92569311d604f40b3ada7ceccd16ab49a49bab23))
+
 ## [0.14.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.13.2...breaker_machines/v0.14.0) (2026-06-24)
 
 
