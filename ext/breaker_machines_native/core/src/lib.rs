@@ -39,6 +39,11 @@ pub mod classifier;
 pub mod errors;
 pub mod storage;
 
+#[cfg(feature = "async")]
+pub mod async_circuit;
+
+#[cfg(feature = "async")]
+pub use async_circuit::{AsyncCallOptions, AsyncCircuitBreaker};
 pub use builder::CircuitBuilder;
 pub use bulkhead::{BulkheadGuard, BulkheadSemaphore};
 pub use circuit::{CallOptions, CircuitBreaker, Config, FallbackContext};

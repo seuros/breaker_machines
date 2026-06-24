@@ -182,6 +182,12 @@ impl CircuitBuilder {
 
         CircuitBreaker::with_context_and_callbacks(context, self.callbacks)
     }
+
+    /// Build an async-friendly circuit breaker wrapper.
+    #[cfg(feature = "async")]
+    pub fn build_async(self) -> crate::async_circuit::AsyncCircuitBreaker {
+        crate::async_circuit::AsyncCircuitBreaker::from_circuit(self.build())
+    }
 }
 
 #[cfg(test)]

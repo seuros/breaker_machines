@@ -14,6 +14,7 @@ categories = ["concurrency"]
 crate-type = ["lib"]
 
 [features]
+async = ["state-machines/async"]
 inspect = ["state-machines/inspect"]
 
 [lints]
@@ -22,3 +23,6 @@ workspace = true
 [dependencies]
 state-machines = "0.20"
 chrono-machines = "0.3"
+
+[dev-dependencies]
+pollster = "0.4"

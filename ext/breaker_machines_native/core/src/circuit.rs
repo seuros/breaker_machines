@@ -121,6 +121,48 @@ where
     }
 }
 
+pub(crate) struct CallPermit {
+    _bulkhead: Option<crate::BulkheadGuard>,
+    half_open_probe: bool,
+}
+
+impl CallPermit {
+    pub(crate) fn half_open_probe(&self) -> bool {
+        self.half_open_probe
+    }
+}
+
+pub(crate) enum CallGate {
+    Execute(CallPermit),
+    Open {
+        _permit: CallPermit,
+        context: FallbackContext,
+    },
+}
+
+/// RAII guard that releases a reserved half-open probe slot if the protected
+/// operation panics. On the normal path `complete_call` performs the release,
+/// so the guard is disarmed before it runs. Without this, a panicking probe
+/// would leak `in_flight` and wedge the circuit in HalfOpen forever.
+struct HalfOpenProbeGuard<'a> {
+    circuit: &'a mut CircuitBreaker,
+    armed: bool,
+}
+
+impl HalfOpenProbeGuard<'_> {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for HalfOpenProbeGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.circuit.release_half_open_probe();
+        }
+    }
+}
+
 /// Circuit breaker context - shared data across all states
 #[derive(Clone)]
 pub struct CircuitContext {
@@ -171,6 +213,7 @@ pub struct OpenData {
 #[derive(Debug, Clone, Default)]
 pub struct HalfOpenData {
     pub consecutive_successes: usize,
+    pub in_flight: usize,
 }
 
 // Define the circuit breaker state machine with dynamic mode
@@ -351,8 +394,31 @@ impl CircuitBreaker {
     {
         let (f, options) = input.into_call_options();
 
+        match self.prepare_call()? {
+            CallGate::Execute(permit) => self.execute_call(permit, f),
+            CallGate::Open {
+                _permit: permit,
+                context,
+            } => {
+                // Release the bulkhead permit before the fallback runs so a slow
+                // fallback doesn't occupy a concurrency slot (matches async path).
+                drop(permit);
+
+                if let Some(fallback) = options.fallback {
+                    return fallback(&context).map_err(CircuitError::Execution);
+                }
+
+                Err(CircuitError::Open {
+                    circuit: context.circuit_name,
+                    opened_at: context.opened_at,
+                })
+            }
+        }
+    }
+
+    pub(crate) fn prepare_call<E>(&mut self) -> Result<CallGate, CircuitError<E>> {
         // Try to acquire bulkhead permit if configured
-        let _guard = if let Some(bulkhead) = &self.context.bulkhead {
+        let permit = if let Some(bulkhead) = &self.context.bulkhead {
             match bulkhead.try_acquire() {
                 Some(guard) => Some(guard),
                 None => {
@@ -364,6 +430,10 @@ impl CircuitBreaker {
             }
         } else {
             None
+        };
+        let mut permit = CallPermit {
+            _bulkhead: permit,
+            half_open_probe: false,
         };
 
         // Check for timeout-based Open -> HalfOpen transition
@@ -379,43 +449,74 @@ impl CircuitBreaker {
             CircuitState::Open => {
                 let opened_at = self.machine.open_data().map(|d| d.opened_at).unwrap_or(0.0);
 
-                // If fallback is provided, use it instead of returning error
-                if let Some(fallback) = options.fallback {
-                    let ctx = FallbackContext {
+                Ok(CallGate::Open {
+                    _permit: permit,
+                    context: FallbackContext {
                         circuit_name: self.context.name.clone(),
                         opened_at,
                         state: "Open",
-                    };
-                    return fallback(&ctx).map_err(CircuitError::Execution);
-                }
-
-                Err(CircuitError::Open {
-                    circuit: self.context.name.clone(),
-                    opened_at,
+                    },
                 })
             }
             CircuitState::HalfOpen => {
                 // Check if we've reached the success threshold
-                if let Some(data) = self.machine.half_open_data()
-                    && data.consecutive_successes >= self.context.config.success_threshold
-                {
-                    return Err(CircuitError::HalfOpenLimitReached {
-                        circuit: self.context.name.clone(),
-                    });
+                if let Some(data) = self.machine.half_open_data_mut() {
+                    let reserved_probes = data.consecutive_successes + data.in_flight;
+                    if reserved_probes >= self.context.config.success_threshold {
+                        return Err(CircuitError::HalfOpenLimitReached {
+                            circuit: self.context.name.clone(),
+                        });
+                    }
+
+                    data.in_flight += 1;
+                    permit.half_open_probe = true;
                 }
-                self.execute_call(f)
+                Ok(CallGate::Execute(permit))
             }
-            _ => self.execute_call(f),
+            _ => Ok(CallGate::Execute(permit)),
         }
     }
 
     fn execute_call<T, E: 'static>(
         &mut self,
+        permit: CallPermit,
         f: Box<dyn FnOnce() -> Result<T, E>>,
     ) -> Result<T, CircuitError<E>> {
-        let start = self.context.storage.monotonic_time();
+        let half_open_probe = permit.half_open_probe();
+        let start = self.start_time();
 
-        match f() {
+        // Guard the reserved probe slot across `f()`: if it panics, the guard's
+        // Drop releases it; on success we disarm and let `complete_call` release.
+        let result = {
+            let mut probe_guard = HalfOpenProbeGuard {
+                circuit: self,
+                armed: half_open_probe,
+            };
+            let result = f();
+            probe_guard.disarm();
+            result
+        };
+
+        let output = self.complete_call(start, result, half_open_probe);
+        drop(permit);
+        output
+    }
+
+    pub(crate) fn start_time(&self) -> f64 {
+        self.context.storage.monotonic_time()
+    }
+
+    pub(crate) fn complete_call<T, E: 'static>(
+        &mut self,
+        start: f64,
+        result: Result<T, E>,
+        half_open_probe: bool,
+    ) -> Result<T, CircuitError<E>> {
+        if half_open_probe {
+            self.release_half_open_probe();
+        }
+
+        match result {
             Ok(val) => {
                 let duration = self.context.storage.monotonic_time() - start;
                 self.record_success_and_maybe_close(duration);
@@ -444,6 +545,12 @@ impl CircuitBreaker {
 
                 Err(CircuitError::Execution(e))
             }
+        }
+    }
+
+    pub(crate) fn release_half_open_probe(&mut self) {
+        if let Some(data) = self.machine.half_open_data_mut() {
+            data.in_flight = data.in_flight.saturating_sub(1);
         }
     }
 
@@ -1244,6 +1351,70 @@ mod tests {
                 .expect("HalfOpen data")
                 .consecutive_successes,
             1
+        );
+    }
+
+    #[test]
+    fn test_panicking_probe_does_not_wedge_half_open() {
+        let mut circuit = CircuitBreaker::builder("test")
+            .failure_threshold(1)
+            .half_open_timeout_secs(0.001)
+            .success_threshold(1)
+            .build();
+
+        // Open the circuit.
+        let _ = circuit.call(|| Err::<(), _>("error"));
+        assert!(circuit.is_open());
+
+        // Move to HalfOpen.
+        if let Some(data) = circuit.machine.open_data_mut() {
+            data.opened_at = circuit.context.storage.monotonic_time();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        // A probe that panics must release its reserved in_flight slot.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            circuit.call(|| -> Result<(), String> { panic!("boom") })
+        }));
+        assert!(result.is_err(), "closure should have panicked");
+
+        // Clear the failure window so the next probe can succeed and close.
+        circuit.context.storage.clear("test");
+
+        // Circuit must not be stuck rejecting every probe with HalfOpenLimitReached.
+        let recovered = circuit.call(|| Ok::<_, String>("ok"));
+        assert!(
+            recovered.is_ok(),
+            "probe slot leaked after panic: {recovered:?}"
+        );
+        assert!(circuit.is_closed(), "circuit should recover and close");
+    }
+
+    #[test]
+    fn test_open_fallback_releases_bulkhead_permit() {
+        use std::sync::Arc;
+
+        let bulkhead = Arc::new(BulkheadSemaphore::new(1));
+        let mut circuit = CircuitBreaker::builder("test").failure_threshold(1).build();
+        circuit.context.bulkhead = Some(bulkhead.clone());
+
+        // Open the circuit.
+        let _ = circuit.call(|| Err::<(), _>("error"));
+        assert!(circuit.is_open());
+
+        // Fallback runs while open; the bulkhead permit must be released first so
+        // the fallback body can itself acquire a permit.
+        let result = circuit.call((
+            || Ok::<bool, String>(false),
+            CallOptions::new().with_fallback(move |_ctx| {
+                let acquired = bulkhead.try_acquire().is_some();
+                Ok::<bool, String>(acquired)
+            }),
+        ));
+
+        assert!(
+            result.unwrap(),
+            "fallback should be able to acquire the released permit"
         );
     }
 

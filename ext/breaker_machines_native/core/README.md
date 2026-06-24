@@ -12,6 +12,7 @@ This crate provides a complete, standalone circuit breaker that can be used inde
 - **Builder API**: Ergonomic fluent configuration interface
 - **Callbacks**: Type-safe hooks for state transitions (`on_open`, `on_close`, `on_half_open`)
 - **Fallback Support**: Return default values when circuit is open
+- **Async Support**: Optional `AsyncCircuitBreaker` for protecting futures
 - **Rate-based Thresholds**: Trip circuit based on failure percentage, not just absolute counts
 - **Exception Filtering**: Classify which errors should trip the circuit using custom predicates
 - **Bulkheading**: Limit concurrent operations to prevent resource exhaustion
@@ -114,6 +115,43 @@ let result = circuit.call((
 // Fallback is only called when circuit is Open
 // Normal calls work as before: circuit.call(|| api_request())
 ```
+
+### Async Support
+
+Enable the `async` feature to use `AsyncCircuitBreaker` with Rust futures:
+
+```toml
+[dependencies]
+breaker-machines = { version = "0.13", features = ["async"] }
+```
+
+```rust
+use breaker_machines::{AsyncCallOptions, AsyncCircuitBreaker};
+
+let circuit = AsyncCircuitBreaker::builder("payment_api")
+    .failure_threshold(3)
+    .build_async();
+
+let payment = circuit
+    .call(|| async {
+        payment_client.charge(amount).await
+    })
+    .await?;
+
+let cached = circuit
+    .call_with_options(
+        || async {
+            payment_client.charge(amount).await
+        },
+        AsyncCallOptions::new().with_fallback(|ctx| async move {
+            eprintln!("Circuit '{}' is {}, using cache", ctx.circuit_name, ctx.state);
+            Ok(cached_payment())
+        }),
+    )
+    .await?;
+```
+
+`AsyncCircuitBreaker` is runtime-agnostic. It only locks around short circuit state checks and records outcomes after the protected future completes.
 
 ### Rate-based Thresholds (v0.2.0+)
 
