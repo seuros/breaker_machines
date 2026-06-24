@@ -28,7 +28,7 @@ jobs:
     outputs:
       gem_version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -70,7 +70,7 @@ jobs:
           echo "✓ Found expected gem: $EXPECTED_FILE"
 
       - name: Upload test gem artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v8
         with:
           name: test-ruby-gem
           path: pkg/*.gem
@@ -92,7 +92,7 @@ jobs:
           # Note: aarch64-linux excluded due to cache corruption issues in test workflow
           # It works in release-please.yml, so we'll add it there directly
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Update version for test build
         run: |
@@ -126,7 +126,7 @@ jobs:
           ls -lh "${{ steps.cross.outputs.gem-path }}"
 
       - name: Upload platform gem artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v8
         with:
           name: test-native-gem-${{ matrix.platform }}
           path: ${{ steps.cross.outputs.gem-path }}
@@ -145,7 +145,7 @@ jobs:
           - x86_64-linux
           - x86_64-linux-musl
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: test-native-gem-${{ matrix.platform }}
           path: gems
@@ -197,7 +197,7 @@ jobs:
         platform:
           - x86_64-linux-musl
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: test-native-gem-${{ matrix.platform }}
           path: gems
@@ -239,14 +239,14 @@ jobs:
     if: ${{ inputs.publish_to_github_packages }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.4'
 
       - name: Download all gem artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
