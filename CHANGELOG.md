@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.15.0...breaker_machines/v0.15.1) (2026-06-24)
+
+
+### Bug Fixes
+
+* **ci:** use existing actions/upload-artifact v7 ([269667d](https://github.com/seuros/breaker_machines/commit/269667de6bbda38d4f5cfdaae4cf7c7a74ffe4c4))
+
 ## [0.15.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.14.0...breaker_machines/v0.15.0) (2026-06-24)
 
 
