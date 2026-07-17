@@ -31,98 +31,90 @@ module BreakerMachines
 
       private
 
-      def execute_with_state_check(&block)
-        # Check if we need to transition from open to half-open first
-        if open? && reset_timeout_elapsed?
-          @mutex.with_write_lock do
-            attempt_recovery if open? # Double-check after acquiring lock
-          end
-        end
+      def execute_with_state_check(&)
+        attempt_recovery_if_ready
 
         # Apply bulkheading first, outside of any locks
+        acquired = false
         if @semaphore
           acquired = @semaphore.try_acquire
-          unless acquired
-            # Reject immediately if we can't acquire semaphore
-            return reject_call_bulkhead
-          end
+          return reject_call_bulkhead unless acquired
         end
 
         begin
-          @mutex.with_read_lock do
-            case status_name
-            when :open
-              reject_call
-            when :half_open
-              handle_half_open_status(&block)
-            when :closed
-              handle_closed_status(&block)
-            end
+          admission = admit_call
+          unless admission
+            # An open-circuit fallback is user code and may yield. It must not
+            # retain a bulkhead permit or circuit lock while it runs.
+            @semaphore&.release if acquired
+            acquired = false
+            return reject_call
           end
+
+          execute_call(admission, &)
         ensure
           @semaphore&.release if @semaphore && acquired
         end
       end
 
-      def handle_half_open_status(&)
-        # Atomically increment and get the new value
-        new_attempts = @half_open_attempts.increment
-
-        if new_attempts <= @config[:half_open_calls]
-          execute_call(&)
-        else
-          # This thread lost the race, decrement back and reject
-          @half_open_attempts.decrement
-          reject_call
-        end
-      end
-
-      def handle_closed_status(&)
-        execute_call(&)
-      end
-
-      def execute_call(&block)
+      def execute_call(admission, &)
         # Use async version if fiber_safe is enabled
         if @config[:fiber_safe]
           # Ensure async is loaded and included
           Execution.load_async_support unless respond_to?(:execute_call_async)
-          return execute_call_async(&block)
+          return execute_call_async(admission, &)
         end
 
+        execute_call_sync(admission, &)
+      end
+
+      def execute_call_sync(admission, &)
+        completed = false
         start_time = BreakerMachines.monotonic_time
 
         begin
-          # IMPORTANT: We do NOT implement forceful timeouts as they are inherently unsafe
-          # The timeout configuration is provided for documentation/intent purposes
-          # Users should implement timeouts in their own code using safe mechanisms
-          # (e.g., HTTP client timeouts, database statement timeouts, etc.)
-          # Log a warning if timeout is configured
-          if @config[:timeout] && BreakerMachines.logger && BreakerMachines.config.log_events
-            BreakerMachines.logger.warn(
-              "[BreakerMachines] Circuit '#{@name}' has timeout configured but " \
-              'forceful timeouts are not implemented for safety. ' \
-              'Please use timeout mechanisms provided by your libraries ' \
-              '(e.g., Net::HTTP read_timeout, ActiveRecord statement_timeout).'
-            )
-          end
-
-          # Execute with hedged requests if enabled
-          result = if @config[:hedged_requests] || @config[:backends]
-                     execute_hedged(&block)
-                   else
-                     block.call
-                   end
-
-          record_success(BreakerMachines.monotonic_time - start_time)
-          handle_success
+          result = execute_sync_operation(&)
+          complete_call_success(admission, start_time)
+          completed = true
           result
         rescue *@config[:exceptions] => e
-          record_failure(BreakerMachines.monotonic_time - start_time, e)
-          handle_failure
+          complete_call_failure(admission, start_time, e)
+          completed = true
           raise unless @config[:fallback]
 
           invoke_fallback(e)
+        ensure
+          release_abandoned_admission(admission) unless completed
         end
+      end
+
+      def execute_sync_operation(&)
+        warn_about_sync_timeout
+        return execute_hedged(&) if @config[:hedged_requests] || @config[:backends]
+
+        yield
+      end
+
+      def warn_about_sync_timeout
+        return unless @config[:timeout] && BreakerMachines.logger && BreakerMachines.config.log_events
+
+        # Forceful Ruby timeouts can interrupt code while it holds resources.
+        BreakerMachines.logger.warn(
+          "[BreakerMachines] Circuit '#{@name}' has timeout configured but " \
+          'forceful timeouts are not implemented for safety. ' \
+          'Please use timeout mechanisms provided by your libraries ' \
+          '(e.g., Net::HTTP read_timeout, ActiveRecord statement_timeout).'
+        )
+      end
+
+      def complete_call_success(admission, start_time)
+        record_success(BreakerMachines.monotonic_time - start_time)
+        handle_success(admission)
+      end
+
+      def complete_call_failure(admission, start_time, error)
+        record_failure(BreakerMachines.monotonic_time - start_time, error)
+        handle_failure(admission)
       end
 
       def reject_call
@@ -142,43 +134,6 @@ module BreakerMachines
         raise error unless @config[:fallback]
 
         invoke_fallback(error)
-      end
-
-      def handle_success
-        return unless half_open?
-
-        @mutex.with_write_lock do
-          if half_open?
-            # Check if all allowed half-open calls have succeeded
-            # This ensures the circuit can close even if success_threshold > half_open_calls
-            successful_attempts = @half_open_successes.increment
-
-            # Fast-close logic: Circuit closes if EITHER:
-            # 1. All allowed half-open calls succeeded (conservative approach)
-            # 2. Success threshold is reached (aggressive approach for quick recovery)
-            # This allows flexible configuration - set success_threshold=1 for fast recovery
-            # or success_threshold=half_open_calls for cautious recovery
-            if successful_attempts >= @config[:half_open_calls] || success_threshold_reached?
-              @half_open_attempts.value = 0
-              @half_open_successes.value = 0
-              reset
-            end
-          end
-        end
-      end
-
-      def handle_failure
-        return unless closed? || half_open?
-
-        @mutex.with_write_lock do
-          if closed? && failure_threshold_exceeded?
-            trip
-          elsif half_open?
-            @half_open_attempts.value = 0
-            @half_open_successes.value = 0
-            trip
-          end
-        end
       end
 
       def failure_threshold_exceeded?

@@ -50,6 +50,7 @@ enum AsyncCallGate<'a> {
         permit: CallPermit,
         start: f64,
         probe: HalfOpenProbe<'a>,
+        state_epoch: u64,
     },
     Open {
         permit: CallPermit,
@@ -60,11 +61,16 @@ enum AsyncCallGate<'a> {
 struct HalfOpenProbe<'a> {
     circuit: &'a AsyncCircuitBreaker,
     active: bool,
+    state_epoch: u64,
 }
 
 impl<'a> HalfOpenProbe<'a> {
-    fn new(circuit: &'a AsyncCircuitBreaker, active: bool) -> Self {
-        Self { circuit, active }
+    fn new(circuit: &'a AsyncCircuitBreaker, active: bool, state_epoch: u64) -> Self {
+        Self {
+            circuit,
+            active,
+            state_epoch,
+        }
     }
 
     fn disarm(&mut self) {
@@ -75,7 +81,9 @@ impl<'a> HalfOpenProbe<'a> {
 impl Drop for HalfOpenProbe<'_> {
     fn drop(&mut self) {
         if self.active {
-            self.circuit.lock_inner().release_half_open_probe();
+            self.circuit
+                .lock_inner()
+                .release_half_open_probe(self.state_epoch);
         }
     }
 }
@@ -138,7 +146,8 @@ impl AsyncCircuitBreaker {
             match circuit.prepare_call()? {
                 CallGate::Execute(permit) => AsyncCallGate::Execute {
                     start: circuit.start_time(),
-                    probe: HalfOpenProbe::new(self, permit.half_open_probe()),
+                    probe: HalfOpenProbe::new(self, permit.half_open_probe(), permit.state_epoch()),
+                    state_epoch: permit.state_epoch(),
                     permit,
                 },
                 CallGate::Open {
@@ -153,14 +162,18 @@ impl AsyncCircuitBreaker {
                 permit,
                 start,
                 mut probe,
+                state_epoch,
             } => {
                 let half_open_probe = permit.half_open_probe();
                 let result = operation().await;
                 let output = {
                     let mut circuit = self.lock_inner();
-                    circuit.complete_call(start, result, half_open_probe)
+                    // `complete_call` releases the probe before invoking storage,
+                    // classifiers, or callbacks. Disarming here prevents a panic
+                    // in any of those hooks from releasing another task's slot.
+                    probe.disarm();
+                    circuit.complete_call(start, result, half_open_probe, state_epoch)
                 };
-                probe.disarm();
                 drop(permit);
                 output
             }
@@ -234,6 +247,10 @@ impl AsyncCircuitBreaker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
     fn poll_once<F: Future>(future: Pin<&mut F>) -> std::task::Poll<F::Output> {
         let waker = std::task::Waker::noop();
@@ -375,5 +392,109 @@ mod tests {
         assert!(matches!(result, Err(CircuitError::Open { .. })));
 
         drop(fallback);
+    }
+
+    #[test]
+    fn stale_closed_success_does_not_close_half_open_circuit() {
+        let circuit = AsyncCircuitBreaker::builder("test")
+            .failure_threshold(1)
+            .half_open_timeout_secs(0.0)
+            .success_threshold(1)
+            .build_async();
+        let stale_ready = Arc::new(AtomicBool::new(false));
+        let operation_ready = Arc::clone(&stale_ready);
+        let mut stale_call = Box::pin(circuit.call(move || async move {
+            std::future::poll_fn(move |_context| {
+                if operation_ready.load(Ordering::Acquire) {
+                    std::task::Poll::Ready(Ok::<_, &'static str>("stale success"))
+                } else {
+                    std::task::Poll::Pending
+                }
+            })
+            .await
+        }));
+
+        assert!(matches!(
+            poll_once(stale_call.as_mut()),
+            std::task::Poll::Pending
+        ));
+
+        let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("error") }));
+        assert!(circuit.is_open());
+
+        let mut current_probe =
+            Box::pin(circuit.call(std::future::pending::<Result<(), &'static str>>));
+        assert!(matches!(
+            poll_once(current_probe.as_mut()),
+            std::task::Poll::Pending
+        ));
+        assert_eq!(circuit.state_name(), "HalfOpen");
+
+        stale_ready.store(true, Ordering::Release);
+        assert!(matches!(
+            poll_once(stale_call.as_mut()),
+            std::task::Poll::Ready(Ok("stale success"))
+        ));
+        assert_eq!(circuit.state_name(), "HalfOpen");
+
+        drop(current_probe);
+        let result = pollster::block_on(circuit.call(|| async { Ok::<_, &str>("current") }));
+        assert_eq!(result.unwrap(), "current");
+        assert!(circuit.is_closed());
+    }
+
+    #[test]
+    fn stale_half_open_probe_does_not_affect_new_half_open_generation() {
+        let circuit = AsyncCircuitBreaker::builder("test")
+            .failure_threshold(1)
+            .half_open_timeout_secs(0.0)
+            .success_threshold(2)
+            .build_async();
+
+        let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("initial error") }));
+        assert!(circuit.is_open());
+
+        let stale_ready = Arc::new(AtomicBool::new(false));
+        let operation_ready = Arc::clone(&stale_ready);
+        let mut stale_probe = Box::pin(circuit.call(move || async move {
+            std::future::poll_fn(move |_context| {
+                if operation_ready.load(Ordering::Acquire) {
+                    std::task::Poll::Ready(Ok::<_, &'static str>("stale success"))
+                } else {
+                    std::task::Poll::Pending
+                }
+            })
+            .await
+        }));
+        assert!(matches!(
+            poll_once(stale_probe.as_mut()),
+            std::task::Poll::Pending
+        ));
+
+        let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("probe error") }));
+        assert!(circuit.is_open());
+
+        let mut current_probe =
+            Box::pin(circuit.call(std::future::pending::<Result<(), &'static str>>));
+        assert!(matches!(
+            poll_once(current_probe.as_mut()),
+            std::task::Poll::Pending
+        ));
+        assert_eq!(circuit.state_name(), "HalfOpen");
+
+        stale_ready.store(true, Ordering::Release);
+        assert!(matches!(
+            poll_once(stale_probe.as_mut()),
+            std::task::Poll::Ready(Ok("stale success"))
+        ));
+        drop(current_probe);
+
+        let first = pollster::block_on(circuit.call(|| async { Ok::<_, &str>("first") }));
+        assert_eq!(first.unwrap(), "first");
+        assert_eq!(circuit.state_name(), "HalfOpen");
+
+        let second = pollster::block_on(circuit.call(|| async { Ok::<_, &str>("second") }));
+        assert_eq!(second.unwrap(), "second");
+        assert!(circuit.is_closed());
     }
 }

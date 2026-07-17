@@ -10,6 +10,7 @@ module BreakerMachines
 
       included do
         include Circuit::Configuration
+        include Circuit::Admission
         include Circuit::Execution
         include Circuit::HedgedExecution
         include Circuit::Introspection
@@ -29,15 +30,7 @@ module BreakerMachines
         # Use global default storage if not specified
         @storage = @config[:storage] || create_default_storage
         @metrics = @config[:metrics]
-        @opened_at = Concurrent::AtomicReference.new(nil)
-        @half_open_attempts = Concurrent::AtomicFixnum.new(0)
-        @half_open_successes = Concurrent::AtomicFixnum.new(0)
-        @mutex = Concurrent::ReentrantReadWriteLock.new
-        @last_failure_at = Concurrent::AtomicReference.new(nil)
-        @last_error = Concurrent::AtomicReference.new(nil)
-
-        # Initialize semaphore for bulkheading if max_concurrent is set
-        @semaphore = (Concurrent::Semaphore.new(@config[:max_concurrent]) if @config[:max_concurrent])
+        initialize_runtime_state
 
         restore_status_from_storage if @storage
 
@@ -46,6 +39,19 @@ module BreakerMachines
       end
 
       private
+
+      def initialize_runtime_state
+        @opened_at = Concurrent::AtomicReference.new(nil)
+        @half_open_attempts = Concurrent::AtomicFixnum.new(0)
+        @half_open_successes = Concurrent::AtomicFixnum.new(0)
+        @state_epoch = Concurrent::AtomicFixnum.new(0)
+        @mutex = Concurrent::ReentrantReadWriteLock.new
+        @last_failure_at = Concurrent::AtomicReference.new(nil)
+        @last_error = Concurrent::AtomicReference.new(nil)
+
+        # Initialize semaphore for bulkheading if max_concurrent is set
+        @semaphore = (Concurrent::Semaphore.new(@config[:max_concurrent]) if @config[:max_concurrent])
+      end
 
       def restore_status_from_storage
         stored_status = @storage.get_status(@name)

@@ -18,6 +18,12 @@ With `fiber_safe` mode, BreakerMachines becomes a good citizen in your async env
 - **Natural async/await integration**
 - **No thread blocking** means better concurrency
 
+Circuit locks are held only while admitting a call or applying its result. The
+protected operation and any fallback run outside those locks, so they can yield
+without blocking state transitions. Cancelling a half-open probe releases its
+reserved slot. If a call finishes after the circuit has changed state, its result
+is still recorded in the metrics but cannot transition the newer state.
+
 ## Installation
 
 Add the `async` gem to your Gemfile (only if you want fiber_safe mode):

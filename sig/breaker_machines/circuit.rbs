@@ -2,6 +2,7 @@ module BreakerMachines
   class Circuit
     include StateManagement
     include Configuration
+    include Admission
     include Execution
     include Introspection
     include Callbacks
@@ -14,12 +15,34 @@ module BreakerMachines
     @opened_at: Concurrent::AtomicReference[Float?]
     @half_open_attempts: Concurrent::AtomicFixnum
     @half_open_successes: Concurrent::AtomicFixnum
+    @state_epoch: Concurrent::AtomicFixnum
     @mutex: Concurrent::ReentrantReadWriteLock
     @last_failure_at: Concurrent::AtomicReference[Float?]
     @last_error: Concurrent::AtomicReference[StandardError?]
 
     # State machine status (from StateManagement)
     attr_reader status: (:open | :closed | :half_open)
+  end
+
+  module Admission
+    class Call
+      attr_reader state: (:closed | :half_open)
+      attr_reader state_epoch: Integer
+
+      def self.new: (state: (:closed | :half_open), state_epoch: Integer) -> Call
+      def closed?: () -> bool
+      def half_open?: () -> bool
+    end
+
+    private
+
+    def attempt_recovery_if_ready: () -> void
+    def admit_call: () -> Call?
+    def admit_half_open_call: () -> Call?
+    def admission_current?: (Call admission) -> bool
+    def handle_success: (Call admission) -> void
+    def handle_failure: (Call admission) -> void
+    def release_abandoned_admission: (Call admission) -> void
   end
 
   module StateManagement
@@ -96,13 +119,15 @@ module BreakerMachines
 
     private
 
-    def handle_open_status: () { () -> untyped } -> untyped
-    def handle_half_open_status: () { () -> untyped } -> untyped
-    def handle_closed_status: () { () -> untyped } -> untyped
-    def execute_call: () { () -> untyped } -> untyped
+    def execute_with_state_check: [T] () { () -> T } -> untyped
+    def execute_call: [T] (Admission::Call admission) { () -> T } -> untyped
+    def execute_call_sync: [T] (Admission::Call admission) { () -> T } -> untyped
+    def execute_sync_operation: [T] () { () -> T } -> T
+    def warn_about_sync_timeout: () -> void
+    def complete_call_success: (Admission::Call admission, Float start_time) -> void
+    def complete_call_failure: (Admission::Call admission, Float start_time, Exception error) -> void
     def reject_call: () -> untyped
-    def handle_success: () -> void
-    def handle_failure: () -> void
+    def reject_call_bulkhead: () -> untyped
     def failure_threshold_exceeded?: () -> bool
     def success_threshold_reached?: () -> bool
     def record_success: (Float duration) -> void
