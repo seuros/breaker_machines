@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.2](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.15.1...breaker_machines/v0.15.2) (2026-07-17)
+
+
+### Bug Fixes
+
+* **async:** make circuit calls cancellation-safe ([#69](https://github.com/seuros/breaker_machines/issues/69)) ([859c200](https://github.com/seuros/breaker_machines/commit/859c200a4aa4844c95a37ee2ac5801ae1815f2d7))
+
 ## [0.15.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.15.0...breaker_machines/v0.15.1) (2026-06-24)
 
 
