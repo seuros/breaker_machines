@@ -135,6 +135,123 @@ class FiberSafeTest < ActiveSupport::TestCase
     assert_equal 7, failure_count   # ~1/3 should fail
   end
 
+  def test_yielding_operation_does_not_hold_circuit_lock
+    circuit = BreakerMachines::Circuit.new(:test_unlocked_yield, {
+                                             fiber_safe: true,
+                                             failure_threshold: 3
+                                           })
+    operation_started = false
+    writer = nil
+
+    Async do |parent|
+      operation = parent.async do
+        circuit.wrap do
+          operation_started = true
+          sleep 0.5
+          'success'
+        end
+      end
+
+      parent.sleep(0.001) until operation_started
+
+      writer = Thread.new do
+        circuit.mutex.with_write_lock { true }
+      end
+
+      assert writer.join(0.2), 'write lock should be available while the operation is suspended'
+      assert_equal 'success', operation.wait
+    ensure
+      operation&.wait
+      writer&.join
+    end.wait
+  end
+
+  def test_cancelled_half_open_probe_releases_its_slot
+    circuit = BreakerMachines::Circuit.new(:test_cancelled_probe, {
+                                             fiber_safe: true,
+                                             failure_threshold: 1,
+                                             reset_timeout: 0,
+                                             reset_timeout_jitter: 0,
+                                             half_open_calls: 1,
+                                             success_threshold: 1
+                                           })
+
+    Async do |parent|
+      assert_raises(RuntimeError) { circuit.wrap { raise 'open circuit' } }
+      assert_predicate circuit, :open?
+
+      probe_started = false
+      probe = parent.async do
+        circuit.wrap do
+          probe_started = true
+          sleep 10
+        end
+      end
+
+      parent.sleep(0.001) until probe_started
+
+      assert_predicate circuit, :half_open?
+      assert_equal 1, circuit.half_open_attempts.value
+
+      probe.stop
+      probe.wait
+
+      assert_equal 0, circuit.half_open_attempts.value
+      assert_equal('recovered', circuit.wrap { 'recovered' })
+      assert_predicate circuit, :closed?
+    end.wait
+  end
+
+  def test_stale_closed_result_cannot_close_new_half_open_state
+    circuit = BreakerMachines::Circuit.new(:test_stale_result, {
+                                             fiber_safe: true,
+                                             failure_threshold: 1,
+                                             reset_timeout: 0,
+                                             reset_timeout_jitter: 0,
+                                             half_open_calls: 1,
+                                             success_threshold: 1
+                                           })
+
+    Async do |parent|
+      stale_started = false
+      finish_stale = false
+      stale_call = parent.async do
+        circuit.wrap do
+          stale_started = true
+          sleep 0.001 until finish_stale
+          'stale success'
+        end
+      end
+      parent.sleep(0.001) until stale_started
+
+      assert_raises(RuntimeError) { circuit.wrap { raise 'open circuit' } }
+      assert_predicate circuit, :open?
+
+      probe_started = false
+      finish_probe = false
+      current_probe = parent.async do
+        circuit.wrap do
+          probe_started = true
+          sleep 0.001 until finish_probe
+          'current success'
+        end
+      end
+      parent.sleep(0.001) until probe_started
+
+      assert_predicate circuit, :half_open?
+
+      finish_stale = true
+
+      assert_equal 'stale success', stale_call.wait
+      assert_predicate circuit, :half_open?
+
+      finish_probe = true
+
+      assert_equal 'current success', current_probe.wait
+      assert_predicate circuit, :closed?
+    end.wait
+  end
+
   def test_async_task_fallback
     circuit = BreakerMachines::Circuit.new(:test_async_fallback, {
                                              fiber_safe: true,

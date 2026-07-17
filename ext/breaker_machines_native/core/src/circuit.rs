@@ -126,11 +126,16 @@ where
 pub(crate) struct CallPermit {
     _bulkhead: Option<crate::BulkheadGuard>,
     half_open_probe: bool,
+    state_epoch: u64,
 }
 
 impl CallPermit {
     pub(crate) fn half_open_probe(&self) -> bool {
         self.half_open_probe
+    }
+
+    pub(crate) fn state_epoch(&self) -> u64 {
+        self.state_epoch
     }
 }
 
@@ -149,6 +154,7 @@ pub(crate) enum CallGate {
 struct HalfOpenProbeGuard<'a> {
     circuit: &'a mut CircuitBreaker,
     armed: bool,
+    state_epoch: u64,
 }
 
 impl HalfOpenProbeGuard<'_> {
@@ -160,7 +166,7 @@ impl HalfOpenProbeGuard<'_> {
 impl Drop for HalfOpenProbeGuard<'_> {
     fn drop(&mut self) {
         if self.armed {
-            self.circuit.release_half_open_probe();
+            self.circuit.release_half_open_probe(self.state_epoch);
         }
     }
 }
@@ -345,6 +351,7 @@ pub struct CircuitBreaker {
     machine: DynamicCircuit,
     context: CircuitContext,
     callbacks: Callbacks,
+    state_epoch: u64,
 }
 
 impl CircuitBreaker {
@@ -363,6 +370,7 @@ impl CircuitBreaker {
             machine,
             context,
             callbacks,
+            state_epoch: 0,
         }
     }
 
@@ -377,6 +385,7 @@ impl CircuitBreaker {
             machine,
             context,
             callbacks,
+            state_epoch: 0,
         }
     }
 
@@ -433,18 +442,20 @@ impl CircuitBreaker {
         } else {
             None
         };
-        let mut permit = CallPermit {
-            _bulkhead: permit,
-            half_open_probe: false,
-        };
-
         // Check for timeout-based Open -> HalfOpen transition
         if self.machine.current_state() == CircuitState::Open {
             let _ = self.machine.handle(CircuitEvent::AttemptReset);
             if self.machine.current_state() == CircuitState::HalfOpen {
+                self.advance_state_epoch();
                 self.callbacks.trigger_half_open(&self.context.name);
             }
         }
+
+        let mut permit = CallPermit {
+            _bulkhead: permit,
+            half_open_probe: false,
+            state_epoch: self.state_epoch,
+        };
 
         // Handle based on current state
         match self.machine.current_state() {
@@ -485,6 +496,7 @@ impl CircuitBreaker {
         f: Box<dyn FnOnce() -> Result<T, E>>,
     ) -> Result<T, CircuitError<E>> {
         let half_open_probe = permit.half_open_probe();
+        let state_epoch = permit.state_epoch();
         let start = self.start_time();
 
         // Guard the reserved probe slot across `f()`: if it panics, the guard's
@@ -493,13 +505,14 @@ impl CircuitBreaker {
             let mut probe_guard = HalfOpenProbeGuard {
                 circuit: self,
                 armed: half_open_probe,
+                state_epoch,
             };
             let result = f();
             probe_guard.disarm();
             result
         };
 
-        let output = self.complete_call(start, result, half_open_probe);
+        let output = self.complete_call(start, result, half_open_probe, state_epoch);
         drop(permit);
         output
     }
@@ -513,15 +526,26 @@ impl CircuitBreaker {
         start: f64,
         result: Result<T, E>,
         half_open_probe: bool,
+        state_epoch: u64,
     ) -> Result<T, CircuitError<E>> {
         if half_open_probe {
-            self.release_half_open_probe();
+            self.release_half_open_probe(state_epoch);
         }
+
+        // Async calls may finish after the circuit has moved through one or
+        // more states. Their outcomes still belong in the rolling metrics, but
+        // they must not drive transitions for a newer state generation.
+        let may_transition = state_epoch == self.state_epoch;
 
         match result {
             Ok(val) => {
                 let duration = self.context.storage.monotonic_time() - start;
-                self.record_success_and_maybe_close(duration);
+                self.context
+                    .storage
+                    .record_success(&self.context.name, duration);
+                if may_transition {
+                    self.maybe_close_after_success();
+                }
                 Ok(val)
             }
             Err(e) => {
@@ -542,7 +566,12 @@ impl CircuitBreaker {
 
                 // Only record failure and try to trip if the classifier says we should
                 if should_trip {
-                    self.record_failure_and_maybe_trip(duration);
+                    self.context
+                        .storage
+                        .record_failure(&self.context.name, duration);
+                    if may_transition {
+                        self.maybe_trip_after_failure();
+                    }
                 }
 
                 Err(CircuitError::Execution(e))
@@ -550,8 +579,10 @@ impl CircuitBreaker {
         }
     }
 
-    pub(crate) fn release_half_open_probe(&mut self) {
-        if let Some(data) = self.machine.half_open_data_mut() {
+    pub(crate) fn release_half_open_probe(&mut self, state_epoch: u64) {
+        if state_epoch == self.state_epoch
+            && let Some(data) = self.machine.half_open_data_mut()
+        {
             data.in_flight = data.in_flight.saturating_sub(1);
         }
     }
@@ -562,12 +593,17 @@ impl CircuitBreaker {
             .storage
             .record_success(&self.context.name, duration);
 
+        self.maybe_close_after_success();
+    }
+
+    fn maybe_close_after_success(&mut self) {
         if self.machine.current_state() == CircuitState::HalfOpen {
             if let Some(data) = self.machine.half_open_data_mut() {
                 data.consecutive_successes += 1;
             }
 
             if self.machine.handle(CircuitEvent::Close).is_ok() {
+                self.advance_state_epoch();
                 self.callbacks.trigger_close(&self.context.name);
             }
         }
@@ -579,6 +615,10 @@ impl CircuitBreaker {
             .storage
             .record_failure(&self.context.name, duration);
 
+        self.maybe_trip_after_failure();
+    }
+
+    fn maybe_trip_after_failure(&mut self) {
         let result = self.machine.handle(CircuitEvent::Trip);
         if result.is_ok() {
             self.mark_open();
@@ -634,14 +674,20 @@ impl CircuitBreaker {
         self.context.storage.clear(&self.context.name);
         // Recreate machine in Closed state
         self.machine = DynamicCircuit::new(self.context.clone());
+        self.advance_state_epoch();
     }
 
     /// Apply Open-state bookkeeping (timestamp + callback)
     fn mark_open(&mut self) {
+        self.advance_state_epoch();
         if let Some(data) = self.machine.open_data_mut() {
             data.opened_at = self.context.storage.monotonic_time();
         }
         self.callbacks.trigger_open(&self.context.name);
+    }
+
+    fn advance_state_epoch(&mut self) {
+        self.state_epoch = self.state_epoch.wrapping_add(1);
     }
 }
 

@@ -5,6 +5,7 @@
 //! - State machine for circuit breaker lifecycle (Closed → Open → HalfOpen)
 //! - Monotonic time tracking to prevent NTP clock skew issues
 //! - Configurable failure thresholds and timeouts
+//! - Runtime-agnostic async calls behind the `async` feature
 //!
 //! # Example
 //!
@@ -30,6 +31,12 @@
 //!     println!("Circuit is open, skipping call");
 //! }
 //! ```
+//!
+//! # Async
+//!
+//! Enable the `async` feature to protect futures with `AsyncCircuitBreaker`.
+//! The protected future is never polled while the circuit's state lock is held,
+//! and cancellation safely releases any reserved bulkhead or half-open slot.
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
@@ -57,9 +64,9 @@ pub use circuit::{CallOptions, CircuitBreaker, Config, FallbackContext};
 pub use classifier::{DefaultClassifier, FailureClassifier, FailureContext, PredicateClassifier};
 pub use errors::CircuitError;
 pub use storage::{MemoryStorage, NullStorage, StorageBackend};
-pub use time::{Clock, ZeroClock};
 #[cfg(feature = "std")]
 pub use time::SystemClock;
+pub use time::{Clock, ZeroClock};
 
 /// Event type for circuit breaker operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

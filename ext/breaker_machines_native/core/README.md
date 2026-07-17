@@ -122,7 +122,7 @@ Enable the `async` feature to use `AsyncCircuitBreaker` with Rust futures:
 
 ```toml
 [dependencies]
-breaker-machines = { version = "0.13", features = ["async"] }
+breaker-machines = { version = "0.15", features = ["async"] }
 ```
 
 ```rust
@@ -151,7 +151,11 @@ let cached = circuit
     .await?;
 ```
 
-`AsyncCircuitBreaker` is runtime-agnostic. It only locks around short circuit state checks and records outcomes after the protected future completes.
+`AsyncCircuitBreaker` is runtime-agnostic. It only locks around short circuit
+state checks and records outcomes after the protected future completes. Dropping
+an in-flight call releases its bulkhead permit and half-open probe slot. Results
+from calls admitted before a state transition are still recorded in the rolling
+metrics, but cannot drive transitions in a newer half-open generation.
 
 ### Rate-based Thresholds (v0.2.0+)
 

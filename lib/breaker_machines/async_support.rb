@@ -18,30 +18,34 @@ module BreakerMachines
     end
 
     # Execute a call with async support (fiber-safe mode)
-    def execute_call_async(&)
+    def execute_call_async(admission, &)
+      completed = false
       start_time = BreakerMachines.monotonic_time
 
       begin
-        # Execute with hedged requests if enabled
-        result = if @config[:hedged_requests] || @config[:backends]
-                   execute_hedged(&)
-                 else
-                   execute_with_async_timeout(@config[:timeout], &)
-                 end
+        result = execute_async_operation(&)
 
-        record_success(BreakerMachines.monotonic_time - start_time)
-        handle_success
+        complete_call_success(admission, start_time)
+        completed = true
         result
       rescue StandardError => e
         # Re-raise if it's not an async timeout or configured exception
         raise unless e.is_a?(async_timeout_error_class) || @config[:exceptions].any? { |klass| e.is_a?(klass) }
 
-        record_failure(BreakerMachines.monotonic_time - start_time, e)
-        handle_failure
+        complete_call_failure(admission, start_time, e)
+        completed = true
         raise unless @config[:fallback]
 
         invoke_fallback_with_async(e)
+      ensure
+        release_abandoned_admission(admission) unless completed
       end
+    end
+
+    def execute_async_operation(&)
+      return execute_hedged(&) if @config[:hedged_requests] || @config[:backends]
+
+      execute_with_async_timeout(@config[:timeout], &)
     end
 
     # Execute a block with optional timeout using modern Async API
@@ -60,14 +64,7 @@ module BreakerMachines
       when BreakerMachines::DSL::ParallelFallbackWrapper
         invoke_parallel_fallbacks(@config[:fallback].fallbacks, error)
       when Proc
-        result = if @config[:owner]
-                   @config[:owner].instance_exec(error, &@config[:fallback])
-                 else
-                   @config[:fallback].call(error)
-                 end
-
-        # If the fallback returns an Async::Task, wait for it
-        result.is_a?(::Async::Task) ? result.wait : result
+        invoke_proc_fallback_async(@config[:fallback], error)
       when Array
         # Try each fallback in order until one succeeds
         last_error = error
@@ -84,6 +81,16 @@ module BreakerMachines
     end
 
     private
+
+    def invoke_proc_fallback_async(fallback, error)
+      result = if @config[:owner]
+                 @config[:owner].instance_exec(error, &fallback)
+               else
+                 fallback.call(error)
+               end
+
+      result.is_a?(::Async::Task) ? result.wait : result
+    end
 
     def invoke_single_fallback_async(fallback, error)
       case fallback
