@@ -14,12 +14,13 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
-type BoxFutureResult<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
-type AsyncFallbackFn<T, E> = Box<dyn FnOnce(FallbackContext) -> BoxFutureResult<T, E> + Send>;
+pub(crate) type BoxFutureResult<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
+pub(crate) type AsyncFallbackFn<T, E> =
+    Box<dyn FnOnce(FallbackContext) -> BoxFutureResult<T, E> + Send>;
 
 /// Options for async circuit breaker calls.
 pub struct AsyncCallOptions<T, E> {
-    fallback: Option<AsyncFallbackFn<T, E>>,
+    pub(crate) fallback: Option<AsyncFallbackFn<T, E>>,
 }
 
 impl<T, E> Default for AsyncCallOptions<T, E> {

@@ -76,6 +76,15 @@ impl CircuitBuilder {
         self
     }
 
+    /// Set the lifetime of a distributed half-open probe lease.
+    ///
+    /// If the elected node crashes or its future is cancelled, another node
+    /// may claim the probe after this duration.
+    pub fn probe_timeout_secs(mut self, seconds: f64) -> Self {
+        self.config.probe_timeout_secs = seconds;
+        self
+    }
+
     /// Set the jitter factor (0.0 = no jitter, 1.0 = full jitter)
     /// Uses chrono-machines formula: timeout * (1 - jitter + rand * jitter)
     pub fn jitter_factor(mut self, factor: f64) -> Self {
@@ -188,6 +197,23 @@ impl CircuitBuilder {
     #[cfg(feature = "async")]
     pub fn build_async(self) -> crate::async_circuit::AsyncCircuitBreaker {
         crate::async_circuit::AsyncCircuitBreaker::from_circuit(self.build())
+    }
+
+    /// Build an async breaker whose FSM and probe election live in a shared
+    /// state-level storage backend.
+    #[cfg(feature = "async")]
+    pub fn build_distributed(
+        self,
+        storage: Arc<dyn crate::AsyncStorageBackend>,
+    ) -> crate::DistributedCircuitBreaker {
+        crate::DistributedCircuitBreaker::from_parts(
+            self.name,
+            self.config,
+            storage,
+            self.failure_classifier,
+            self.bulkhead,
+            self.callbacks,
+        )
     }
 }
 

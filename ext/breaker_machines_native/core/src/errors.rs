@@ -5,6 +5,8 @@ use alloc::string::String;
 use core::error::Error;
 use core::fmt;
 
+use crate::storage::StorageError;
+
 /// Errors that can occur during circuit breaker operations
 #[derive(Debug)]
 pub enum CircuitError<E = Box<dyn Error + Send + Sync>> {
@@ -14,6 +16,8 @@ pub enum CircuitError<E = Box<dyn Error + Send + Sync>> {
     HalfOpenLimitReached { circuit: String },
     /// Bulkhead is at capacity, cannot acquire permit
     BulkheadFull { circuit: String, limit: usize },
+    /// Distributed state storage failed.
+    Storage(StorageError),
     /// The wrapped operation failed
     Execution(E),
 }
@@ -30,6 +34,7 @@ impl<E: fmt::Display> fmt::Display for CircuitError<E> {
             CircuitError::BulkheadFull { circuit, limit } => {
                 write!(f, "Circuit '{circuit}' bulkhead is full (limit: {limit})")
             }
+            CircuitError::Storage(error) => write!(f, "Circuit storage failed: {error}"),
             CircuitError::Execution(e) => write!(f, "Circuit execution failed: {e}"),
         }
     }
@@ -38,6 +43,7 @@ impl<E: fmt::Display> fmt::Display for CircuitError<E> {
 impl<E: Error + 'static> Error for CircuitError<E> {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            CircuitError::Storage(error) => Some(error),
             CircuitError::Execution(e) => Some(e),
             _ => None,
         }

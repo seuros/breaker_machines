@@ -13,11 +13,12 @@ This crate provides a complete, standalone circuit breaker that can be used inde
 - **Callbacks**: Type-safe hooks for state transitions (`on_open`, `on_close`, `on_half_open`)
 - **Fallback Support**: Return default values when circuit is open
 - **Async Support**: Optional `AsyncCircuitBreaker` for protecting futures
+- **Distributed State**: Optional storage-owned FSM, cooldown, generations, and fenced probe leases
 - **Rate-based Thresholds**: Trip circuit based on failure percentage, not just absolute counts
 - **Exception Filtering**: Classify which errors should trip the circuit using custom predicates
 - **Bulkheading**: Limit concurrent operations to prevent resource exhaustion
 - **Jitter Support**: Configurable jitter using [chrono-machines](https://crates.io/crates/chrono-machines) to prevent thundering herd
-- **Storage Abstraction**: Pluggable backends via `StorageBackend` trait
+- **Storage Abstraction**: Local metrics via `StorageBackend`; distributed coordination via `AsyncStorageBackend`
 - **Zero-cost**: Optimized for high-performance applications
 
 ## Performance
@@ -156,6 +157,52 @@ state checks and records outcomes after the protected future completes. Dropping
 an in-flight call releases its bulkhead permit and half-open probe slot. Results
 from calls admitted before a state transition are still recorded in the rolling
 metrics, but cannot drive transitions in a newer half-open generation.
+
+### Distributed Async State
+
+`AsyncCircuitBreaker` intentionally owns a process-local FSM. Use
+`DistributedCircuitBreaker` when multiple gateways must share one circuit:
+
+```toml
+[dependencies]
+breaker-machines = { version = "0.16", features = ["async"] }
+```
+
+```rust
+use breaker_machines::{CircuitBreaker, MemoryStorage};
+use std::sync::Arc;
+
+let state_store = Arc::new(MemoryStorage::new());
+
+// In production, each process builds this with an AsyncStorageBackend adapter
+// pointing at the same Redis, database, or coordination service.
+let gateway = CircuitBreaker::builder("payment_api")
+    .failure_threshold(5)
+    .half_open_timeout_secs(30.0)
+    .probe_timeout_secs(5.0)
+    .success_threshold(2)
+    .build_distributed(state_store);
+
+let payment = gateway
+    .call(|| async { payment_client.charge(amount).await })
+    .await?;
+```
+
+The backend owns the complete control-plane record: FSM state, generation,
+`opened_at`, `retry_at`, rolling outcomes, half-open successes, and the active
+probe lease. Its operations are asynchronous and atomic per circuit key:
+
+- `record_outcome` updates the rolling window and performs a fenced open transition.
+- `try_begin_probe` checks cooldown using the backend clock and elects one node.
+- `complete_probe` accepts only the current generation and fencing token.
+- `reset` advances the generation so old calls cannot mutate new state.
+
+Probe leases expire. If the elected process crashes or its call future is
+cancelled, another gateway can take over after `probe_timeout_secs`. A custom
+Redis or database adapter must use server-side time and a transaction, script,
+or compare-and-swap primitive to satisfy the `AsyncStorageBackend` atomicity
+contract. `MemoryStorage` provides the same semantics for tests and for
+multi-worker coordination inside one process.
 
 ### Rate-based Thresholds (v0.2.0+)
 
