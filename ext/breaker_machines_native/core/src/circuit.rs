@@ -34,6 +34,11 @@ pub struct Config {
     /// Number of successes required in HalfOpen to close the circuit
     pub success_threshold: usize,
 
+    /// Maximum lifetime of a distributed half-open probe lease. A different
+    /// node may take over after this duration if the elected caller crashes or
+    /// its call future is cancelled.
+    pub probe_timeout_secs: f64,
+
     /// Jitter factor for half_open_timeout (0.0 = no jitter, 1.0 = full jitter)
     /// Uses chrono-machines formula: timeout * (1 - jitter + rand * jitter)
     pub jitter_factor: f64,
@@ -48,7 +53,28 @@ impl Default for Config {
             failure_window_secs: 60.0,
             half_open_timeout_secs: 30.0,
             success_threshold: 2,
+            probe_timeout_secs: 30.0,
             jitter_factor: 0.0,
+        }
+    }
+}
+
+impl Config {
+    pub(crate) fn half_open_delay_secs(&self) -> f64 {
+        if self.jitter_factor > 0.0 {
+            let policy = chrono_machines::Policy {
+                max_attempts: 1,
+                base_delay_ms: (self.half_open_timeout_secs * 1000.0) as u64,
+                multiplier: 1.0,
+                max_delay_ms: (self.half_open_timeout_secs * 1000.0) as u64,
+            };
+            #[cfg(feature = "std")]
+            let timeout_ms = policy.calculate_delay(1, self.jitter_factor);
+            #[cfg(not(feature = "std"))]
+            let timeout_ms = policy.base_delay_ms;
+            (timeout_ms as f64) / 1000.0
+        } else {
+            self.half_open_timeout_secs
         }
     }
 }
@@ -325,22 +351,7 @@ impl Circuit<Open> {
         let current_time = ctx.storage.monotonic_time();
         let elapsed = current_time - data.opened_at;
 
-        // Apply jitter using chrono-machines if jitter_factor > 0
-        let timeout_secs = if ctx.config.jitter_factor > 0.0 {
-            let policy = chrono_machines::Policy {
-                max_attempts: 1,
-                base_delay_ms: (ctx.config.half_open_timeout_secs * 1000.0) as u64,
-                multiplier: 1.0,
-                max_delay_ms: (ctx.config.half_open_timeout_secs * 1000.0) as u64,
-            };
-            #[cfg(feature = "std")]
-            let timeout_ms = policy.calculate_delay(1, ctx.config.jitter_factor);
-            #[cfg(not(feature = "std"))]
-            let timeout_ms = policy.base_delay_ms;
-            (timeout_ms as f64) / 1000.0
-        } else {
-            ctx.config.half_open_timeout_secs
-        };
+        let timeout_secs = ctx.config.half_open_delay_secs();
 
         elapsed >= timeout_secs
     }

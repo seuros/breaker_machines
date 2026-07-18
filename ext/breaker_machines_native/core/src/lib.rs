@@ -6,6 +6,7 @@
 //! - Monotonic time tracking to prevent NTP clock skew issues
 //! - Configurable failure thresholds and timeouts
 //! - Runtime-agnostic async calls behind the `async` feature
+//! - Storage-owned distributed state and fenced probe election behind `async`
 //!
 //! # Example
 //!
@@ -37,6 +38,10 @@
 //! Enable the `async` feature to protect futures with `AsyncCircuitBreaker`.
 //! The protected future is never polled while the circuit's state lock is held,
 //! and cancellation safely releases any reserved bulkhead or half-open slot.
+//!
+//! Use `DistributedCircuitBreaker` with an `AsyncStorageBackend` when the
+//! FSM, cooldown timestamp, and half-open probe election must be shared across
+//! processes. The backend is authoritative; gateways keep no local FSM cache.
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
@@ -55,6 +60,8 @@ pub mod time;
 
 #[cfg(feature = "async")]
 pub mod async_circuit;
+#[cfg(feature = "async")]
+pub mod distributed;
 
 #[cfg(feature = "async")]
 pub use async_circuit::{AsyncCallOptions, AsyncCircuitBreaker};
@@ -62,8 +69,16 @@ pub use builder::CircuitBuilder;
 pub use bulkhead::{BulkheadGuard, BulkheadSemaphore};
 pub use circuit::{CallOptions, CircuitBreaker, Config, FallbackContext};
 pub use classifier::{DefaultClassifier, FailureClassifier, FailureContext, PredicateClassifier};
+#[cfg(feature = "async")]
+pub use distributed::DistributedCircuitBreaker;
 pub use errors::CircuitError;
-pub use storage::{MemoryStorage, NullStorage, StorageBackend};
+#[cfg(feature = "async")]
+pub use storage::{AsyncStorageBackend, StorageFuture};
+pub use storage::{
+    CircuitSnapshot, FailurePolicy, MemoryStorage, NullStorage, ProbeDecision, ProbeLease,
+    ProbePolicy, SharedCircuitState, StateTransition, StorageBackend, StorageError, StorageUpdate,
+    StoredOutcome,
+};
 #[cfg(feature = "std")]
 pub use time::SystemClock;
 pub use time::{Clock, ZeroClock};

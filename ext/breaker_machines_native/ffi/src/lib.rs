@@ -138,6 +138,7 @@ impl RubyCircuit {
             failure_window_secs,
             half_open_timeout_secs,
             success_threshold,
+            probe_timeout_secs: half_open_timeout_secs,
             jitter_factor,
         };
 
