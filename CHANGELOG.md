@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.15.2...breaker_machines/v0.16.0) (2026-07-18)
+
+
+### Features
+
+* **storage:** add distributed circuit coordination ([#71](https://github.com/seuros/breaker_machines/issues/71)) ([8533a6e](https://github.com/seuros/breaker_machines/commit/8533a6e8cdaaeee4053cab0b70763268224bd801))
+
 ## [0.15.2](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.15.1...breaker_machines/v0.15.2) (2026-07-17)
 
 
