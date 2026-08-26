@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.16.0...breaker-machines-v0.16.1) (2026-08-26)
+
+
+### Bug Fixes
+
+* **deps:** bump chrono-machines to 0.6, hashbrown to 0.17; pin rust 1.98 ([de9da4f](https://github.com/seuros/breaker_machines/commit/de9da4f50b900179e03c47e5aff6fae5bd0aa43c))
+
 ## [0.16.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.15.1...breaker-machines-v0.16.0) (2026-07-18)
 
 
