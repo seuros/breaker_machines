@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.96
+        uses: dtolnay/rust-toolchain@1.98
 
       - name: Cache Rust dependencies
         uses: actions/cache@v6
@@ -130,7 +130,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.96
+        uses: dtolnay/rust-toolchain@1.98
 
       - name: Cache Rust dependencies
         uses: actions/cache@v6
