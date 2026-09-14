@@ -1,7 +1,7 @@
 //! Error types for circuit breaker operations
 
 use alloc::boxed::Box;
-use alloc::string::String;
+use alloc::sync::Arc;
 use core::error::Error;
 use core::fmt;
 
@@ -11,11 +11,11 @@ use crate::storage::StorageError;
 #[derive(Debug)]
 pub enum CircuitError<E = Box<dyn Error + Send + Sync>> {
     /// Circuit is open, calls are being rejected
-    Open { circuit: String, opened_at: f64 },
+    Open { circuit: Arc<str>, opened_at: f64 },
     /// Half-open request limit has been reached
-    HalfOpenLimitReached { circuit: String },
+    HalfOpenLimitReached { circuit: Arc<str> },
     /// Bulkhead is at capacity, cannot acquire permit
-    BulkheadFull { circuit: String, limit: usize },
+    BulkheadFull { circuit: Arc<str>, limit: usize },
     /// Distributed state storage failed.
     Storage(StorageError),
     /// The wrapped operation failed
