@@ -44,6 +44,15 @@ impl<T, E> AsyncCallOptions<T, E> {
         self.fallback = Some(Box::new(move |ctx| Box::pin(fallback(ctx))));
         self
     }
+
+    /// Resolve an open-circuit gate: run the fallback if present, otherwise
+    /// return the rejection error.
+    pub(crate) async fn resolve_open(self, context: FallbackContext) -> Result<T, CircuitError<E>> {
+        match self.fallback {
+            Some(fallback) => fallback(context).await.map_err(CircuitError::Execution),
+            None => Err(context.into_open_error()),
+        }
+    }
 }
 
 enum AsyncCallGate<'a> {
@@ -180,15 +189,7 @@ impl AsyncCircuitBreaker {
             }
             AsyncCallGate::Open { permit, context } => {
                 drop(permit);
-
-                if let Some(fallback) = options.fallback {
-                    return fallback(context).await.map_err(CircuitError::Execution);
-                }
-
-                Err(CircuitError::Open {
-                    circuit: context.circuit_name,
-                    opened_at: context.opened_at,
-                })
+                options.resolve_open(context).await
             }
         }
     }

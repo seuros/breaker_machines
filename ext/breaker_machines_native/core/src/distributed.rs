@@ -10,7 +10,6 @@ use crate::{
     ProbeDecision, ProbeLease, ProbePolicy, SharedCircuitState, StateTransition, StorageError,
     StorageUpdate, StoredOutcome, callbacks::Callbacks,
 };
-use alloc::string::String;
 use alloc::sync::Arc;
 use core::fmt;
 use core::future::Future;
@@ -35,7 +34,7 @@ enum DistributedCallGate {
 /// storage connection. A cancelled probe remains fenced until its short lease
 /// expires, allowing another node to recover even if the elected node crashes.
 pub struct DistributedCircuitBreaker {
-    name: String,
+    name: Arc<str>,
     config: Config,
     storage: Arc<dyn AsyncStorageBackend>,
     failure_classifier: Option<Arc<dyn FailureClassifier>>,
@@ -45,7 +44,7 @@ pub struct DistributedCircuitBreaker {
 
 impl DistributedCircuitBreaker {
     pub(crate) fn from_parts(
-        name: String,
+        name: Arc<str>,
         config: Config,
         storage: Arc<dyn AsyncStorageBackend>,
         failure_classifier: Option<Arc<dyn FailureClassifier>>,
@@ -137,15 +136,7 @@ impl DistributedCircuitBreaker {
                 context,
             } => {
                 drop(permit);
-
-                if let Some(fallback) = options.fallback {
-                    return fallback(context).await.map_err(CircuitError::Execution);
-                }
-
-                Err(CircuitError::Open {
-                    circuit: context.circuit_name,
-                    opened_at: context.opened_at,
-                })
+                options.resolve_open(context).await
             }
         }
     }

@@ -183,7 +183,7 @@ impl CircuitBuilder {
             .unwrap_or_else(|| Arc::new(MemoryStorage::new()));
 
         let context = CircuitContext {
-            name: self.name,
+            name: self.name.into(),
             config: self.config,
             storage,
             failure_classifier: self.failure_classifier,
@@ -207,7 +207,7 @@ impl CircuitBuilder {
         storage: Arc<dyn crate::AsyncStorageBackend>,
     ) -> crate::DistributedCircuitBreaker {
         crate::DistributedCircuitBreaker::from_parts(
-            self.name,
+            self.name.into(),
             self.config,
             storage,
             self.failure_classifier,

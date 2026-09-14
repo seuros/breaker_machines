@@ -56,7 +56,7 @@ fn test_state_machine_closed_to_open_transition() {
     let ctx = CircuitContext {
         failure_classifier: None,
         bulkhead: None,
-        name: "test_circuit".to_string(),
+        name: "test_circuit".into(),
         config,
         storage: storage.clone(),
     };
@@ -92,7 +92,7 @@ fn test_state_machine_open_to_half_open_transition() {
     let ctx = CircuitContext {
         failure_classifier: None,
         bulkhead: None,
-        name: "test_circuit".to_string(),
+        name: "test_circuit".into(),
         config,
         storage: storage.clone(),
     };
@@ -141,7 +141,7 @@ fn test_state_machine_half_open_to_closed_guard() {
     let ctx = CircuitContext {
         failure_classifier: None,
         bulkhead: None,
-        name: "test_circuit".to_string(),
+        name: "test_circuit".into(),
         config,
         storage: storage.clone(),
     };
@@ -181,7 +181,7 @@ fn test_jitter_disabled() {
     let ctx = CircuitContext {
         failure_classifier: None,
         bulkhead: None,
-        name: "test_circuit".to_string(),
+        name: "test_circuit".into(),
         config,
         storage: storage.clone(),
     };
@@ -219,7 +219,7 @@ fn test_jitter_enabled() {
     let ctx = CircuitContext {
         failure_classifier: None,
         bulkhead: None,
-        name: "test_circuit".to_string(),
+        name: "test_circuit".into(),
         config,
         storage: storage.clone(),
     };
@@ -284,7 +284,7 @@ fn test_fallback_when_open() {
     let result = circuit.call((
         || Err::<String, _>("should not execute"),
         CallOptions::new().with_fallback(|ctx| {
-            assert_eq!(ctx.circuit_name, "test");
+            assert_eq!(&*ctx.circuit_name, "test");
             assert_eq!(ctx.state, "Open");
             Ok("fallback response".to_string())
         }),
@@ -575,7 +575,7 @@ fn test_bulkhead_error_contains_limit() {
             circuit: name,
             limit,
         }) => {
-            assert_eq!(name, "test");
+            assert_eq!(&*name, "test");
             assert_eq!(limit, 2);
         }
         _ => panic!("Expected BulkheadFull error, got: {result:?}"),
@@ -789,7 +789,7 @@ fn test_jitter_distribution_within_bounds() {
     let ctx = CircuitContext {
         failure_classifier: None,
         bulkhead: None,
-        name: "jitter_test".to_string(),
+        name: "jitter_test".into(),
         config,
         storage: storage.clone(),
     };
@@ -853,7 +853,7 @@ fn test_jitter_produces_variance() {
     let _ctx = CircuitContext {
         failure_classifier: None,
         bulkhead: None,
-        name: "jitter_variance".to_string(),
+        name: "jitter_variance".into(),
         config,
         storage,
     };

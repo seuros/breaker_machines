@@ -12,7 +12,7 @@ use alloc::sync::Arc;
 use state_machines::state_machine;
 
 /// Circuit breaker configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Config {
     /// Number of failures required to open the circuit (absolute count)
     /// If None, only rate-based threshold is used
@@ -83,11 +83,21 @@ impl Config {
 #[derive(Debug, Clone)]
 pub struct FallbackContext {
     /// Circuit name
-    pub circuit_name: String,
+    pub circuit_name: Arc<str>,
     /// Timestamp when circuit opened
     pub opened_at: f64,
     /// Current circuit state
     pub state: &'static str,
+}
+
+impl FallbackContext {
+    /// Convert this context into the rejection error for an open circuit.
+    pub(crate) fn into_open_error<E>(self) -> CircuitError<E> {
+        CircuitError::Open {
+            circuit: self.circuit_name,
+            opened_at: self.opened_at,
+        }
+    }
 }
 
 /// Type alias for fallback function
@@ -118,6 +128,15 @@ impl<T, E> CallOptions<T, E> {
     {
         self.fallback = Some(Box::new(f));
         self
+    }
+
+    /// Resolve an open-circuit gate: run the fallback if present, otherwise
+    /// return the rejection error.
+    pub(crate) fn resolve_open(self, context: FallbackContext) -> Result<T, CircuitError<E>> {
+        match self.fallback {
+            Some(fallback) => fallback(&context).map_err(CircuitError::Execution),
+            None => Err(context.into_open_error()),
+        }
     }
 }
 
@@ -200,7 +219,7 @@ impl Drop for HalfOpenProbeGuard<'_> {
 /// Circuit breaker context - shared data across all states
 #[derive(Clone)]
 pub struct CircuitContext {
-    pub name: String,
+    pub name: Arc<str>,
     pub config: Config,
     pub storage: Arc<dyn StorageBackend>,
     pub failure_classifier: Option<Arc<dyn FailureClassifier>>,
@@ -210,7 +229,7 @@ pub struct CircuitContext {
 impl Default for CircuitContext {
     fn default() -> Self {
         Self {
-            name: String::new(),
+            name: Arc::from(""),
             config: Config::default(),
             storage: Arc::new(crate::MemoryStorage::new()),
             failure_classifier: None,
@@ -278,41 +297,30 @@ state_machine! {
     }
 }
 
-/// Check if the failure threshold is exceeded (absolute count or rate-based).
+/// Check thresholds against observed counts (absolute count or rate-based).
 ///
-/// Shared by the `trip` guard for both the Closed and HalfOpen typestates; the
-/// decision depends only on the context (storage counters + config), not on the
-/// current state data.
-fn failure_threshold_exceeded(ctx: &CircuitContext) -> bool {
-    let failures = ctx
-        .storage
-        .failure_count(&ctx.name, ctx.config.failure_window_secs);
-
-    // Check absolute count threshold
-    if let Some(threshold) = ctx.config.failure_threshold
+/// The success count is queried lazily because it is only needed when a rate
+/// threshold is configured. Shared by the local circuit guards and the
+/// in-memory distributed store.
+pub(crate) fn thresholds_exceeded(
+    failures: usize,
+    successes: impl FnOnce() -> usize,
+    failure_threshold: Option<usize>,
+    failure_rate_threshold: Option<f64>,
+    minimum_calls: usize,
+) -> bool {
+    if let Some(threshold) = failure_threshold
         && failures >= threshold
     {
         return true;
     }
 
-    // Check rate-based threshold
-    if let Some(rate_threshold) = ctx.config.failure_rate_threshold {
-        let successes = ctx
-            .storage
-            .success_count(&ctx.name, ctx.config.failure_window_secs);
-        let total = failures + successes;
+    if let Some(rate_threshold) = failure_rate_threshold {
+        let total = failures + successes();
 
         // Only evaluate rate if we have minimum calls
-        if total >= ctx.config.minimum_calls {
-            let failure_rate = if total > 0 {
-                failures as f64 / total as f64
-            } else {
-                0.0
-            };
-
-            if failure_rate >= rate_threshold {
-                return true;
-            }
+        if total >= minimum_calls && total > 0 {
+            return failures as f64 / total as f64 >= rate_threshold;
         }
     }
 
@@ -320,23 +328,29 @@ fn failure_threshold_exceeded(ctx: &CircuitContext) -> bool {
 }
 
 // Guards for dynamic mode - implemented on typestate machines
-impl Circuit<Closed> {
-    /// Check if failure threshold is exceeded (absolute count or rate-based)
+impl<S> Circuit<S> {
+    /// Check if failure threshold is exceeded (absolute count or rate-based).
+    ///
+    /// Used by the `trip` guard for both the Closed and HalfOpen typestates;
+    /// the decision depends only on the context (storage counters + config),
+    /// not on the current state data.
     fn should_open(&self, ctx: &CircuitContext) -> bool {
-        failure_threshold_exceeded(ctx)
+        let window = ctx.config.failure_window_secs;
+        thresholds_exceeded(
+            ctx.storage.failure_count(&ctx.name, window),
+            || ctx.storage.success_count(&ctx.name, window),
+            ctx.config.failure_threshold,
+            ctx.config.failure_rate_threshold,
+            ctx.config.minimum_calls,
+        )
     }
 }
 
 impl Circuit<HalfOpen> {
-    /// Check if failure threshold is exceeded (absolute count or rate-based)
-    fn should_open(&self, ctx: &CircuitContext) -> bool {
-        failure_threshold_exceeded(ctx)
-    }
-
     /// Check if enough successes to close circuit
     fn should_close(&self, ctx: &CircuitContext) -> bool {
         let Some(data) = self.state_data_half_open() else {
-            return false;
+            unreachable!("HalfOpen typestate always carries HalfOpenData");
         };
         data.consecutive_successes >= ctx.config.success_threshold
     }
@@ -346,7 +360,7 @@ impl Circuit<Open> {
     /// Check if timeout has elapsed for Open -> HalfOpen transition
     fn timeout_elapsed(&self, ctx: &CircuitContext) -> bool {
         let Some(data) = self.state_data_open() else {
-            return false;
+            unreachable!("Open typestate always carries OpenData");
         };
         let current_time = ctx.storage.monotonic_time();
         let elapsed = current_time - data.opened_at;
@@ -369,7 +383,7 @@ impl CircuitBreaker {
     /// Create a new circuit breaker (use builder() for more options)
     pub fn new(name: String, config: Config) -> Self {
         let context = CircuitContext {
-            name,
+            name: name.into(),
             config,
             ..CircuitContext::default()
         };
@@ -425,15 +439,7 @@ impl CircuitBreaker {
                 // Release the bulkhead permit before the fallback runs so a slow
                 // fallback doesn't occupy a concurrency slot (matches async path).
                 drop(permit);
-
-                if let Some(fallback) = options.fallback {
-                    return fallback(&context).map_err(CircuitError::Execution);
-                }
-
-                Err(CircuitError::Open {
-                    circuit: context.circuit_name,
-                    opened_at: context.opened_at,
-                })
+                options.resolve_open(context)
             }
         }
     }
@@ -471,7 +477,10 @@ impl CircuitBreaker {
         // Handle based on current state
         match self.machine.current_state() {
             CircuitState::Open => {
-                let opened_at = self.machine.open_data().map(|d| d.opened_at).unwrap_or(0.0);
+                let Some(data) = self.machine.open_data() else {
+                    unreachable!("Open state always carries OpenData");
+                };
+                let opened_at = data.opened_at;
 
                 Ok(CallGate::Open {
                     _permit: permit,
@@ -484,17 +493,18 @@ impl CircuitBreaker {
             }
             CircuitState::HalfOpen => {
                 // Check if we've reached the success threshold
-                if let Some(data) = self.machine.half_open_data_mut() {
-                    let reserved_probes = data.consecutive_successes + data.in_flight;
-                    if reserved_probes >= self.context.config.success_threshold {
-                        return Err(CircuitError::HalfOpenLimitReached {
-                            circuit: self.context.name.clone(),
-                        });
-                    }
-
-                    data.in_flight += 1;
-                    permit.half_open_probe = true;
+                let Some(data) = self.machine.half_open_data_mut() else {
+                    unreachable!("HalfOpen state always carries HalfOpenData");
+                };
+                let reserved_probes = data.consecutive_successes + data.in_flight;
+                if reserved_probes >= self.context.config.success_threshold {
+                    return Err(CircuitError::HalfOpenLimitReached {
+                        circuit: self.context.name.clone(),
+                    });
                 }
+
+                data.in_flight += 1;
+                permit.half_open_probe = true;
                 Ok(CallGate::Execute(permit))
             }
             _ => Ok(CallGate::Execute(permit)),
@@ -551,9 +561,7 @@ impl CircuitBreaker {
         match result {
             Ok(val) => {
                 let duration = self.context.storage.monotonic_time() - start;
-                self.context
-                    .storage
-                    .record_success(&self.context.name, duration);
+                self.record_success(duration);
                 if may_transition {
                     self.maybe_close_after_success();
                 }
@@ -577,9 +585,7 @@ impl CircuitBreaker {
 
                 // Only record failure and try to trip if the classifier says we should
                 if should_trip {
-                    self.context
-                        .storage
-                        .record_failure(&self.context.name, duration);
+                    self.record_failure(duration);
                     if may_transition {
                         self.maybe_trip_after_failure();
                     }
@@ -591,27 +597,26 @@ impl CircuitBreaker {
     }
 
     pub(crate) fn release_half_open_probe(&mut self, state_epoch: u64) {
-        if state_epoch == self.state_epoch
-            && let Some(data) = self.machine.half_open_data_mut()
-        {
-            data.in_flight = data.in_flight.saturating_sub(1);
+        if state_epoch == self.state_epoch {
+            let Some(data) = self.machine.half_open_data_mut() else {
+                unreachable!("probe epoch matches, so the machine is still HalfOpen");
+            };
+            data.in_flight -= 1;
         }
     }
 
     /// Record a successful operation and drive HalfOpen -> Closed transitions
     pub fn record_success_and_maybe_close(&mut self, duration: f64) {
-        self.context
-            .storage
-            .record_success(&self.context.name, duration);
-
+        self.record_success(duration);
         self.maybe_close_after_success();
     }
 
     fn maybe_close_after_success(&mut self) {
         if self.machine.current_state() == CircuitState::HalfOpen {
-            if let Some(data) = self.machine.half_open_data_mut() {
-                data.consecutive_successes += 1;
-            }
+            let Some(data) = self.machine.half_open_data_mut() else {
+                unreachable!("HalfOpen state always carries HalfOpenData");
+            };
+            data.consecutive_successes += 1;
 
             if self.machine.handle(CircuitEvent::Close).is_ok() {
                 self.advance_state_epoch();
@@ -622,10 +627,7 @@ impl CircuitBreaker {
 
     /// Record a failed operation and attempt to trip the circuit
     pub fn record_failure_and_maybe_trip(&mut self, duration: f64) {
-        self.context
-            .storage
-            .record_failure(&self.context.name, duration);
-
+        self.record_failure(duration);
         self.maybe_trip_after_failure();
     }
 
@@ -633,9 +635,10 @@ impl CircuitBreaker {
         let result = self.machine.handle(CircuitEvent::Trip);
         if result.is_ok() {
             self.mark_open();
-        } else if self.machine.current_state() == CircuitState::HalfOpen
-            && let Some(data) = self.machine.half_open_data_mut()
-        {
+        } else if self.machine.current_state() == CircuitState::HalfOpen {
+            let Some(data) = self.machine.half_open_data_mut() else {
+                unreachable!("HalfOpen state always carries HalfOpenData");
+            };
             data.consecutive_successes = 0;
         }
     }
@@ -691,9 +694,10 @@ impl CircuitBreaker {
     /// Apply Open-state bookkeeping (timestamp + callback)
     fn mark_open(&mut self) {
         self.advance_state_epoch();
-        if let Some(data) = self.machine.open_data_mut() {
-            data.opened_at = self.context.storage.monotonic_time();
-        }
+        let Some(data) = self.machine.open_data_mut() else {
+            unreachable!("Open state always carries OpenData");
+        };
+        data.opened_at = self.context.storage.monotonic_time();
         self.callbacks.trigger_open(&self.context.name);
     }
 

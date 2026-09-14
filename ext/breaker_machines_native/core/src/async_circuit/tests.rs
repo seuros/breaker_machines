@@ -54,7 +54,7 @@ fn async_fallback_runs_when_open() {
             .call_with_options(
                 || async { Ok::<String, String>("should not execute".to_string()) },
                 AsyncCallOptions::new().with_fallback(|ctx| async move {
-                    assert_eq!(ctx.circuit_name, "test");
+                    assert_eq!(&*ctx.circuit_name, "test");
                     assert_eq!(ctx.state, "Open");
                     Ok("fallback response".to_string())
                 }),

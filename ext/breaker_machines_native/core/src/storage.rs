@@ -15,7 +15,7 @@ use crate::time::SystemClock;
 use crate::time::ZeroClock;
 use crate::{Event, EventKind};
 use alloc::boxed::Box;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 #[cfg(feature = "async")]
@@ -381,7 +381,7 @@ impl MemoryStorage {
     fn record_event(&self, circuit_name: &str, kind: EventKind, duration: f64) {
         let now = self.monotonic_time();
         let mut circuits = self.circuits_write();
-        let circuit = circuits.entry(circuit_name.to_string()).or_default();
+        let circuit = circuits.entry_ref(circuit_name).or_default();
         Self::push_event(circuit, self.max_events, kind, now, duration);
     }
 
@@ -421,38 +421,44 @@ impl MemoryStorage {
     }
 
     #[cfg(feature = "async")]
+    fn count_kind(circuit: &MemoryCircuit, kind: EventKind, cutoff: f64) -> usize {
+        circuit
+            .events
+            .iter()
+            .filter(|event| event.kind == kind && event.timestamp >= cutoff)
+            .count()
+    }
+
+    #[cfg(feature = "async")]
     fn failure_threshold_exceeded(
         circuit: &MemoryCircuit,
         now: f64,
         policy: FailurePolicy,
     ) -> bool {
         let cutoff = now - policy.failure_window_secs;
-        let failures = circuit
-            .events
-            .iter()
-            .filter(|event| event.kind == EventKind::Failure && event.timestamp >= cutoff)
-            .count();
+        crate::circuit::thresholds_exceeded(
+            Self::count_kind(circuit, EventKind::Failure, cutoff),
+            || Self::count_kind(circuit, EventKind::Success, cutoff),
+            policy.failure_threshold,
+            policy.failure_rate_threshold,
+            policy.minimum_calls,
+        )
+    }
 
-        if let Some(threshold) = policy.failure_threshold
-            && failures >= threshold
-        {
-            return true;
-        }
-
-        if let Some(rate_threshold) = policy.failure_rate_threshold {
-            let successes = circuit
-                .events
-                .iter()
-                .filter(|event| event.kind == EventKind::Success && event.timestamp >= cutoff)
-                .count();
-            let total = failures + successes;
-
-            if total >= policy.minimum_calls && total > 0 {
-                return failures as f64 / total as f64 >= rate_threshold;
-            }
-        }
-
-        false
+    #[cfg(feature = "async")]
+    fn push_outcome_event(
+        &self,
+        circuit: &mut MemoryCircuit,
+        outcome: StoredOutcome,
+        now: f64,
+        duration: f64,
+    ) {
+        let kind = match outcome {
+            StoredOutcome::Success => EventKind::Success,
+            StoredOutcome::Failure => EventKind::Failure,
+            StoredOutcome::Ignored => return,
+        };
+        Self::push_event(circuit, self.max_events, kind, now, duration);
     }
 
     #[cfg(feature = "async")]
@@ -460,7 +466,7 @@ impl MemoryStorage {
         circuit.state = SharedCircuitState::Open;
         circuit.generation = circuit.generation.wrapping_add(1);
         circuit.opened_at = Some(now);
-        circuit.retry_at = Some(now + timeout_secs.max(0.0));
+        circuit.retry_at = Some(now + timeout_secs);
         circuit.consecutive_successes = 0;
         circuit.probe = None;
     }
@@ -542,27 +548,11 @@ impl AsyncStorageBackend for MemoryStorage {
         Box::pin(async move {
             let now = self.monotonic_time();
             let mut circuits = self.circuits_write();
-            let circuit = circuits.entry(circuit_name.to_string()).or_default();
+            let circuit = circuits.entry_ref(circuit_name).or_default();
             let applied = circuit.generation == generation;
 
             if applied {
-                match outcome {
-                    StoredOutcome::Success => Self::push_event(
-                        circuit,
-                        self.max_events,
-                        EventKind::Success,
-                        now,
-                        duration,
-                    ),
-                    StoredOutcome::Failure => Self::push_event(
-                        circuit,
-                        self.max_events,
-                        EventKind::Failure,
-                        now,
-                        duration,
-                    ),
-                    StoredOutcome::Ignored => {}
-                }
+                self.push_outcome_event(circuit, outcome, now, duration);
             }
 
             let mut transition = None;
@@ -591,7 +581,7 @@ impl AsyncStorageBackend for MemoryStorage {
         Box::pin(async move {
             let now = self.monotonic_time();
             let mut circuits = self.circuits_write();
-            let circuit = circuits.entry(circuit_name.to_string()).or_default();
+            let circuit = circuits.entry_ref(circuit_name).or_default();
             let mut transitioned = false;
 
             match circuit.state {
@@ -621,7 +611,7 @@ impl AsyncStorageBackend for MemoryStorage {
             let lease = ProbeLease {
                 generation: circuit.generation,
                 token: circuit.next_probe_token,
-                expires_at: now + lease_ttl_secs.max(f64::EPSILON),
+                expires_at: now + lease_ttl_secs,
             };
             circuit.probe = Some(lease);
 
@@ -644,7 +634,7 @@ impl AsyncStorageBackend for MemoryStorage {
         Box::pin(async move {
             let now = self.monotonic_time();
             let mut circuits = self.circuits_write();
-            let circuit = circuits.entry(circuit_name.to_string()).or_default();
+            let circuit = circuits.entry_ref(circuit_name).or_default();
 
             let applied = circuit.state == SharedCircuitState::HalfOpen
                 && circuit.generation == lease.generation
@@ -654,29 +644,13 @@ impl AsyncStorageBackend for MemoryStorage {
             let mut transition = None;
 
             if applied {
-                match outcome {
-                    StoredOutcome::Success => Self::push_event(
-                        circuit,
-                        self.max_events,
-                        EventKind::Success,
-                        now,
-                        duration,
-                    ),
-                    StoredOutcome::Failure => Self::push_event(
-                        circuit,
-                        self.max_events,
-                        EventKind::Failure,
-                        now,
-                        duration,
-                    ),
-                    StoredOutcome::Ignored => {}
-                }
+                self.push_outcome_event(circuit, outcome, now, duration);
 
                 circuit.probe = None;
                 match outcome {
                     StoredOutcome::Success => {
                         circuit.consecutive_successes += 1;
-                        if circuit.consecutive_successes >= policy.success_threshold.max(1) {
+                        if circuit.consecutive_successes >= policy.success_threshold {
                             circuit.state = SharedCircuitState::Closed;
                             circuit.generation = circuit.generation.wrapping_add(1);
                             circuit.opened_at = None;
@@ -705,7 +679,7 @@ impl AsyncStorageBackend for MemoryStorage {
     fn reset<'a>(&'a self, circuit_name: &'a str) -> StorageFuture<'a, CircuitSnapshot> {
         Box::pin(async move {
             let mut circuits = self.circuits_write();
-            let circuit = circuits.entry(circuit_name.to_string()).or_default();
+            let circuit = circuits.entry_ref(circuit_name).or_default();
             circuit.reset();
             Ok(circuit.snapshot())
         })

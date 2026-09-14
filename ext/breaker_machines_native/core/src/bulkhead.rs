@@ -79,7 +79,7 @@ impl BulkheadSemaphore {
 
     /// Get the number of available permits
     pub fn available(&self) -> usize {
-        self.limit.saturating_sub(self.acquired())
+        self.limit - self.acquired()
     }
 
     /// Release a permit (called by BulkheadGuard on drop)
