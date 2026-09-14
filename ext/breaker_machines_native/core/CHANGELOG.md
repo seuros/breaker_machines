@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.16.1...breaker-machines-v0.17.0) (2026-09-14)
+
+
+### Features
+
+* **core:** share circuit context via Arc ([240375d](https://github.com/seuros/breaker_machines/commit/240375d62b22eb580c87268313a730d6edec2c0d))
+* **core:** share circuit context via Arc, drop defensive fallbacks ([feb5b37](https://github.com/seuros/breaker_machines/commit/feb5b37ce44a11353a2c94492dd27f266cc43b35))
+
 ## [0.16.1](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.16.0...breaker-machines-v0.16.1) (2026-08-26)
 
 
