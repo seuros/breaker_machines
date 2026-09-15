@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.17.0...breaker_machines/v0.17.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* **deps:** loosen state-machines/chrono-machines version ranges ([535f507](https://github.com/seuros/breaker_machines/commit/535f50758de19ff920f082ce575361a2161bfb9f))
+
 ## [0.17.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.16.1...breaker_machines/v0.17.0) (2026-09-14)
 
 
