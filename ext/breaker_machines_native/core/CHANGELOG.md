@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.17.1...breaker-machines-v0.12.0) (2026-09-15)
+
+
+### Features
+
+* add native storage backend with Rust v0.3.0 and Rails 8+ support ([#21](https://github.com/seuros/breaker_machines/issues/21)) ([cf45b0a](https://github.com/seuros/breaker_machines/commit/cf45b0aa8444a86b5ce20e1627013c532c56169e))
+* adopt state-machines 0.20 typed-state API ([fcfcfee](https://github.com/seuros/breaker_machines/commit/fcfcfee9a3fd16ab34f0331b05cc0ee7d4f11e0a))
+* circuit breaker bookkeeping and HalfOpen counter reset ([#44](https://github.com/seuros/breaker_machines/issues/44)) ([ef2bac7](https://github.com/seuros/breaker_machines/commit/ef2bac77d6c0024265498d2173816e906fa4fb39))
+* **core:** share circuit context via Arc ([240375d](https://github.com/seuros/breaker_machines/commit/240375d62b22eb580c87268313a730d6edec2c0d))
+* **core:** share circuit context via Arc, drop defensive fallbacks ([feb5b37](https://github.com/seuros/breaker_machines/commit/feb5b37ce44a11353a2c94492dd27f266cc43b35))
+* **native:** add async circuit support ([4a76604](https://github.com/seuros/breaker_machines/commit/4a76604b9f4737470d9e52083b19fe33d9101020))
+* **native:** no_std support ([9256931](https://github.com/seuros/breaker_machines/commit/92569311d604f40b3ada7ceccd16ab49a49bab23))
+* **storage:** add distributed circuit coordination ([#71](https://github.com/seuros/breaker_machines/issues/71)) ([8533a6e](https://github.com/seuros/breaker_machines/commit/8533a6e8cdaaeee4053cab0b70763268224bd801))
+
+
+### Bug Fixes
+
+* add state-machine keyword, upgrade state-machines to 0.9 ([0157a3c](https://github.com/seuros/breaker_machines/commit/0157a3c4decc0cac51a528af710018ea39604cf2))
+* **async:** make circuit calls cancellation-safe ([#69](https://github.com/seuros/breaker_machines/issues/69)) ([859c200](https://github.com/seuros/breaker_machines/commit/859c200a4aa4844c95a37ee2ac5801ae1815f2d7))
+* callback panic safety and expanded test coverage ([#46](https://github.com/seuros/breaker_machines/issues/46)) ([5414bc6](https://github.com/seuros/breaker_machines/commit/5414bc6d60e102dca4ba78bf13134f48e2c22de3))
+* callback panic safety and expanded test coverage ([#48](https://github.com/seuros/breaker_machines/issues/48)) ([6dbeb3d](https://github.com/seuros/breaker_machines/commit/6dbeb3d3653b2d1208f119fcebe7f3a9015193cc))
+* circuit breaker bookkeeping and HalfOpen counter reset ([1c7ea41](https://github.com/seuros/breaker_machines/commit/1c7ea41e9ba79c09ab987ba060ee9ba3acbe27d8))
+* configure release-please for monorepo with Ruby and Rust packages ([656127c](https://github.com/seuros/breaker_machines/commit/656127c4588010f33822ca5114ba3e9ebbeb6df5))
+* **deps:** bump chrono-machines to 0.6, hashbrown to 0.17; pin rust 1.98 ([de9da4f](https://github.com/seuros/breaker_machines/commit/de9da4f50b900179e03c47e5aff6fae5bd0aa43c))
+* **deps:** loosen state-machines/chrono-machines version ranges ([535f507](https://github.com/seuros/breaker_machines/commit/535f50758de19ff920f082ce575361a2161bfb9f))
+* remove unused variable in jitter variance test ([cfbd8e0](https://github.com/seuros/breaker_machines/commit/cfbd8e00118db8b93464ef8cc65ba894e809ce44))
+* ship pure ruby fallback gem ([7103928](https://github.com/seuros/breaker_machines/commit/71039286d00ebf308adfdc893e968110100cae29))
+* update crate dependencies ([#52](https://github.com/seuros/breaker_machines/issues/52)) ([2c5e382](https://github.com/seuros/breaker_machines/commit/2c5e382edc08d7d283334c57af3a4b97b1315dd7))
+* update state machines ([#56](https://github.com/seuros/breaker_machines/issues/56)) ([cc630de](https://github.com/seuros/breaker_machines/commit/cc630deb675b8ec7e78b8af699244d8b59ab8fde))
+* update state-machines ([#54](https://github.com/seuros/breaker_machines/issues/54)) ([108af96](https://github.com/seuros/breaker_machines/commit/108af96df17df7773bc35dedd512a3a3cbb0251f))
+* version ([c69d413](https://github.com/seuros/breaker_machines/commit/c69d41371ea9b72c63b0cce11825f6059a45b8f3))
+
+
+### Code Refactoring
+
+* fix clippy warnings in Rust crate ([7dd1230](https://github.com/seuros/breaker_machines/commit/7dd1230bdfc1beff377c4b9c332727beabb996ab))
+
 ## [0.17.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.16.1...breaker-machines-v0.17.0) (2026-09-14)
 
 
