@@ -35,13 +35,11 @@ class StorageCacheTest < ActiveSupport::TestCase
   end
 
   class MockCacheWithoutIncrement < MockCache
-    # rubocop:disable Style/OptionalBooleanParameter
     def respond_to?(method, include_private = false)
       return false if method == :increment
 
       super
     end
-    # rubocop:enable Style/OptionalBooleanParameter
   end
 
   setup do
