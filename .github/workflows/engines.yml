@@ -27,7 +27,7 @@ jobs:
         with:
           mise_toml: |
             [tools]
-            ruby = "${{ matrix.ruby-version }}"
+            ruby = { version = "${{ matrix.ruby-version }}"${{ startsWith(matrix.ruby-version, 'jruby') && ', depends = ["java"]' || '' }} }
             ${{ startsWith(matrix.ruby-version, 'jruby') && 'java = "temurin-21"' || '' }}
 
       - name: Cache gems
