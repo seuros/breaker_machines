@@ -1,39 +1,9 @@
 use super::*;
-use crate::{Clock, MemoryStorage};
-use core::future::{Future, pending};
-use core::pin::Pin;
-use core::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::task::{Context, Poll, Waker};
-
-#[derive(Debug, Clone)]
-struct ManualClock {
-    millis: Arc<AtomicU64>,
-}
-
-impl ManualClock {
-    fn new(seconds: u64) -> Self {
-        Self {
-            millis: Arc::new(AtomicU64::new(seconds * 1000)),
-        }
-    }
-
-    fn advance(&self, seconds: u64) {
-        self.millis.fetch_add(seconds * 1000, Ordering::SeqCst);
-    }
-}
-
-impl Clock for ManualClock {
-    fn now_secs(&self) -> f64 {
-        self.millis.load(Ordering::SeqCst) as f64 / 1000.0
-    }
-}
-
-fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
-    let waker = Waker::noop();
-    let mut context = Context::from_waker(waker);
-    Future::poll(future, &mut context)
-}
+use crate::test_support::{ManualClock, poll_once};
+use crate::{MemoryStorage, StorageBackend};
+use core::assert_matches;
+use core::future::pending;
+use core::time::Duration;
 
 fn test_breaker(store: Arc<MemoryStorage>, name: &str) -> DistributedCircuitBreaker {
     crate::CircuitBreaker::builder(name)
@@ -44,32 +14,43 @@ fn test_breaker(store: Arc<MemoryStorage>, name: &str) -> DistributedCircuitBrea
         .build_distributed(store)
 }
 
+fn acquired(decision: ProbeDecision) -> ProbeLease {
+    match decision {
+        ProbeDecision::Acquired { lease, .. } => lease,
+        decision => panic!("expected an acquired probe, got {decision:?}"),
+    }
+}
+
 #[test]
 fn gateways_share_state_and_opened_at() {
     pollster::block_on(async {
-        let clock = ManualClock::new(100);
-        let store = Arc::new(MemoryStorage::with_clock(Box::new(clock)));
+        let store = ManualClock::starting_at(100).storage();
         let gateway_a = test_breaker(store.clone(), "payments");
         let gateway_b = test_breaker(store, "payments");
 
         let result = gateway_a
             .call(|| async { Err::<(), _>("service unavailable") })
             .await;
-        assert!(matches!(result, Err(CircuitError::Execution(_))));
+        assert_matches!(result, Err(CircuitError::Execution("service unavailable")));
 
-        let snapshot = gateway_b.state().await.unwrap();
-        assert_eq!(snapshot.state, SharedCircuitState::Open);
-        assert_eq!(snapshot.opened_at, Some(100.0));
-        assert_eq!(snapshot.retry_at, Some(110.0));
+        assert_matches!(
+            gateway_b.state().await,
+            Ok(CircuitSnapshot {
+                state: SharedCircuitState::Open,
+                opened_at: Some(100.0),
+                retry_at: Some(110.0),
+                ..
+            })
+        );
 
         let rejected = gateway_b.call(|| async { Ok::<_, &str>(()) }).await;
-        assert!(matches!(
+        assert_matches!(
             rejected,
             Err(CircuitError::Open {
                 opened_at: 100.0,
                 ..
             })
-        ));
+        );
     });
 }
 
@@ -77,132 +58,117 @@ fn gateways_share_state_and_opened_at() {
 fn gateways_share_the_failure_rate_window() {
     pollster::block_on(async {
         let store = Arc::new(MemoryStorage::new());
-        let gateway_a = crate::CircuitBreaker::builder("search")
-            .disable_failure_threshold()
-            .failure_rate(0.5)
-            .minimum_calls(4)
-            .build_distributed(store.clone());
-        let gateway_b = crate::CircuitBreaker::builder("search")
-            .disable_failure_threshold()
-            .failure_rate(0.5)
-            .minimum_calls(4)
-            .build_distributed(store);
+        let gateway = |store| {
+            crate::CircuitBreaker::builder("search")
+                .disable_failure_threshold()
+                .failure_rate(0.5)
+                .minimum_calls(4)
+                .build_distributed(store)
+        };
+        let gateway_a = gateway(store.clone());
+        let gateway_b = gateway(store);
 
-        gateway_a
-            .call(|| async { Ok::<_, &str>(()) })
-            .await
-            .unwrap();
-        let _ = gateway_b
-            .call(|| async { Err::<(), _>("first failure") })
-            .await;
-        gateway_a
-            .call(|| async { Ok::<_, &str>(()) })
-            .await
-            .unwrap();
-        let _ = gateway_b
-            .call(|| async { Err::<(), _>("second failure") })
-            .await;
+        for _ in 0..2 {
+            assert_matches!(gateway_a.call(|| async { Ok::<_, &str>(()) }).await, Ok(()));
+            let _ = gateway_b.call(|| async { Err::<(), _>("failure") }).await;
+        }
 
-        assert!(gateway_a.is_open().await.unwrap());
-        assert_eq!(gateway_a.state().await.unwrap().generation, 1);
+        assert_matches!(
+            gateway_a.state().await,
+            Ok(CircuitSnapshot {
+                state: SharedCircuitState::Open,
+                generation: 1,
+                ..
+            })
+        );
     });
 }
 
 #[test]
 fn only_one_gateway_owns_probe_and_expired_lease_recovers() {
     pollster::block_on(async {
-        let clock = ManualClock::new(100);
-        let store = Arc::new(MemoryStorage::with_clock(Box::new(clock.clone())));
+        let clock = ManualClock::starting_at(100);
+        let store = clock.storage();
         let gateway_a = test_breaker(store.clone(), "payments");
         let gateway_b = test_breaker(store, "payments");
 
         let _ = gateway_a
             .call(|| async { Err::<(), _>("service unavailable") })
             .await;
-        clock.advance(10);
+        clock.advance(Duration::from_secs(10));
 
         let mut first_probe = Box::pin(gateway_a.call(pending::<Result<(), &str>>));
         assert!(poll_once(first_probe.as_mut()).is_pending());
 
         let competing = gateway_b.call(|| async { Ok::<_, &str>(()) }).await;
-        assert!(matches!(
-            competing,
-            Err(CircuitError::HalfOpenLimitReached { .. })
-        ));
+        assert_matches!(competing, Err(CircuitError::HalfOpenLimitReached { .. }));
 
+        // The elected gateway goes away; its lease expires after probe_timeout.
         drop(first_probe);
-        clock.advance(2);
+        clock.advance(Duration::from_secs(2));
 
-        gateway_b
-            .call(|| async { Ok::<_, &str>(()) })
-            .await
-            .unwrap();
-        assert!(gateway_a.is_closed().await.unwrap());
+        assert_matches!(gateway_b.call(|| async { Ok::<_, &str>(()) }).await, Ok(()));
+        assert_matches!(gateway_a.is_closed().await, Ok(true));
     });
 }
 
 #[test]
 fn stale_probe_token_cannot_transition_new_generation() {
     pollster::block_on(async {
-        let clock = ManualClock::new(10);
-        let store = MemoryStorage::with_clock(Box::new(clock.clone()));
-        let policy = FailurePolicy {
+        let clock = ManualClock::starting_at(10);
+        let store = clock.storage();
+        let failure_policy = FailurePolicy {
             failure_threshold: Some(1),
             failure_rate_threshold: None,
             minimum_calls: 1,
             failure_window_secs: 60.0,
             open_timeout_secs: 1.0,
         };
+        let probe_policy = ProbePolicy {
+            success_threshold: 1,
+            open_timeout_secs: 1.0,
+        };
 
         store
-            .record_outcome("api", 0, StoredOutcome::Failure, 0.1, policy)
+            .record_outcome("api", 0, StoredOutcome::Failure, 0.1, failure_policy)
             .await
             .unwrap();
-        clock.advance(1);
+        clock.advance(Duration::from_secs(1));
 
-        let first = match store.try_begin_probe("api", 1.0).await.unwrap() {
-            ProbeDecision::Acquired { lease, .. } => lease,
-            decision => panic!("expected first probe, got {decision:?}"),
-        };
-        clock.advance(1);
-        let second = match store.try_begin_probe("api", 1.0).await.unwrap() {
-            ProbeDecision::Acquired { lease, .. } => lease,
-            decision => panic!("expected replacement probe, got {decision:?}"),
-        };
+        let first = acquired(store.try_begin_probe("api", 1.0).await.unwrap());
+        clock.advance(Duration::from_secs(1));
+        let second = acquired(store.try_begin_probe("api", 1.0).await.unwrap());
 
         let stale = store
-            .complete_probe(
-                "api",
-                first,
-                StoredOutcome::Failure,
-                0.1,
-                ProbePolicy {
-                    success_threshold: 1,
-                    open_timeout_secs: 1.0,
+            .complete_probe("api", first, StoredOutcome::Failure, 0.1, probe_policy)
+            .await;
+        assert_matches!(
+            stale,
+            Ok(StorageUpdate {
+                applied: false,
+                transition: None,
+                snapshot: CircuitSnapshot {
+                    state: SharedCircuitState::HalfOpen,
+                    ..
                 },
-            )
-            .await
-            .unwrap();
-        assert!(!stale.applied);
-        assert_eq!(stale.snapshot.state, SharedCircuitState::HalfOpen);
-        assert_eq!(crate::StorageBackend::event_log(&store, "api", 10).len(), 1);
+            })
+        );
+        assert_eq!(store.event_log("api", 10).len(), 1);
 
         let current = store
-            .complete_probe(
-                "api",
-                second,
-                StoredOutcome::Success,
-                0.1,
-                ProbePolicy {
-                    success_threshold: 1,
-                    open_timeout_secs: 1.0,
+            .complete_probe("api", second, StoredOutcome::Success, 0.1, probe_policy)
+            .await;
+        assert_matches!(
+            current,
+            Ok(StorageUpdate {
+                applied: true,
+                transition: Some(StateTransition::Closed),
+                snapshot: CircuitSnapshot {
+                    state: SharedCircuitState::Closed,
+                    ..
                 },
-            )
-            .await
-            .unwrap();
-        assert!(current.applied);
-        assert_eq!(current.transition, Some(StateTransition::Closed));
-        assert_eq!(current.snapshot.state, SharedCircuitState::Closed);
+            })
+        );
     });
 }
 
@@ -229,12 +195,20 @@ fn reset_fences_normal_calls_from_the_previous_generation() {
                     open_timeout_secs: 10.0,
                 },
             )
-            .await
-            .unwrap();
+            .await;
 
-        assert!(!stale.applied);
-        assert_eq!(stale.snapshot.state, SharedCircuitState::Closed);
-        assert!(crate::StorageBackend::event_log(&store, "api", 10).is_empty());
+        assert_matches!(
+            stale,
+            Ok(StorageUpdate {
+                applied: false,
+                snapshot: CircuitSnapshot {
+                    state: SharedCircuitState::Closed,
+                    ..
+                },
+                ..
+            })
+        );
+        assert!(store.event_log("api", 10).is_empty());
     });
 }
 
@@ -242,7 +216,6 @@ fn reset_fences_normal_calls_from_the_previous_generation() {
 fn distributed_call_future_is_send_when_operation_is_send() {
     fn assert_send<T: Send>(_: T) {}
 
-    let store = Arc::new(MemoryStorage::new());
-    let gateway = test_breaker(store, "payments");
+    let gateway = test_breaker(Arc::new(MemoryStorage::new()), "payments");
     assert_send(gateway.call(|| async { Ok::<_, String>(()) }));
 }

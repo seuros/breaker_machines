@@ -1,71 +1,41 @@
 use super::*;
 
-#[test]
-fn test_default_classifier_trips_all() {
-    let classifier = DefaultClassifier;
-    let ctx = FailureContext {
+fn failure(error: &dyn Any, duration: f64) -> FailureContext<'_> {
+    FailureContext {
         circuit_name: "test",
-        error: &"any error" as &dyn Any,
-        duration: 0.1,
-    };
-
-    assert!(classifier.should_trip(&ctx));
+        error,
+        duration,
+    }
 }
 
 #[test]
-fn test_predicate_classifier() {
-    // Classifier that only trips on slow errors
-    let classifier = PredicateClassifier::new(|ctx| ctx.duration > 1.0);
-
-    let fast_ctx = FailureContext {
-        circuit_name: "test",
-        error: &"fast error" as &dyn Any,
-        duration: 0.5,
-    };
-
-    let slow_ctx = FailureContext {
-        circuit_name: "test",
-        error: &"slow error" as &dyn Any,
-        duration: 2.0,
-    };
-
-    assert!(!classifier.should_trip(&fast_ctx));
-    assert!(classifier.should_trip(&slow_ctx));
+fn default_classifier_trips_on_everything() {
+    assert!(DefaultClassifier.should_trip(&failure(&"any error", 0.1)));
 }
 
 #[test]
-fn test_error_type_downcast() {
+fn predicate_classifier_applies_its_closure() {
+    let slow_only = PredicateClassifier::new(|ctx| ctx.duration > 1.0);
+
+    assert!(!slow_only.should_trip(&failure(&"fast error", 0.5)));
+    assert!(slow_only.should_trip(&failure(&"slow error", 2.0)));
+}
+
+#[test]
+fn predicate_can_downcast_the_error() {
     #[derive(Debug)]
-    struct MyError {
-        is_server_error: bool,
+    struct HttpError {
+        server_side: bool,
     }
 
-    let server_error = MyError {
-        is_server_error: true,
-    };
-    let client_error = MyError {
-        is_server_error: false,
-    };
-
+    // Trip on server errors; unknown error types trip too.
     let classifier = PredicateClassifier::new(|ctx| {
         ctx.error
-            .downcast_ref::<MyError>()
-            .map(|e| e.is_server_error)
-            .unwrap_or(true) // Trip on unknown errors
+            .downcast_ref::<HttpError>()
+            .is_none_or(|error| error.server_side)
     });
 
-    let server_ctx = FailureContext {
-        circuit_name: "test",
-        error: &server_error as &dyn Any,
-        duration: 0.1,
-    };
-
-    let client_ctx = FailureContext {
-        circuit_name: "test",
-        error: &client_error as &dyn Any,
-        duration: 0.1,
-    };
-
-    assert!(classifier.should_trip(&server_ctx));
-    assert!(!classifier.should_trip(&client_ctx));
+    assert!(classifier.should_trip(&failure(&HttpError { server_side: true }, 0.1)));
+    assert!(!classifier.should_trip(&failure(&HttpError { server_side: false }, 0.1)));
+    assert!(classifier.should_trip(&failure(&"unknown", 0.1)));
 }

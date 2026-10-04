@@ -63,6 +63,9 @@ pub mod async_circuit;
 #[cfg(feature = "async")]
 pub mod distributed;
 
+#[cfg(all(test, feature = "std"))]
+mod test_support;
+
 #[cfg(feature = "async")]
 pub use async_circuit::{AsyncCallOptions, AsyncCircuitBreaker};
 pub use builder::CircuitBuilder;

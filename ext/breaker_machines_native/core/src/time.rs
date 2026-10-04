@@ -52,15 +52,4 @@ impl Clock for SystemClock {
 }
 
 #[cfg(all(test, feature = "std"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn system_clock_is_monotonic() {
-        let clock = SystemClock::new();
-        let a = clock.now_secs();
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        let b = clock.now_secs();
-        assert!(b >= a, "clock went backwards: {a} -> {b}");
-    }
-}
+mod tests;

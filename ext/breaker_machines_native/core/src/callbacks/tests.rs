@@ -1,75 +1,66 @@
 use super::*;
-use std::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
+fn flag() -> (Arc<AtomicBool>, CallbackFn) {
+    let called = Arc::new(AtomicBool::new(false));
+    let setter = Arc::clone(&called);
+    (
+        called,
+        Arc::new(move |_| setter.store(true, Ordering::SeqCst)),
+    )
+}
 
 #[test]
-fn test_callback_panic_safety() {
-    // Callbacks that panic should not crash the program
+fn panicking_callbacks_are_contained() {
     let callbacks = Callbacks {
         on_open: Some(Arc::new(|_| panic!("intentional panic in on_open"))),
         on_close: Some(Arc::new(|_| panic!("intentional panic in on_close"))),
         on_half_open: Some(Arc::new(|_| panic!("intentional panic in on_half_open"))),
     };
 
-    // These should not panic - the panics are caught internally
+    // Panics are caught so they never unwind across the FFI boundary.
     callbacks.trigger_open("test");
     callbacks.trigger_close("test");
     callbacks.trigger_half_open("test");
 }
 
 #[test]
-fn test_callback_executes_successfully() {
-    let open_called = Arc::new(AtomicBool::new(false));
-    let close_called = Arc::new(AtomicBool::new(false));
-    let half_open_called = Arc::new(AtomicBool::new(false));
-
-    let open_clone = open_called.clone();
-    let close_clone = close_called.clone();
-    let half_open_clone = half_open_called.clone();
-
+fn each_trigger_runs_its_callback() {
+    let (opened, on_open) = flag();
+    let (closed, on_close) = flag();
+    let (half_opened, on_half_open) = flag();
     let callbacks = Callbacks {
-        on_open: Some(Arc::new(move |_| {
-            open_clone.store(true, Ordering::SeqCst);
-        })),
-        on_close: Some(Arc::new(move |_| {
-            close_clone.store(true, Ordering::SeqCst);
-        })),
-        on_half_open: Some(Arc::new(move |_| {
-            half_open_clone.store(true, Ordering::SeqCst);
-        })),
+        on_open: Some(on_open),
+        on_close: Some(on_close),
+        on_half_open: Some(on_half_open),
     };
 
     callbacks.trigger_open("test");
+    assert!(opened.load(Ordering::SeqCst), "on_open not called");
+    assert!(!closed.load(Ordering::SeqCst), "on_close called early");
+
     callbacks.trigger_close("test");
     callbacks.trigger_half_open("test");
-
+    assert!(closed.load(Ordering::SeqCst), "on_close not called");
     assert!(
-        open_called.load(Ordering::SeqCst),
-        "on_open should be called"
-    );
-    assert!(
-        close_called.load(Ordering::SeqCst),
-        "on_close should be called"
-    );
-    assert!(
-        half_open_called.load(Ordering::SeqCst),
-        "on_half_open should be called"
+        half_opened.load(Ordering::SeqCst),
+        "on_half_open not called"
     );
 }
 
 #[test]
-fn test_callback_receives_circuit_name() {
-    let received_name = Arc::new(std::sync::Mutex::new(String::new()));
-    let name_clone = received_name.clone();
-
+fn callback_receives_circuit_name() {
+    let received = Arc::new(Mutex::new(String::new()));
+    let sink = Arc::clone(&received);
     let callbacks = Callbacks {
         on_open: Some(Arc::new(move |name| {
-            *name_clone.lock().unwrap() = name.to_string();
+            *sink.lock().unwrap() = name.to_string()
         })),
-        on_close: None,
-        on_half_open: None,
+        ..Callbacks::new()
     };
 
     callbacks.trigger_open("my_circuit");
 
-    assert_eq!(*received_name.lock().unwrap(), "my_circuit");
+    assert_eq!(*received.lock().unwrap(), "my_circuit");
 }

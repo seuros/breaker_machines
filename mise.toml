@@ -1,3 +1,3 @@
 [tools]
 ruby = "latest"
-rust = "1.98"
+rust = "1.99"
