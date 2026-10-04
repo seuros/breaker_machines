@@ -182,15 +182,14 @@ impl CircuitBuilder {
             .storage
             .unwrap_or_else(|| Arc::new(MemoryStorage::new()));
 
-        let context = CircuitContext {
+        CircuitBreaker::from_context(CircuitContext {
             name: self.name.into(),
             config: self.config,
             storage,
             failure_classifier: self.failure_classifier,
             bulkhead: self.bulkhead,
-        };
-
-        CircuitBreaker::with_context_and_callbacks(context, self.callbacks)
+            callbacks: self.callbacks,
+        })
     }
 
     /// Build an async-friendly circuit breaker wrapper.

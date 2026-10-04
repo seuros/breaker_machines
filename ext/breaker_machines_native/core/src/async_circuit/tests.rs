@@ -214,3 +214,36 @@ fn stale_half_open_probe_does_not_affect_new_half_open_generation() {
     assert_matches!(second, Ok("second"));
     assert!(circuit.is_closed());
 }
+
+#[test]
+fn reset_fences_probes_from_before_the_reset() {
+    let circuit = AsyncCircuitBreaker::builder("test")
+        .failure_threshold(1)
+        .half_open_timeout_secs(0.0)
+        .success_threshold(1)
+        .build_async();
+    let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("error") }));
+
+    let stale_ready = Arc::new(AtomicBool::new(false));
+    let mut stale_probe = Box::pin(circuit.call(|| gated_success(&stale_ready)));
+    assert_matches!(poll_once(stale_probe.as_mut()), Poll::Pending);
+
+    // Walk the same Closed -> Open -> HalfOpen path again after a reset, so a
+    // per-machine counter restarted by the reset would collide with the stale
+    // probe's epoch.
+    circuit.reset();
+    let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("error") }));
+    let mut current_probe = Box::pin(circuit.call(pending::<Result<(), &'static str>>));
+    assert_matches!(poll_once(current_probe.as_mut()), Poll::Pending);
+
+    stale_ready.store(true, Ordering::Release);
+    assert_matches!(
+        poll_once(stale_probe.as_mut()),
+        Poll::Ready(Ok("stale success"))
+    );
+
+    // The stale success neither closed the circuit nor freed the live slot.
+    assert_eq!(circuit.state_name(), "HalfOpen");
+    let competing = pollster::block_on(circuit.call(|| async { Ok::<_, &str>(()) }));
+    assert_matches!(competing, Err(CircuitError::HalfOpenLimitReached { .. }));
+}

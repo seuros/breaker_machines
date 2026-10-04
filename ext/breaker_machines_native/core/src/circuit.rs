@@ -224,6 +224,8 @@ pub struct CircuitContext {
     pub storage: Arc<dyn StorageBackend>,
     pub failure_classifier: Option<Arc<dyn FailureClassifier>>,
     pub bulkhead: Option<Arc<BulkheadSemaphore>>,
+    /// Fired by the state machine's `after` hooks on each transition.
+    pub callbacks: Callbacks,
 }
 
 impl Default for CircuitContext {
@@ -234,6 +236,7 @@ impl Default for CircuitContext {
             storage: Arc::new(crate::MemoryStorage::new()),
             failure_classifier: None,
             bulkhead: None,
+            callbacks: Callbacks::new(),
         }
     }
 }
@@ -252,6 +255,7 @@ impl core::fmt::Debug for CircuitContext {
                     .map(|_| "<dyn FailureClassifier>"),
             )
             .field("bulkhead", &self.bulkhead)
+            .field("callbacks", &self.callbacks)
             .finish()
     }
 }
@@ -259,7 +263,22 @@ impl core::fmt::Debug for CircuitContext {
 /// Data specific to the Open state
 #[derive(Debug, Clone, Default)]
 pub struct OpenData {
+    /// Storage-clock time at which the circuit opened.
     pub opened_at: f64,
+    /// Storage-clock time from which a half-open probe may run.
+    pub retry_at: f64,
+}
+
+impl OpenData {
+    /// Begin an open cycle now. The (possibly jittered) cooldown is drawn
+    /// once here, so every later check agrees on when to probe.
+    fn starting_now(ctx: &CircuitContext) -> Self {
+        let opened_at = ctx.storage.monotonic_time();
+        Self {
+            opened_at,
+            retry_at: opened_at + ctx.config.half_open_delay_secs(),
+        }
+    }
 }
 
 /// Data specific to the HalfOpen state
@@ -284,15 +303,21 @@ state_machine! {
     events {
         trip {
             guards: [should_open],
-            transition: { from: [Closed, HalfOpen], to: Open }
+            after: [notify_open],
+            transition: { from: [Closed, HalfOpen], to: Open, data: enter_open }
         }
         attempt_reset {
             guards: [timeout_elapsed],
+            after: [notify_half_open],
             transition: { from: Open, to: HalfOpen }
         }
         close {
             guards: [should_close],
+            after: [notify_close],
             transition: { from: HalfOpen, to: Closed }
+        }
+        reset {
+            transition: { from: [Closed, Open, HalfOpen], to: Closed }
         }
     }
 }
@@ -344,6 +369,11 @@ impl<S> Circuit<S> {
             ctx.config.minimum_calls,
         )
     }
+
+    /// Entry data for every transition into Open.
+    fn enter_open(&self) -> OpenData {
+        OpenData::starting_now(&self.ctx)
+    }
 }
 
 impl Circuit<HalfOpen> {
@@ -354,20 +384,29 @@ impl Circuit<HalfOpen> {
         };
         data.consecutive_successes >= ctx.config.success_threshold
     }
+
+    fn notify_half_open(&self) {
+        self.ctx.callbacks.trigger_half_open(&self.ctx.name);
+    }
 }
 
 impl Circuit<Open> {
-    /// Check if timeout has elapsed for Open -> HalfOpen transition
+    /// Check if the cooldown drawn on entry has elapsed
     fn timeout_elapsed(&self, ctx: &CircuitContext) -> bool {
         let Some(data) = self.state_data_open() else {
             unreachable!("Open typestate always carries OpenData");
         };
-        let current_time = ctx.storage.monotonic_time();
-        let elapsed = current_time - data.opened_at;
+        ctx.storage.monotonic_time() >= data.retry_at
+    }
 
-        let timeout_secs = ctx.config.half_open_delay_secs();
+    fn notify_open(&self) {
+        self.ctx.callbacks.trigger_open(&self.ctx.name);
+    }
+}
 
-        elapsed >= timeout_secs
+impl Circuit<Closed> {
+    fn notify_close(&self) {
+        self.ctx.callbacks.trigger_close(&self.ctx.name);
     }
 }
 
@@ -375,42 +414,27 @@ impl Circuit<Open> {
 pub struct CircuitBreaker {
     machine: DynamicCircuit,
     context: CircuitContext,
-    callbacks: Callbacks,
-    state_epoch: u64,
+    /// Epochs consumed by machines discarded after a poisoned dispatch, so the
+    /// state epoch stays monotonic across rebuilds.
+    retired_epochs: u64,
 }
 
 impl CircuitBreaker {
     /// Create a new circuit breaker (use builder() for more options)
     pub fn new(name: String, config: Config) -> Self {
-        let context = CircuitContext {
+        Self::from_context(CircuitContext {
             name: name.into(),
             config,
             ..CircuitContext::default()
-        };
-
-        let machine = DynamicCircuit::new(context.clone());
-        let callbacks = Callbacks::new();
-
-        Self {
-            machine,
-            context,
-            callbacks,
-            state_epoch: 0,
-        }
+        })
     }
 
-    /// Create a circuit breaker with custom context and callbacks (used by builder)
-    pub(crate) fn with_context_and_callbacks(
-        context: CircuitContext,
-        callbacks: Callbacks,
-    ) -> Self {
-        let machine = DynamicCircuit::new(context.clone());
-
+    /// Create a circuit breaker from a fully built context (used by builder)
+    pub(crate) fn from_context(context: CircuitContext) -> Self {
         Self {
-            machine,
+            machine: DynamicCircuit::new(context.clone()),
             context,
-            callbacks,
-            state_epoch: 0,
+            retired_epochs: 0,
         }
     }
 
@@ -459,19 +483,18 @@ impl CircuitBreaker {
         } else {
             None
         };
-        // Check for timeout-based Open -> HalfOpen transition
+        self.recover_if_poisoned();
+
+        // Open -> HalfOpen once the cooldown drawn on entry has elapsed; the
+        // guard rejecting simply keeps the circuit Open.
         if self.machine.current_state() == CircuitState::Open {
             let _ = self.machine.handle(CircuitEvent::AttemptReset);
-            if self.machine.current_state() == CircuitState::HalfOpen {
-                self.advance_state_epoch();
-                self.callbacks.trigger_half_open(&self.context.name);
-            }
         }
 
         let mut permit = CallPermit {
             _bulkhead: permit,
             half_open_probe: false,
-            state_epoch: self.state_epoch,
+            state_epoch: self.state_epoch(),
         };
 
         // Handle based on current state
@@ -549,6 +572,7 @@ impl CircuitBreaker {
         half_open_probe: bool,
         state_epoch: u64,
     ) -> Result<T, CircuitError<E>> {
+        self.recover_if_poisoned();
         if half_open_probe {
             self.release_half_open_probe(state_epoch);
         }
@@ -556,7 +580,7 @@ impl CircuitBreaker {
         // Async calls may finish after the circuit has moved through one or
         // more states. Their outcomes still belong in the rolling metrics, but
         // they must not drive transitions for a newer state generation.
-        let may_transition = state_epoch == self.state_epoch;
+        let may_transition = state_epoch == self.state_epoch();
 
         match result {
             Ok(val) => {
@@ -596,11 +620,13 @@ impl CircuitBreaker {
         }
     }
 
+    /// Release a reserved probe slot. Stale epochs are ignored: the slot
+    /// belonged to a HalfOpen visit that has already ended. A poisoned
+    /// machine has no data left to release from.
     pub(crate) fn release_half_open_probe(&mut self, state_epoch: u64) {
-        if state_epoch == self.state_epoch {
-            let Some(data) = self.machine.half_open_data_mut() else {
-                unreachable!("probe epoch matches, so the machine is still HalfOpen");
-            };
+        if state_epoch == self.state_epoch()
+            && let Some(data) = self.machine.half_open_data_mut()
+        {
             data.in_flight -= 1;
         }
     }
@@ -608,6 +634,7 @@ impl CircuitBreaker {
     /// Record a successful operation and drive HalfOpen -> Closed transitions
     pub fn record_success_and_maybe_close(&mut self, duration: f64) {
         self.record_success(duration);
+        self.recover_if_poisoned();
         self.maybe_close_after_success();
     }
 
@@ -618,24 +645,22 @@ impl CircuitBreaker {
             };
             data.consecutive_successes += 1;
 
-            if self.machine.handle(CircuitEvent::Close).is_ok() {
-                self.advance_state_epoch();
-                self.callbacks.trigger_close(&self.context.name);
-            }
+            // Guarded by should_close; on_close fires from the `after` hook.
+            let _ = self.machine.handle(CircuitEvent::Close);
         }
     }
 
     /// Record a failed operation and attempt to trip the circuit
     pub fn record_failure_and_maybe_trip(&mut self, duration: f64) {
         self.record_failure(duration);
+        self.recover_if_poisoned();
         self.maybe_trip_after_failure();
     }
 
     fn maybe_trip_after_failure(&mut self) {
-        let result = self.machine.handle(CircuitEvent::Trip);
-        if result.is_ok() {
-            self.mark_open();
-        } else if self.machine.current_state() == CircuitState::HalfOpen {
+        if self.machine.handle(CircuitEvent::Trip).is_err()
+            && self.machine.current_state() == CircuitState::HalfOpen
+        {
             let Some(data) = self.machine.half_open_data_mut() else {
                 unreachable!("HalfOpen state always carries HalfOpenData");
             };
@@ -660,12 +685,8 @@ impl CircuitBreaker {
     /// Check failure threshold and attempt to trip the circuit
     /// This should be called after record_failure() when not using call()
     pub fn check_and_trip(&mut self) -> bool {
-        if self.machine.handle(CircuitEvent::Trip).is_ok() {
-            self.mark_open();
-            true
-        } else {
-            false
-        }
+        self.recover_if_poisoned();
+        self.machine.handle(CircuitEvent::Trip).is_ok()
     }
 
     /// Check if circuit is open
@@ -686,23 +707,45 @@ impl CircuitBreaker {
     /// Clear all events and reset circuit to Closed state
     pub fn reset(&mut self) {
         self.context.storage.clear(&self.context.name);
-        // Recreate machine in Closed state
-        self.machine = DynamicCircuit::new(self.context.clone());
-        self.advance_state_epoch();
+        self.recover_if_poisoned();
+        // A transition rather than a rebuild: the epoch keeps advancing, so
+        // permits issued before the reset stay fenced.
+        let reset = self.machine.handle(CircuitEvent::Reset);
+        debug_assert!(
+            reset.is_ok(),
+            "reset is unguarded from every state: {reset:?}"
+        );
     }
 
-    /// Apply Open-state bookkeeping (timestamp + callback)
-    fn mark_open(&mut self) {
-        self.advance_state_epoch();
-        let Some(data) = self.machine.open_data_mut() else {
-            unreachable!("Open state always carries OpenData");
+    /// State generation fencing in-flight permits. Advances on every
+    /// external transition, and across poisoned-machine rebuilds.
+    fn state_epoch(&self) -> u64 {
+        self.retired_epochs
+            .wrapping_add(self.machine.transition_epoch())
+    }
+
+    /// Replace a machine poisoned by a panic during an earlier dispatch (a
+    /// storage backend or unwinding callback). The replacement resumes the
+    /// last committed state with fresh data: Open restarts its cooldown and
+    /// HalfOpen forgets probes, whose permits the epoch bump fences off.
+    fn recover_if_poisoned(&mut self) {
+        if !self.machine.is_poisoned() {
+            return;
+        }
+        let state = self.machine.current_state();
+        self.retired_epochs = self.state_epoch().wrapping_add(1);
+        self.machine = DynamicCircuit::new_init_state(self.context.clone(), state);
+        let restored = match state {
+            CircuitState::Closed => Ok(()),
+            CircuitState::Open => self
+                .machine
+                .set_open_data(OpenData::starting_now(&self.context)),
+            CircuitState::HalfOpen => self.machine.set_half_open_data(HalfOpenData::default()),
         };
-        data.opened_at = self.context.storage.monotonic_time();
-        self.callbacks.trigger_open(&self.context.name);
-    }
-
-    fn advance_state_epoch(&mut self) {
-        self.state_epoch = self.state_epoch.wrapping_add(1);
+        debug_assert!(
+            restored.is_ok(),
+            "fresh {state:?} machine rejected its data"
+        );
     }
 }
 
