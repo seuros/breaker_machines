@@ -22,11 +22,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
+      - name: Set up toolchain (mise)
+        uses: jdx/mise-action@v5
         with:
-          ruby-version: ${{ matrix.ruby-version }}
-          bundler-cache: true
+          mise_toml: |
+            [tools]
+            ruby = "${{ matrix.ruby-version }}"
+            ${{ startsWith(matrix.ruby-version, 'jruby') && 'java = "temurin-21"' || '' }}
+
+      - name: Cache gems
+        uses: actions/cache@v6
+        with:
+          path: vendor/bundle
+          key: ${{ runner.os }}-gems-${{ matrix.ruby-version }}-${{ hashFiles('Gemfile', '*.gemspec') }}
+
+      - name: Install gems
+        run: bundle install --jobs 4
 
       - name: Run tests
         run: bundle exec ruby -Ilib:test test/*_test.rb
