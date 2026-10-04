@@ -29,8 +29,8 @@ class DynamicCircuitsTest < ActiveSupport::TestCase
         fallback { 'critical fallback' }
       end
 
-      def call_service(name, &block)
-        circuit(name).wrap(&block)
+      def call_service(name, &)
+        circuit(name).wrap(&)
       end
 
       def call_dynamic_service(name, template: nil, config: nil, &business_logic)

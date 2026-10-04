@@ -80,7 +80,7 @@ module BreakerMachines
 
       private
 
-      def execute_with_fallback(method, *args, **kwargs)
+      def execute_with_fallback(method, *, **kwargs)
         chain_started_at = BreakerMachines.monotonic_time
         attempted_backends = []
 
@@ -100,9 +100,9 @@ module BreakerMachines
 
             result = backend.with_timeout(config[:timeout]) do
               if kwargs.any?
-                backend.send(method, *args, **kwargs)
+                backend.send(method, *, **kwargs)
               else
-                backend.send(method, *args)
+                backend.send(method, *)
               end
             end
 

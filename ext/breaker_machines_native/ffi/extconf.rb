@@ -33,7 +33,6 @@ require 'mkmf'
 begin
   require 'rb_sys/mkmf'
 
-  require 'pathname'
 
   create_rust_makefile('breaker_machines_native/breaker_machines_native') do |r|
     ffi_dir = Pathname(__dir__)

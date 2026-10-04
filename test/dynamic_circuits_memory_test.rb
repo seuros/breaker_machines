@@ -13,8 +13,8 @@ class DynamicCircuitsMemoryTest < ActiveSupport::TestCase
         fallback { |error| { delivered: false, error: error.message } }
       end
 
-      def call_service(name, global: false, &block)
-        dynamic_circuit(name, template: :webhook_template, global: global).wrap(&block)
+      def call_service(name, global: false, &)
+        dynamic_circuit(name, template: :webhook_template, global: global).wrap(&)
       end
     end
   end

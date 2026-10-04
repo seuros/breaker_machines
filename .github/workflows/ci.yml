@@ -61,15 +61,11 @@ jobs:
       fail-fast: false
       matrix:
         ruby:
-          - "3.4"
           - "4.0"
         rails:
           - "8.0"
           - "8.1"
         include:
-          - ruby: "3.4"
-            rails: "edge"
-            experimental: true
           - ruby: "4.0"
             rails: "edge"
             experimental: true
@@ -112,15 +108,11 @@ jobs:
       fail-fast: false
       matrix:
         ruby:
-          - "3.4"
           - "4.0"
         rails:
           - "8.0"
           - "8.1"
         include:
-          - ruby: "3.4"
-            rails: "edge"
-            experimental: true
           - ruby: "4.0"
             rails: "edge"
             experimental: true

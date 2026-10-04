@@ -18,7 +18,7 @@ Gem::Specification.new do |spec|
   DESC
   spec.homepage = 'https://github.com/seuros/breaker_machines'
   spec.license = 'MIT'
-  spec.required_ruby_version = '>= 3.3.0'
+  spec.required_ruby_version = '>= 4.0.0'
 
   # Platform support
   spec.platform = Gem::Platform::RUBY

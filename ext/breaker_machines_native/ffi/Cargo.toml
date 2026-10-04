@@ -16,7 +16,8 @@ workspace = true
 
 [dependencies]
 breaker-machines = { path = "../core", version = "0.17.0" }
-magnus = "0.8.2"
+magnus = "0.9"
+rb-sys = "0.9.124"
 
 [build-dependencies]
 rb-sys = "0.9"

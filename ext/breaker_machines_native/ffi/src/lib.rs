@@ -4,13 +4,23 @@
 //! It exposes:
 //! - Thread-safe storage backend for circuit breaker event tracking
 //! - Complete circuit breaker with state machine
+//!
+//! The extension is Ractor-safe. `Storage` is `Sync`, so a frozen instance
+//! (`Ractor.make_shareable(storage)`) can be shared between Ractors. `Circuit`
+//! holds a `RefCell` and stays local to the Ractor that created it.
 
 use breaker_machines::{CircuitBreaker, Config, EventKind, MemoryStorage, StorageBackend};
-use magnus::{Error, Module, Object, RArray, RHash, Ruby, function, method};
+use magnus::{Error, Module, Object, RArray, RHash, Ruby, TryConvert, function, method};
+use std::cell::RefCell;
 use std::sync::Arc;
 
 /// Ruby wrapper for the native storage backend
-#[magnus::wrap(class = "BreakerMachinesNative::Storage")]
+#[magnus::wrap(
+    class = "BreakerMachinesNative::Storage",
+    free_immediately,
+    size,
+    frozen_shareable
+)]
 struct RubyStorage {
     inner: Arc<MemoryStorage>,
 }
@@ -54,34 +64,45 @@ impl RubyStorage {
     }
 
     /// Get event log for a circuit (returns array of hashes)
-    fn event_log(ruby: &Ruby, storage: &RubyStorage, circuit_name: String, limit: usize) -> RArray {
+    fn event_log(
+        ruby: &Ruby,
+        storage: &RubyStorage,
+        circuit_name: String,
+        limit: usize,
+    ) -> Result<RArray, Error> {
         let events = storage.inner.event_log(&circuit_name, limit);
-        let array = ruby.ary_new();
+        let array = ruby.ary_new_capa(events.len());
 
         for event in events {
-            let hash = ruby.hash_new();
-            let type_sym = match event.kind {
+            let hash = ruby.hash_new_capa(3);
+            let kind = match event.kind {
                 EventKind::Success => "success",
                 EventKind::Failure => "failure",
             };
 
-            let _ = hash.aset(ruby.to_symbol("type"), type_sym);
-            let _ = hash.aset(ruby.to_symbol("timestamp"), event.timestamp);
-            let _ = hash.aset(
+            hash.aset(ruby.to_symbol("type"), kind)?;
+            hash.aset(ruby.to_symbol("timestamp"), event.timestamp)?;
+            hash.aset(
                 ruby.to_symbol("duration_ms"),
                 (event.duration * 1000.0).round(),
-            );
-            let _ = array.push(hash);
+            )?;
+            array.push(hash)?;
         }
 
-        array
+        Ok(array)
     }
 }
 
 /// Ruby wrapper for the native circuit breaker
-#[magnus::wrap(class = "BreakerMachinesNative::Circuit")]
+#[magnus::wrap(class = "BreakerMachinesNative::Circuit", free_immediately, size)]
 struct RubyCircuit {
-    inner: std::cell::RefCell<CircuitBreaker>,
+    inner: RefCell<CircuitBreaker>,
+}
+
+/// Read an optional config entry. Missing keys and `nil` yield `None`; a
+/// value of the wrong type raises `TypeError` rather than being ignored.
+fn config_value<T: TryConvert>(ruby: &Ruby, config: RHash, key: &str) -> Result<Option<T>, Error> {
+    config.lookup(ruby.to_symbol(key))
 }
 
 impl RubyCircuit {
@@ -93,57 +114,26 @@ impl RubyCircuit {
     ///   - failure_window_secs: Time window for counting failures (default: 60.0)
     ///   - half_open_timeout_secs: Timeout before attempting reset (default: 30.0)
     ///   - success_threshold: Successes needed to close from half-open (default: 2)
-    fn new(ruby: &Ruby, name: String, config_hash: RHash) -> Result<Self, Error> {
-        use magnus::TryConvert;
-
-        // Extract config values with proper type conversion
-        let failure_threshold: usize = config_hash
-            .get(ruby.to_symbol("failure_threshold"))
-            .and_then(|v| usize::try_convert(v).ok())
-            .unwrap_or(5);
-
-        let failure_window_secs: f64 = config_hash
-            .get(ruby.to_symbol("failure_window_secs"))
-            .and_then(|v| f64::try_convert(v).ok())
-            .unwrap_or(60.0);
-
-        let half_open_timeout_secs: f64 = config_hash
-            .get(ruby.to_symbol("half_open_timeout_secs"))
-            .and_then(|v| f64::try_convert(v).ok())
-            .unwrap_or(30.0);
-
-        let success_threshold: usize = config_hash
-            .get(ruby.to_symbol("success_threshold"))
-            .and_then(|v| usize::try_convert(v).ok())
-            .unwrap_or(2);
-
-        let jitter_factor: f64 = config_hash
-            .get(ruby.to_symbol("jitter_factor"))
-            .and_then(|v| f64::try_convert(v).ok())
-            .unwrap_or(0.0);
-
-        let failure_rate_threshold: Option<f64> = config_hash
-            .get(ruby.to_symbol("failure_rate_threshold"))
-            .and_then(|v| f64::try_convert(v).ok());
-
-        let minimum_calls: usize = config_hash
-            .get(ruby.to_symbol("minimum_calls"))
-            .and_then(|v| usize::try_convert(v).ok())
-            .unwrap_or(20);
+    ///   - jitter_factor: Cooldown jitter, 0.0-1.0 (default: 0.0)
+    ///   - failure_rate_threshold: Failure ratio that opens the circuit (default: none)
+    ///   - minimum_calls: Calls required before the rate applies (default: 20)
+    fn new(ruby: &Ruby, name: String, config: RHash) -> Result<Self, Error> {
+        let half_open_timeout_secs =
+            config_value(ruby, config, "half_open_timeout_secs")?.unwrap_or(30.0);
 
         let config = Config {
-            failure_threshold: Some(failure_threshold),
-            failure_rate_threshold,
-            minimum_calls,
-            failure_window_secs,
+            failure_threshold: Some(config_value(ruby, config, "failure_threshold")?.unwrap_or(5)),
+            failure_rate_threshold: config_value(ruby, config, "failure_rate_threshold")?,
+            minimum_calls: config_value(ruby, config, "minimum_calls")?.unwrap_or(20),
+            failure_window_secs: config_value(ruby, config, "failure_window_secs")?.unwrap_or(60.0),
             half_open_timeout_secs,
-            success_threshold,
+            success_threshold: config_value(ruby, config, "success_threshold")?.unwrap_or(2),
             probe_timeout_secs: half_open_timeout_secs,
-            jitter_factor,
+            jitter_factor: config_value(ruby, config, "jitter_factor")?.unwrap_or(0.0),
         };
 
         Ok(Self {
-            inner: std::cell::RefCell::new(CircuitBreaker::new(name, config)),
+            inner: RefCell::new(CircuitBreaker::new(name, config)),
         })
     }
 
@@ -185,13 +175,14 @@ impl RubyCircuit {
 /// Initialize the Ruby extension
 #[magnus::init]
 fn init(ruby: &Ruby) -> Result<(), Error> {
-    // Create BreakerMachinesNative module
+    // Must precede every method definition: Ruby marks methods Ractor-safe as
+    // they are defined. Nothing below touches process-global mutable state.
+    // SAFETY: called on the loading thread during extension initialisation.
+    unsafe { rb_sys::rb_ext_ractor_safe(true) };
+
     let module = ruby.define_module("BreakerMachinesNative")?;
 
-    // Define Storage class
     let storage_class = module.define_class("Storage", ruby.class_object())?;
-
-    // Storage instance methods
     storage_class.define_singleton_method("new", function!(RubyStorage::new, 0))?;
     storage_class.define_method("record_success", method!(RubyStorage::record_success, 2))?;
     storage_class.define_method("record_failure", method!(RubyStorage::record_failure, 2))?;
@@ -201,10 +192,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     storage_class.define_method("clear_all", method!(RubyStorage::clear_all, 0))?;
     storage_class.define_method("event_log", method!(RubyStorage::event_log, 2))?;
 
-    // Define Circuit class
     let circuit_class = module.define_class("Circuit", ruby.class_object())?;
-
-    // Circuit instance methods
     circuit_class.define_singleton_method("new", function!(RubyCircuit::new, 2))?;
     circuit_class.define_method("record_success", method!(RubyCircuit::record_success, 1))?;
     circuit_class.define_method("record_failure", method!(RubyCircuit::record_failure, 1))?;

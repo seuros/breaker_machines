@@ -11,11 +11,11 @@ module BreakerMachines
     include Circuit::AsyncStateManagement
 
     # Additional async-specific methods
-    def call_async(&block)
+    def call_async(&)
       require 'async' unless defined?(::Async)
 
       Async do
-        call(&block)
+        call(&)
       end
     end
 

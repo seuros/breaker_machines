@@ -39,12 +39,12 @@ module BreakerMachines
         end
       end
 
-      def circuit(name, &block)
+      def circuit(name, &)
         @circuits ||= {}
 
         if block_given?
           builder = DSL::CircuitBuilder.new
-          builder.instance_eval(&block)
+          builder.instance_eval(&)
           @circuits[name] = builder.config
         end
 
@@ -52,12 +52,12 @@ module BreakerMachines
       end
 
       # Define a cascading circuit breaker that can trip dependent circuits
-      def cascade_circuit(name, &block)
+      def cascade_circuit(name, &)
         @circuits ||= {}
 
         if block_given?
           builder = DSL::CascadingCircuitBuilder.new
-          builder.instance_eval(&block)
+          builder.instance_eval(&)
           @circuits[name] = builder.config.merge(circuit_type: :cascading)
         end
 
@@ -81,12 +81,12 @@ module BreakerMachines
       end
 
       # Define reusable circuit templates
-      def circuit_template(name, &block)
+      def circuit_template(name, &)
         @circuit_templates ||= {}
 
         if block_given?
           builder = DSL::CircuitBuilder.new
-          builder.instance_eval(&block)
+          builder.instance_eval(&)
           @circuit_templates[name] = builder.config
         end
 
