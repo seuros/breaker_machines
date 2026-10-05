@@ -24,10 +24,18 @@ SUPPORTED_NATIVE_PLATFORMS = %w[
 ].freeze
 
 if defined?(RbSys::ExtensionTask)
-  RbSys::ExtensionTask.new('breaker_machines_native', GEMSPEC) do |ext|
+  native_ext = RbSys::ExtensionTask.new('breaker_machines_native', GEMSPEC) do |ext|
     ext.lib_dir = 'lib/breaker_machines_native'
     ext.tmp_dir = 'tmp/rb_sys'
     ext.cross_platform = SUPPORTED_NATIVE_PLATFORMS if ENV.key?('RUBY_TARGET')
+  end
+
+  # A single-version cross build stages its binary at the host binary's path,
+  # which the gem package depends on, so packaging would also compile for the
+  # host and fail where the host linker can't target the platform (aarch64).
+  if ENV.key?('RUBY_TARGET')
+    host_binary = "#{native_ext.lib_dir}/#{native_ext.name}.#{RbConfig::CONFIG['DLEXT']}"
+    Rake::Task[host_binary].clear_prerequisites if Rake::Task.task_defined?(host_binary)
   end
 
   namespace :native do
