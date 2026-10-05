@@ -5,6 +5,11 @@ on:
     branches:
       - master
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild and attach gems for (skips release-please)
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -16,12 +21,13 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
-      releases_created: ${{ steps.release.outputs.releases_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
+      releases_created: ${{ inputs.tag && 'true' || steps.release.outputs.releases_created }}
+      tag_name: ${{ inputs.tag || steps.release.outputs.tag_name }}
       upload_url: ${{ steps.release.outputs.upload_url }}
     steps:
       - uses: googleapis/release-please-action@v5
         id: release
+        if: ${{ !inputs.tag }}
 
   build-ruby-gem:
     needs: release-please
@@ -29,10 +35,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.sha }}
 
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: '3.4'
+          ruby-version: '4.0'
           bundler-cache: true
 
       - name: Build Ruby gem
@@ -60,6 +68,8 @@ jobs:
           - aarch64-linux
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.sha }}
 
       - name: Configure gem installation directory
         run: |
@@ -74,7 +84,7 @@ jobs:
         uses: oxidize-rb/actions/cross-gem@v1
         with:
           platform: ${{ matrix.platform }}
-          ruby-versions: '3.4, 4.0'
+          ruby-versions: '4.0'
           cache-version: ${{ matrix.platform }}-v0
 
       - name: Upload platform gem artifact
@@ -119,7 +129,7 @@ jobs:
 
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: '3.4'
+          ruby-version: '4.0'
 
       - name: Download all gem artifacts
         uses: actions/download-artifact@v8
