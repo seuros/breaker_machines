@@ -28,7 +28,7 @@ jobs:
           platform: ${{ github.event.inputs.platform }}
           ruby-versions: '4.0'
           # The rb-sys-dock image's rustc is older than the 1.99 in mise.toml.
-          pre-script: export RUSTUP_HOME=/tmp/rustup RUSTUP_TOOLCHAIN=1.99 && rustup toolchain install 1.99 --profile minimal --target "$RUST_TARGET"
+          pre-script: rustup toolchain install 1.99 --profile minimal --target "$RUST_TARGET" && rustup default 1.99
 
       - name: Upload native gem artifact
         uses: actions/upload-artifact@v7
