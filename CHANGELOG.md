@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.18.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.17.0...breaker_machines/v0.18.0) (2026-10-05)
+
+
+### Features
+
+* **core:** adopt state-machines 0.30 entry data, hooks and epochs ([d1ee535](https://github.com/seuros/breaker_machines/commit/d1ee535083dd996aa9f6d84c096255cafedaf0c6))
+* require Ruby 4.0, magnus 0.9, Ractor-safe native ext ([bcad7dd](https://github.com/seuros/breaker_machines/commit/bcad7dd403f8fa31a4e0d26c3b173c7b0c8299a0))
+
+
+### Bug Fixes
+
+* **build:** skip host compile when packaging a cross gem ([308f761](https://github.com/seuros/breaker_machines/commit/308f761fd77163485ec3e19b1f6c1eda4c7cdbf6))
+* **deps:** loosen state-machines/chrono-machines version ranges ([535f507](https://github.com/seuros/breaker_machines/commit/535f50758de19ff920f082ce575361a2161bfb9f))
+* **deps:** pin state_machines ~&gt; 0.202, chrono_machines ~&gt; 0.9; crates to 0.30/0.8 ([ed47405](https://github.com/seuros/breaker_machines/commit/ed47405988274b30b10dc3934d71f094f0f745c2))
+
 ## [0.17.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.16.1...breaker_machines/v0.17.0) (2026-09-14)
 
 

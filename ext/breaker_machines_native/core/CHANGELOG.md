@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.17.1...breaker-machines-v0.18.0) (2026-10-05)
+
+
+### Features
+
+* **core:** adopt state-machines 0.30 entry data, hooks and epochs ([d1ee535](https://github.com/seuros/breaker_machines/commit/d1ee535083dd996aa9f6d84c096255cafedaf0c6))
+
+
+### Bug Fixes
+
+* **deps:** pin state_machines ~&gt; 0.202, chrono_machines ~&gt; 0.9; crates to 0.30/0.8 ([ed47405](https://github.com/seuros/breaker_machines/commit/ed47405988274b30b10dc3934d71f094f0f745c2))
+
 ## [0.17.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.16.1...breaker-machines-v0.17.0) (2026-09-14)
 
 
