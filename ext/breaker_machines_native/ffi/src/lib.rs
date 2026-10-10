@@ -10,11 +10,34 @@
 //! holds a `RefCell` and stays local to the Ractor that created it.
 
 use breaker_machines::circuit::CircuitState;
-use breaker_machines::{CircuitBreaker, Config, EventKind, MemoryStorage, StorageBackend};
-use magnus::{Error, Module, Object, RArray, RHash, RString, Ruby, TryConvert, function, method};
+use breaker_machines::{
+    CircuitBreaker, CircuitError, Config, EventKind, MemoryStorage, StorageBackend,
+};
+use magnus::value::ReprValue;
+use magnus::{
+    Class, Error, ExceptionClass, Module, Object, RArray, RHash, RModule, RString, Ruby,
+    TryConvert, Value, function, method,
+};
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::convert::Infallible;
 use std::sync::Arc;
+
+/// Fallback for `BreakerMachines::CircuitOpenError` when only the extension is
+/// loaded; same constructor, so both are raised the same way.
+const NATIVE_OPEN_ERROR: &str = r#"
+module BreakerMachinesNative
+  class CircuitOpenError < StandardError
+    attr_reader :circuit_name, :opened_at
+
+    def initialize(circuit_name, opened_at = nil)
+      @circuit_name = circuit_name
+      @opened_at = opened_at
+      super("Circuit '#{circuit_name}' is open")
+    end
+  end
+end
+"#;
 
 /// Read a Ruby string as UTF-8, borrowing it in place whenever possible.
 ///
@@ -46,14 +69,93 @@ unsafe fn utf8_str(string: &RString) -> Result<Cow<'_, str>, Error> {
     RString::to_string(*string).map(Cow::Owned)
 }
 
-/// Lowercased [`CircuitState`] name, as Ruby has always received it
-/// (`state_name().to_lowercase()`), without allocating per call.
+/// [`CircuitState`] as the pure-Ruby circuit names it (`:half_open`).
 const fn ruby_state_name(state: CircuitState) -> &'static str {
     match state {
         CircuitState::Closed => "closed",
         CircuitState::Open => "open",
-        CircuitState::HalfOpen => "halfopen",
+        CircuitState::HalfOpen => "half_open",
     }
+}
+
+/// A rejected admission, copied out of the circuit so the Ruby exception can
+/// be built after its `RefCell` borrow has ended.
+#[derive(Debug)]
+enum Rejection {
+    /// Open, or `HalfOpen` with every probe slot taken. `age` is how long ago
+    /// the circuit opened; `HalfOpenLimitReached` does not carry it.
+    Open {
+        circuit: Arc<str>,
+        age: Option<f64>,
+    },
+    BulkheadFull {
+        circuit: Arc<str>,
+        limit: usize,
+    },
+    /// A local circuit has no storage errors; kept for exhaustiveness.
+    Other(String),
+}
+
+impl Rejection {
+    fn new(error: CircuitError<Infallible>, now: f64) -> Self {
+        match error {
+            CircuitError::Open { circuit, opened_at } => Self::Open {
+                circuit,
+                age: Some(now - opened_at),
+            },
+            CircuitError::HalfOpenLimitReached { circuit } => Self::Open { circuit, age: None },
+            CircuitError::BulkheadFull { circuit, limit } => Self::BulkheadFull { circuit, limit },
+            CircuitError::Storage(error) => Self::Other(error.to_string()),
+            CircuitError::Execution(never) => match never {},
+        }
+    }
+
+    /// The exception the pure-Ruby circuit raises for the same rejection.
+    fn into_error(self, ruby: &Ruby) -> Error {
+        let exception = match self {
+            Self::Open { circuit, age } => open_error_class(ruby).and_then(|class| {
+                // `opened_at` in Ruby's clock, as the pure-Ruby circuit stores it.
+                let opened_at = age.map(|age| ruby_monotonic_time(ruby).map(|now| now - age));
+                class.new_instance((&*circuit, opened_at.transpose()?))
+            }),
+            Self::BulkheadFull { circuit, limit } => {
+                let Some(class) = breaker_machines_error(ruby, "CircuitBulkheadError") else {
+                    let message = format!("Circuit '{circuit}' bulkhead is full (limit: {limit})");
+                    return Error::new(ruby.exception_runtime_error(), message);
+                };
+                class.new_instance((&*circuit, limit))
+            }
+            Self::Other(message) => return Error::new(ruby.exception_runtime_error(), message),
+        };
+        // Failing to build the exception raises that failure instead.
+        exception.map_or_else(|error| error, Error::from)
+    }
+}
+
+/// `BreakerMachines::<name>` when the gem is loaded, looked up per call so it
+/// works whichever was required first.
+fn breaker_machines_error(ruby: &Ruby, name: &str) -> Option<ExceptionClass> {
+    // Not loaded is the expected case for the extension alone, not an error.
+    let namespace: RModule = ruby.class_object().const_get("BreakerMachines").ok()?;
+    namespace.const_get(name).ok()
+}
+
+fn open_error_class(ruby: &Ruby) -> Result<ExceptionClass, Error> {
+    match breaker_machines_error(ruby, "CircuitOpenError") {
+        Some(class) => Ok(class),
+        None => ruby
+            .class_object()
+            .const_get::<_, RModule>("BreakerMachinesNative")?
+            .const_get("CircuitOpenError"),
+    }
+}
+
+/// `Process.clock_gettime(Process::CLOCK_MONOTONIC)`, the clock behind
+/// `BreakerMachines.monotonic_time`.
+fn ruby_monotonic_time(ruby: &Ruby) -> Result<f64, Error> {
+    let process = ruby.module_process();
+    let clock: Value = process.const_get("CLOCK_MONOTONIC")?;
+    process.funcall("clock_gettime", (clock,))
 }
 
 /// Ruby wrapper for the native storage backend
@@ -242,6 +344,49 @@ impl RubyCircuit {
         self.inner.borrow().is_closed()
     }
 
+    /// Check if circuit is half-open
+    fn is_half_open(&self) -> bool {
+        self.inner.borrow().state() == CircuitState::HalfOpen
+    }
+
+    /// Run the block under circuit protection, like the pure-Ruby circuit.
+    ///
+    /// The circuit is borrowed only to admit and to record the outcome, never
+    /// while the block runs, so the block may re-enter this circuit and other
+    /// threads may use it while the block waits on IO. A `StandardError`
+    /// counts as a failure and is re-raised unchanged; other exceptions and
+    /// `throw`/`break` pass through without counting.
+    fn call(ruby: &Ruby, circuit: &Self) -> Result<Value, Error> {
+        if !ruby.block_given() {
+            return Err(Error::new(
+                ruby.exception_local_jump_error(),
+                "no block given (yield)",
+            ));
+        }
+
+        let admission = {
+            let mut inner = circuit.inner.borrow_mut();
+            inner
+                .try_acquire()
+                .map_err(|error| Rejection::new(error, inner.monotonic_time()))
+        };
+        let ticket = admission.map_err(|rejection| rejection.into_error(ruby))?;
+
+        let result = ruby.yield_values::<(), Value>(());
+
+        if let Err(error) = &result
+            && !error.is_kind_of(ruby.exception_standard_error())
+        {
+            circuit.inner.borrow_mut().abandon(ticket);
+            return result;
+        }
+        let outcome = circuit.inner.borrow_mut().complete(ticket, result);
+        outcome.map_err(|error| match error {
+            CircuitError::Execution(error) => error,
+            other => Error::new(ruby.exception_runtime_error(), other.to_string()),
+        })
+    }
+
     /// Get current state name (lowercase for Ruby compatibility)
     fn state_name(&self) -> &'static str {
         ruby_state_name(self.inner.borrow().state())
@@ -265,6 +410,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     }
 
     let module = ruby.define_module("BreakerMachinesNative")?;
+    let _: Value = ruby.eval(NATIVE_OPEN_ERROR)?;
 
     let storage_class = module.define_class("Storage", ruby.class_object())?;
     storage_class.define_singleton_method("new", function!(RubyStorage::new, 0))?;
@@ -282,6 +428,8 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     circuit_class.define_method("record_failure", method!(RubyCircuit::record_failure, 1))?;
     circuit_class.define_method("is_open", method!(RubyCircuit::is_open, 0))?;
     circuit_class.define_method("is_closed", method!(RubyCircuit::is_closed, 0))?;
+    circuit_class.define_method("is_half_open", method!(RubyCircuit::is_half_open, 0))?;
+    circuit_class.define_method("call", method!(RubyCircuit::call, 0))?;
     circuit_class.define_method("state_name", method!(RubyCircuit::state_name, 0))?;
     circuit_class.define_method("reset", method!(RubyCircuit::reset, 0))?;
 

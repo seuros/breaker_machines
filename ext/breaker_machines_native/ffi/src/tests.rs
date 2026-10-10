@@ -1,16 +1,13 @@
 use super::*;
 
 #[test]
-fn ruby_state_names_match_the_lowercased_state_names() {
-    for state in [
-        CircuitState::Closed,
-        CircuitState::Open,
-        CircuitState::HalfOpen,
-    ] {
-        assert_eq!(
-            ruby_state_name(state),
-            state.name().to_lowercase(),
-            "state: {state:?}"
-        );
+fn ruby_state_names_match_the_pure_ruby_circuit() {
+    const CASES: &[(CircuitState, &str)] = &[
+        (CircuitState::Closed, "closed"),
+        (CircuitState::Open, "open"),
+        (CircuitState::HalfOpen, "half_open"),
+    ];
+    for &(state, expected) in CASES {
+        assert_eq!(ruby_state_name(state), expected, "state: {state:?}");
     }
 }

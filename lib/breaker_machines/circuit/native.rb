@@ -57,23 +57,15 @@ module BreakerMachines
 
       # Execute a block with circuit breaker protection
       #
+      # Admission, the open -> half-open cooldown, and half-open probe limits run
+      # in the native circuit. A StandardError counts as a failure and is
+      # re-raised; other exceptions and throw/break pass through uncounted.
+      #
       # @yield Block to execute
       # @return Result of the block
-      # @raise [CircuitOpenError] if circuit is open
-      def call
-        raise CircuitOpenError, "Circuit '#{@name}' is open" if open?
-
-        start_time = BreakerMachines.monotonic_time
-        begin
-          result = yield
-          duration = BreakerMachines.monotonic_time - start_time
-          @native_circuit.record_success(duration)
-          result
-        rescue StandardError => _e
-          duration = BreakerMachines.monotonic_time - start_time
-          @native_circuit.record_failure(duration)
-          raise
-        end
+      # @raise [CircuitOpenError] if circuit is open or its probe slots are taken
+      def call(&)
+        @native_circuit.call(&)
       end
 
       # Check if circuit is open
@@ -88,8 +80,14 @@ module BreakerMachines
         @native_circuit.is_closed
       end
 
+      # Check if circuit is half-open (probing for recovery)
+      # @return [Boolean]
+      def half_open?
+        @native_circuit.is_half_open
+      end
+
       # Get current state name
-      # @return [String] 'open' or 'closed'
+      # @return [String] 'closed', 'open', or 'half_open'
       def state
         @native_circuit.state_name
       end
