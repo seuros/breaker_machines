@@ -3,6 +3,10 @@
 require 'test_helper'
 
 class HedgedExecutionTest < ActiveSupport::TestCase
+  # How long a deliberately slow branch can block. Tests assert only that they
+  # finish well inside it, so scheduler noise cannot fail them.
+  SLOW_BRANCH_SECS = 5.0
+
   def setup
     @call_count = Concurrent::AtomicFixnum.new(0)
     @latencies = Concurrent::Array.new
@@ -41,9 +45,12 @@ class HedgedExecutionTest < ActiveSupport::TestCase
   end
 
   def test_multiple_backends
+    # The slow backend cannot finish before `wrap` returns: it waits for a
+    # release that only comes afterwards (or for SLOW_BRANCH_SECS).
+    release_slow = Concurrent::Event.new
     fast_backend = -> { 'fast' }
     slow_backend = lambda {
-      sleep 0.5
+      release_slow.wait(SLOW_BRANCH_SECS)
       'slow'
     }
 
@@ -52,14 +59,13 @@ class HedgedExecutionTest < ActiveSupport::TestCase
                                              hedging_delay: 5 # Start second backend after 5ms
                                            })
 
-    start_time = BreakerMachines.monotonic_time
-    result = circuit.wrap { 'ignored' }
-    duration = BreakerMachines.monotonic_time - start_time
+    result, duration = timed { circuit.wrap { 'ignored' } }
+    release_slow.set
 
     # Should get result from fast backend
     assert_equal 'fast', result
-    # Should complete quickly (not wait for slow backend)
-    assert_operator duration, :<, 0.25
+    # Returned without waiting for the slow backend
+    assert_operator duration, :<, SLOW_BRANCH_SECS / 2
   end
 
   def test_hedged_request_with_failure
@@ -79,12 +85,17 @@ class HedgedExecutionTest < ActiveSupport::TestCase
 
   def test_parallel_fallback
     primary = -> { raise 'Primary failed' }
+    # fallback1 (listed first) finishes only after fallback2's thread has
+    # queued its result, so the winner is decided by completion order rather
+    # than by sleeps. Run one after the other, fallback1 would instead wait out
+    # SLOW_BRANCH_SECS and win by list order.
+    fast_thread = Concurrent::IVar.new
     fallback1 = lambda {
-      sleep 0.05
+      fast_thread.value(SLOW_BRANCH_SECS)&.join
       'fallback1'
     }
     fallback2 = lambda {
-      sleep 0.01
+      fast_thread.set(Thread.current)
       'fallback2'
     }
 
@@ -92,14 +103,12 @@ class HedgedExecutionTest < ActiveSupport::TestCase
                                              fallback: BreakerMachines::DSL::ParallelFallbackWrapper.new([fallback1, fallback2])
                                            })
 
-    start_time = BreakerMachines.monotonic_time
-    result = circuit.wrap(&primary)
-    duration = BreakerMachines.monotonic_time - start_time
+    result, duration = timed { circuit.wrap(&primary) }
 
-    # Should get fastest fallback
+    # Should get the fallback that finished first
     assert_equal 'fallback2', result
-    # Should complete quickly
-    assert_operator duration, :<, 0.08
+    # The fallbacks ran in parallel: nothing waited out the slow branch
+    assert_operator duration, :<, SLOW_BRANCH_SECS / 2
   end
 
   def test_hedged_with_bulkhead
@@ -110,36 +119,35 @@ class HedgedExecutionTest < ActiveSupport::TestCase
                                              max_concurrent: 2 # bulkhead limit
                                            })
 
-    results = Concurrent::Array.new
-    threads = []
-    # Use latches to ensure proper synchronization
+    # Count wraps, not attempts: hedging runs extra copies of a block that is
+    # still blocked after `hedging_delay`, and those copies share `entered`.
     start_latch = Concurrent::CountDownLatch.new(2)
     hold_latch = Concurrent::CountDownLatch.new(1)
 
     # Start 2 concurrent requests (filling bulkhead)
-    2.times do
-      threads << Thread.new do
+    threads = Array.new(2) do
+      Thread.new do
+        entered = Concurrent::AtomicBoolean.new(false)
         circuit.wrap do
-          start_latch.count_down # Signal we've started
+          start_latch.count_down if entered.make_true # Signal this wrap started
           hold_latch.wait # Wait for signal to complete
-          results << 'concurrent'
+          'concurrent'
         end
       end
     end
 
-    # Wait for both threads to be inside the circuit block
-    start_latch.wait
+    # Wait for both wraps to be inside the circuit, each holding a permit
+    assert start_latch.wait(SLOW_BRANCH_SECS), 'both wraps should enter the circuit'
 
     # Now bulkhead should be full - this should be rejected
     assert_raises(BreakerMachines::CircuitBulkheadError) do
       circuit.wrap { 'rejected' }
     end
 
-    # Release the threads
+    # Release the threads; each wrap returns its block's result once
     hold_latch.count_down
-    threads.each(&:join)
 
-    assert_equal %w[concurrent concurrent], results.to_a
+    assert_equal %w[concurrent concurrent], threads.map(&:value)
   end
 
   def test_dsl_hedged_configuration
@@ -185,5 +193,14 @@ class HedgedExecutionTest < ActiveSupport::TestCase
 
     assert_instance_of BreakerMachines::DSL::ParallelFallbackWrapper, config[:fallback]
     assert_equal 2, config[:fallback].fallbacks.size
+  end
+
+  private
+
+  # The block's result and how long it took, in seconds.
+  def timed
+    start_time = BreakerMachines.monotonic_time
+    result = yield
+    [result, BreakerMachines.monotonic_time - start_time]
   end
 end
