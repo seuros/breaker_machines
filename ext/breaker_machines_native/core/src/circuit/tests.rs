@@ -1,6 +1,8 @@
 use super::*;
 use crate::test_support::ManualClock;
 use crate::{Event, MemoryStorage, PredicateClassifier};
+use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::assert_matches;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
@@ -350,6 +352,7 @@ fn jittered_delay_stays_within_bounds() {
 }
 
 #[test]
+#[cfg(feature = "std")]
 fn jitter_varies_the_delay() {
     let config = Config {
         half_open_timeout_secs: 1.0,
@@ -362,6 +365,19 @@ fn jitter_varies_the_delay() {
         (0..20).any(|_| config.half_open_delay_secs().total_cmp(&first).is_ne()),
         "50% jitter produced a constant delay of {first}s"
     );
+}
+
+#[test]
+#[cfg(not(feature = "std"))]
+fn jitter_is_ignored_without_std() {
+    let config = Config {
+        half_open_timeout_secs: 1.0,
+        jitter_factor: 0.5,
+        ..Config::default()
+    };
+
+    // No randomness source without `std`: the base timeout, in whole ms.
+    assert_eq!(config.half_open_delay_secs(), 1.0);
 }
 
 #[test]
@@ -860,6 +876,168 @@ fn recovers_from_a_dispatch_poisoned_in_open_by_restarting_cooldown() {
 }
 
 #[test]
+#[cfg(any(feature = "std", feature = "inspect"))]
 fn state_graph_validates() {
     assert_matches!(Circuit::<Closed>::schema().validate().as_slice(), []);
+}
+
+/// A circuit on `clock` that opens on one failure and probes after one second.
+fn ticketed_circuit(clock: &ManualClock, success_threshold: usize) -> CircuitBreaker {
+    CircuitBreaker::builder("test")
+        .failure_threshold(1)
+        .half_open_timeout_secs(1.0)
+        .success_threshold(success_threshold)
+        .storage(clock.storage())
+        .build()
+}
+
+/// Trip a closed circuit through the two-phase API.
+fn trip_with_ticket(circuit: &mut CircuitBreaker) {
+    let ticket = circuit.try_acquire().expect("a closed circuit admits");
+    assert_matches!(
+        circuit.complete(ticket, Err::<(), _>("boom")),
+        Err(CircuitError::Execution("boom"))
+    );
+    assert_eq!(circuit.state(), CircuitState::Open);
+}
+
+#[test]
+fn try_acquire_admits_while_closed_and_rejects_while_open() {
+    let clock = ManualClock::starting_at(100);
+    let mut circuit = ticketed_circuit(&clock, 2);
+
+    let ticket = circuit.try_acquire().expect("a closed circuit admits");
+    assert_matches!(circuit.complete(ticket, Ok::<_, &str>("ok")), Ok("ok"));
+    assert_eq!(circuit.context.storage.success_count("test", 60.0), 1);
+
+    trip_with_ticket(&mut circuit);
+    // The rejection `call` returns without a fallback.
+    assert_matches!(
+        circuit.try_acquire(),
+        Err(CircuitError::Open { circuit: ref name, opened_at: 100.0 }) if &**name == "test"
+    );
+    assert_matches!(
+        circuit.call(|| Ok::<_, &str>(())),
+        Err(CircuitError::Open {
+            opened_at: 100.0,
+            ..
+        })
+    );
+    assert_eq!(circuit.monotonic_time(), 100.0);
+}
+
+#[test]
+fn try_acquire_half_opens_after_cooldown_and_limits_probes() {
+    let clock = ManualClock::starting_at(100);
+    let mut circuit = ticketed_circuit(&clock, 2);
+    trip_with_ticket(&mut circuit);
+
+    clock.advance(Duration::from_millis(999));
+    assert_matches!(circuit.try_acquire(), Err(CircuitError::Open { .. }));
+
+    clock.advance(Duration::from_millis(1));
+    let first = circuit.try_acquire().expect("the cooldown has elapsed");
+    assert_eq!(circuit.state(), CircuitState::HalfOpen);
+    let second = circuit.try_acquire().expect("a second probe slot");
+    assert_matches!(
+        circuit.try_acquire(),
+        Err(CircuitError::HalfOpenLimitReached { .. })
+    );
+
+    assert_matches!(circuit.complete(first, Ok::<_, &str>(1)), Ok(1));
+    assert_eq!(circuit.state(), CircuitState::HalfOpen);
+    assert_matches!(circuit.complete(second, Ok::<_, &str>(2)), Ok(2));
+    assert_eq!(circuit.state(), CircuitState::Closed);
+}
+
+#[test]
+fn half_open_failure_through_a_ticket_reopens() {
+    let clock = ManualClock::starting_at(100);
+    let mut circuit = ticketed_circuit(&clock, 2);
+    trip_with_ticket(&mut circuit);
+    clock.advance(Duration::from_secs(1));
+
+    let probe = circuit.try_acquire().expect("the cooldown has elapsed");
+    assert_matches!(
+        circuit.complete(probe, Err::<(), _>("still down")),
+        Err(CircuitError::Execution("still down"))
+    );
+
+    assert_eq!(circuit.state(), CircuitState::Open);
+    assert_matches!(
+        circuit.try_acquire(),
+        Err(CircuitError::Open {
+            opened_at: 101.0,
+            ..
+        })
+    );
+}
+
+#[test]
+fn abandon_frees_the_probe_slot_without_recording() {
+    let clock = ManualClock::starting_at(100);
+    let mut circuit = ticketed_circuit(&clock, 1);
+    trip_with_ticket(&mut circuit);
+    clock.advance(Duration::from_secs(1));
+
+    let probe = circuit.try_acquire().expect("the cooldown has elapsed");
+    assert_matches!(
+        circuit.try_acquire(),
+        Err(CircuitError::HalfOpenLimitReached { .. })
+    );
+
+    circuit.abandon(probe);
+
+    let storage = &circuit.context.storage;
+    assert_eq!(
+        (
+            storage.success_count("test", 60.0),
+            storage.failure_count("test", 60.0)
+        ),
+        (0, 1),
+        "abandon recorded an outcome"
+    );
+    assert_eq!(circuit.state(), CircuitState::HalfOpen);
+    let retry = circuit
+        .try_acquire()
+        .expect("the abandoned slot is free again");
+    assert_matches!(circuit.complete(retry, Ok::<_, &str>(())), Ok(()));
+    assert_eq!(circuit.state(), CircuitState::Closed);
+}
+
+#[test]
+fn stale_ticket_cannot_drive_transitions() {
+    let clock = ManualClock::starting_at(100);
+    let mut circuit = ticketed_circuit(&clock, 1);
+    trip_with_ticket(&mut circuit);
+    clock.advance(Duration::from_secs(1));
+    let probe = circuit.try_acquire().expect("the cooldown has elapsed");
+
+    circuit.reset();
+    assert_matches!(
+        circuit.complete(probe, Err::<(), _>("late")),
+        Err(CircuitError::Execution("late"))
+    );
+
+    // Counted in the metrics, but it belonged to the HalfOpen visit the reset
+    // ended, so it cannot trip the circuit that replaced it.
+    assert_eq!(circuit.context.storage.failure_count("test", 60.0), 1);
+    assert_eq!(circuit.state(), CircuitState::Closed);
+}
+
+#[test]
+fn tickets_hold_the_bulkhead_permit_until_returned() {
+    let mut circuit = CircuitBreaker::builder("test").max_concurrency(1).build();
+
+    let completed = circuit.try_acquire().expect("a permit is free");
+    assert_matches!(
+        circuit.try_acquire(),
+        Err(CircuitError::BulkheadFull { limit: 1, .. })
+    );
+    assert_matches!(circuit.complete(completed, Ok::<_, &str>(())), Ok(()));
+
+    let abandoned = circuit.try_acquire().expect("complete released the permit");
+    circuit.abandon(abandoned);
+    let ticket = circuit.try_acquire().expect("abandon released the permit");
+    circuit.abandon(ticket);
 }

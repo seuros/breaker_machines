@@ -5,7 +5,7 @@
 
 use crate::{
     CircuitBreaker, CircuitBuilder, Config, FallbackContext,
-    circuit::{CallGate, CallPermit},
+    circuit::{CallGate, CallPermit, CallTicket},
     errors::CircuitError,
 };
 use std::{
@@ -56,13 +56,8 @@ impl<T, E> AsyncCallOptions<T, E> {
     }
 }
 
-enum AsyncCallGate<'a> {
-    Execute {
-        permit: CallPermit,
-        start: f64,
-        probe: HalfOpenProbe<'a>,
-        state_epoch: u64,
-    },
+enum AsyncCallGate {
+    Execute(CallTicket),
     Open {
         permit: CallPermit,
         context: FallbackContext,
@@ -174,12 +169,7 @@ impl AsyncCircuitBreaker {
         let gate = {
             let mut circuit = self.lock_inner();
             match circuit.prepare_call()? {
-                CallGate::Execute(permit) => AsyncCallGate::Execute {
-                    start: circuit.start_time(),
-                    probe: HalfOpenProbe::new(self, permit.half_open_probe(), permit.state_epoch()),
-                    state_epoch: permit.state_epoch(),
-                    permit,
-                },
+                CallGate::Execute(permit) => AsyncCallGate::Execute(circuit.ticket(permit)),
                 CallGate::Open {
                     _permit: permit,
                     context,
@@ -188,24 +178,18 @@ impl AsyncCircuitBreaker {
         };
 
         match gate {
-            AsyncCallGate::Execute {
-                permit,
-                start,
-                mut probe,
-                state_epoch,
-            } => {
-                let half_open_probe = permit.half_open_probe();
+            AsyncCallGate::Execute(ticket) => {
+                // Releases the reserved probe slot if this future is dropped
+                // while the operation is pending.
+                let mut probe =
+                    HalfOpenProbe::new(self, ticket.half_open_probe(), ticket.state_epoch());
                 let result = operation().await;
-                let output = {
-                    let mut circuit = self.lock_inner();
-                    // `complete_call` releases the probe before invoking storage,
-                    // classifiers, or callbacks. Disarming here prevents a panic
-                    // in any of those hooks from releasing another task's slot.
-                    probe.disarm();
-                    circuit.complete_call(start, result, half_open_probe, state_epoch)
-                };
-                drop(permit);
-                output
+                let mut circuit = self.lock_inner();
+                // `complete` releases the probe before invoking storage,
+                // classifiers, or callbacks. Disarming here prevents a panic
+                // in any of those hooks from releasing another task's slot.
+                probe.disarm();
+                circuit.complete(ticket, result)
             }
             AsyncCallGate::Open { permit, context } => {
                 drop(permit);

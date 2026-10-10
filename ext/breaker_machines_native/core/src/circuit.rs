@@ -9,6 +9,7 @@ use crate::{
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
+use core::convert::Infallible;
 use state_machines::state_machine;
 
 /// Circuit breaker configuration
@@ -200,19 +201,39 @@ where
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct CallPermit {
     _bulkhead: Option<crate::BulkheadGuard>,
     half_open_probe: bool,
     state_epoch: u64,
 }
 
-impl CallPermit {
+/// Admission for one protected operation, from [`CircuitBreaker::try_acquire`].
+///
+/// The two-phase API lets a caller run the operation without borrowing the
+/// circuit, e.g. across an FFI boundary or user code that may re-enter it.
+///
+/// A ticket must be handed back to [`CircuitBreaker::complete`] (the outcome
+/// counts) or [`CircuitBreaker::abandon`] (it does not). It holds the bulkhead
+/// permit, which dropping releases, but it has no reference back to the
+/// circuit: dropping a half-open probe ticket leaks its probe slot for the
+/// rest of that `HalfOpen` visit. Once every slot has leaked no probe can
+/// run, and only [`CircuitBreaker::reset`] recovers the circuit.
+#[derive(Debug)]
+#[must_use = "pass the ticket to `complete` or `abandon`; dropping it leaks a half-open probe slot"]
+pub struct CallTicket {
+    permit: CallPermit,
+    /// Storage-clock time the operation was admitted, for its duration.
+    start: f64,
+}
+
+impl CallTicket {
     pub(crate) const fn half_open_probe(&self) -> bool {
-        self.half_open_probe
+        self.permit.half_open_probe
     }
 
     pub(crate) const fn state_epoch(&self) -> u64 {
-        self.state_epoch
+        self.permit.state_epoch
     }
 }
 
@@ -597,29 +618,93 @@ impl CircuitBreaker {
         permit: CallPermit,
         f: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, CircuitError<E>> {
-        let half_open_probe = permit.half_open_probe();
-        let state_epoch = permit.state_epoch();
-        let start = self.start_time();
+        let ticket = self.ticket(permit);
 
         // Guard the reserved probe slot across `f()`: if it panics, the guard's
-        // Drop releases it; on success we disarm and let `complete_call` release.
+        // Drop releases it; on success we disarm and let `complete` release.
         let result = {
             let mut probe_guard = HalfOpenProbeGuard {
                 circuit: self,
-                armed: half_open_probe,
-                state_epoch,
+                armed: ticket.half_open_probe(),
+                state_epoch: ticket.state_epoch(),
             };
             let result = f();
             probe_guard.disarm();
             result
         };
 
-        let output = self.complete_call(start, result, half_open_probe, state_epoch);
-        drop(permit);
+        self.complete(ticket, result)
+    }
+
+    /// Stamp an admitted permit with its start time.
+    pub(crate) fn ticket(&self, permit: CallPermit) -> CallTicket {
+        CallTicket {
+            permit,
+            start: self.monotonic_time(),
+        }
+    }
+
+    /// Admit one operation without running it, for callers that cannot keep
+    /// the circuit borrowed while it runs. Like [`call`](Self::call), an Open
+    /// circuit whose cooldown has elapsed moves to `HalfOpen` here, and a
+    /// `HalfOpen` admission reserves one probe slot.
+    ///
+    /// # Errors
+    ///
+    /// The same rejections [`call`](Self::call) returns without a fallback:
+    /// - [`CircuitError::BulkheadFull`] when the concurrency limit is reached.
+    /// - [`CircuitError::Open`] while the cooldown has not elapsed.
+    /// - [`CircuitError::HalfOpenLimitReached`] when every probe slot is taken.
+    ///
+    /// `Infallible` rules out [`CircuitError::Execution`]: nothing has run yet.
+    pub fn try_acquire(&mut self) -> Result<CallTicket, CircuitError<Infallible>> {
+        match self.prepare_call()? {
+            CallGate::Execute(permit) => Ok(self.ticket(permit)),
+            CallGate::Open { context, .. } => Err(context.into_open_error()),
+        }
+    }
+
+    /// Record the outcome of an operation admitted by
+    /// [`try_acquire`](Self::try_acquire), exactly as [`call`](Self::call)
+    /// does: the failure classifier applies, and an outcome admitted before
+    /// the circuit last changed state still counts in the metrics but cannot
+    /// drive a transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns the operation's own error as [`CircuitError::Execution`].
+    pub fn complete<T, E: 'static>(
+        &mut self,
+        ticket: CallTicket,
+        result: Result<T, E>,
+    ) -> Result<T, CircuitError<E>> {
+        let output = self.complete_call(
+            ticket.start,
+            result,
+            ticket.half_open_probe(),
+            ticket.state_epoch(),
+        );
+        // The bulkhead permit is held until the outcome is recorded.
+        drop(ticket);
         output
     }
 
-    pub(crate) fn start_time(&self) -> f64 {
+    /// Give back an admission without recording an outcome, for operations
+    /// that ended in a way that must not count (cancelled, or unwound by a
+    /// non-error control transfer). Frees its half-open probe slot and
+    /// bulkhead permit.
+    pub fn abandon(&mut self, ticket: CallTicket) {
+        if ticket.half_open_probe() {
+            self.release_half_open_probe(ticket.state_epoch());
+        }
+        // Consumed here so its bulkhead permit is released now.
+        drop(ticket);
+    }
+
+    /// Current reading of this circuit's storage clock, the time base of
+    /// [`CircuitError::Open`]'s and [`FallbackContext`]'s `opened_at`.
+    #[must_use]
+    pub fn monotonic_time(&self) -> f64 {
         self.context.storage.monotonic_time()
     }
 
