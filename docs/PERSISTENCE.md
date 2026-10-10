@@ -456,7 +456,7 @@ end
 
 ### Optimistic Synchronization
 
-Default behavior - instances check shared state before making decisions:
+Instances refresh stored state before admitting a call and before completing a recovery probe or handling a failure. An observed state change invalidates earlier local admissions without replaying the other instance's callbacks.
 
 ```ruby
 circuit :optimistic do
@@ -464,9 +464,10 @@ circuit :optimistic do
   threshold failures: 3, within: 60.seconds
 
   # Each instance checks shared state on each call
-  # Small race conditions possible but generally safe
 end
 ```
+
+This is optimistic synchronization: reads and transitions are not a single atomic storage operation. Half-open probe limits apply per instance, not across the fleet. Stored `opened_at` values use a monotonic clock, so recovery timing requires a shared clock origin; do not rely on it across hosts or reboots. A distributed probe lease and portable recovery timestamps require additional storage support.
 
 ### Pessimistic Synchronization
 

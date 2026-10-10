@@ -19,9 +19,8 @@ module BreakerMachines
       private
 
       def attempt_recovery_if_ready
-        return unless open? && reset_timeout_elapsed?
-
         @mutex.with_write_lock do
+          restore_status_from_storage
           attempt_recovery if open? && reset_timeout_elapsed?
         end
       end
@@ -56,6 +55,7 @@ module BreakerMachines
         return unless admission.half_open?
 
         @mutex.with_write_lock do
+          restore_status_from_storage
           return unless admission_current?(admission) && half_open?
 
           successful_attempts = @half_open_successes.increment
@@ -69,6 +69,7 @@ module BreakerMachines
 
       def handle_failure(admission)
         @mutex.with_write_lock do
+          restore_status_from_storage
           return unless admission_current?(admission)
 
           if admission.closed? && closed? && failure_threshold_exceeded?
@@ -85,6 +86,7 @@ module BreakerMachines
         return unless admission.half_open?
 
         @mutex.with_write_lock do
+          restore_status_from_storage
           next unless admission_current?(admission) && half_open?
           next unless @half_open_attempts.value.positive?
 

@@ -55,10 +55,23 @@ module BreakerMachines
 
       def restore_status_from_storage
         stored_status = @storage.get_status(@name)
-        return unless stored_status
+        return unless stored_status && stored_status != @stored_status
 
+        @stored_status = stored_status
         self.status = stored_status.status.to_s
-        @opened_at.value = stored_status.opened_at if stored_status.opened_at
+        @opened_at.value = stored_status.opened_at
+        @state_epoch.increment
+        @half_open_attempts.value = 0
+        @half_open_successes.value = 0
+        return unless closed?
+
+        @last_error.value = nil
+        @last_failure_at.value = nil
+      end
+
+      def persist_status(status, opened_at = nil)
+        @storage.set_status(@name, status, opened_at)
+        @stored_status = BreakerMachines::Status.new(status: status, opened_at: opened_at)
       end
     end
   end
