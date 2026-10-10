@@ -11,7 +11,8 @@
     "ext/breaker_machines_native/core": {
       "release-type": "rust",
       "package-name": "breaker-machines",
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": ["README.md"]
     }
   }
 }

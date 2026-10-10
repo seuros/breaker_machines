@@ -31,6 +31,13 @@ Approximately 65x faster than Ruby-based storage for sliding window calculations
 
 ```rust
 use breaker_machines::CircuitBreaker;
+# struct StripeApi;
+# impl StripeApi {
+#     fn charge(&self, amount: u64) -> Result<String, String> {
+#         Ok(format!("charged {amount}"))
+#     }
+# }
+# let (stripe_api, amount) = (StripeApi, 4200);
 
 let mut circuit = CircuitBreaker::builder("payment_api")
     .failure_threshold(5)
@@ -61,6 +68,9 @@ if circuit.is_open() {
 
 ```rust
 use breaker_machines::CircuitBreaker;
+# fn alert_ops(_circuit: &str) {}
+# fn api_request() -> Result<&'static str, std::io::Error> { Ok("ok") }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 let mut circuit = CircuitBreaker::builder("api")
     .failure_threshold(3)
@@ -70,17 +80,21 @@ let mut circuit = CircuitBreaker::builder("api")
     })
     .on_close(|name| {
         // Log recovery
-        info!("Circuit {} recovered", name);
+        println!("Circuit {} recovered", name);
     })
     .build();
 
 circuit.call(|| api_request())?;
+# Ok(())
+# }
 ```
 
 ### With Jitter (Thundering Herd Prevention)
 
 ```rust
 use breaker_machines::CircuitBreaker;
+# fn api_request() -> Result<&'static str, std::io::Error> { Ok("ok") }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 let mut circuit = CircuitBreaker::builder("distributed_api")
     .failure_threshold(5)
@@ -92,12 +106,16 @@ let mut circuit = CircuitBreaker::builder("distributed_api")
 // With jitter, multiple circuits won't retry simultaneously
 // Prevents thundering herd problem in distributed systems
 circuit.call(|| api_request())?;
+# Ok(())
+# }
 ```
 
-### With Fallback (v0.2.0+)
+### With Fallback
 
 ```rust
 use breaker_machines::{CircuitBreaker, CallOptions};
+# fn expensive_api_call() -> Result<String, String> { Err("upstream down".into()) }
+# fn get_cached_value() -> String { "cached".into() }
 
 let mut circuit = CircuitBreaker::builder("api")
     .failure_threshold(3)
@@ -123,11 +141,22 @@ Enable the `async` feature to use `AsyncCircuitBreaker` with Rust futures:
 
 ```toml
 [dependencies]
-breaker-machines = { version = "0.15", features = ["async"] }
+breaker-machines = { version = "0.18.0", features = ["async"] } # x-release-please-version
 ```
 
 ```rust
+# #[cfg(feature = "async")]
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# pollster::block_on(async {
 use breaker_machines::{AsyncCallOptions, AsyncCircuitBreaker};
+# struct PaymentClient;
+# impl PaymentClient {
+#     async fn charge(&self, amount: u64) -> Result<String, std::io::Error> {
+#         Ok(format!("charged {amount}"))
+#     }
+# }
+# let (payment_client, amount) = (PaymentClient, 4200);
+# fn cached_payment() -> String { "cached".into() }
 
 let circuit = AsyncCircuitBreaker::builder("payment_api")
     .failure_threshold(3)
@@ -150,6 +179,11 @@ let cached = circuit
         }),
     )
     .await?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+# })
+# }
+# #[cfg(not(feature = "async"))]
+# fn main() {}
 ```
 
 `AsyncCircuitBreaker` is runtime-agnostic. It only locks around short circuit
@@ -165,12 +199,22 @@ metrics, but cannot drive transitions in a newer half-open generation.
 
 ```toml
 [dependencies]
-breaker-machines = { version = "0.16", features = ["async"] }
+breaker-machines = { version = "0.18.0", features = ["async"] } # x-release-please-version
 ```
 
 ```rust
+# #[cfg(feature = "async")]
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# pollster::block_on(async {
 use breaker_machines::{CircuitBreaker, MemoryStorage};
 use std::sync::Arc;
+# struct PaymentClient;
+# impl PaymentClient {
+#     async fn charge(&self, amount: u64) -> Result<String, std::io::Error> {
+#         Ok(format!("charged {amount}"))
+#     }
+# }
+# let (payment_client, amount) = (PaymentClient, 4200);
 
 let state_store = Arc::new(MemoryStorage::new());
 
@@ -186,6 +230,11 @@ let gateway = CircuitBreaker::builder("payment_api")
 let payment = gateway
     .call(|| async { payment_client.charge(amount).await })
     .await?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+# })
+# }
+# #[cfg(not(feature = "async"))]
+# fn main() {}
 ```
 
 The backend owns the complete control-plane record: FSM state, generation,
@@ -204,7 +253,7 @@ or compare-and-swap primitive to satisfy the `AsyncStorageBackend` atomicity
 contract. `MemoryStorage` provides the same semantics for tests and for
 multi-worker coordination inside one process.
 
-### Rate-based Thresholds (v0.2.0+)
+### Rate-based Thresholds
 
 ```rust
 use breaker_machines::CircuitBreaker;
@@ -224,7 +273,7 @@ let mut circuit = CircuitBreaker::builder("api")
     .build();
 ```
 
-### Exception Filtering (v0.3.0+)
+### Exception Filtering
 
 ```rust
 use breaker_machines::{CircuitBreaker, PredicateClassifier};
@@ -250,7 +299,9 @@ let mut circuit = CircuitBreaker::builder("api")
     .build();
 
 // Client errors don't trip the circuit
-circuit.call(|| Err::<(), _>(ApiError::ClientError(400)))?;
+for _ in 0..5 {
+    let _ = circuit.call(|| Err::<(), _>(ApiError::ClientError(400)));
+}
 assert!(circuit.is_closed());
 
 // Server errors do trip the circuit
@@ -260,10 +311,17 @@ for _ in 0..5 {
 assert!(circuit.is_open());
 ```
 
-### Bulkheading (v0.3.0+)
+### Bulkheading
 
 ```rust
 use breaker_machines::{CircuitBreaker, CircuitError};
+# struct Database;
+# impl Database {
+#     fn query(&self, _sql: &str) -> Result<Vec<String>, String> {
+#         Ok(vec!["alice".into(), "bob".into()])
+#     }
+# }
+# let database = Database;
 
 // Limit concurrent operations to prevent resource exhaustion
 let mut circuit = CircuitBreaker::builder("database")
@@ -324,7 +382,9 @@ let mut circuit = CircuitBreaker::builder("benchmark_test")
     .build();
 
 // Circuit will never open (no failure tracking)
-circuit.call(|| Err::<(), _>("always fails"))?;
+for _ in 0..10 {
+    let _ = circuit.call(|| Err::<(), _>("always fails"));
+}
 assert!(circuit.is_closed()); // Still closed
 ```
 
@@ -332,7 +392,7 @@ assert!(circuit.is_closed()); // Still closed
 
 The circuit breaker implements a state machine with three states:
 
-```
+```text
 Closed → Open → HalfOpen → Closed
    ↑                 ↓
    └─────────────────┘

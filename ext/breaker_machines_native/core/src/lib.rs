@@ -103,3 +103,8 @@ pub struct Event {
     pub timestamp: f64,
     pub duration: f64,
 }
+
+/// Compiles and runs the README's examples as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
