@@ -14,6 +14,7 @@ pub struct Callbacks {
 }
 
 impl Callbacks {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             on_open: None,
@@ -24,11 +25,13 @@ impl Callbacks {
 
     /// Invoke an optional callback safely, catching any panics to prevent
     /// unwinding across FFI boundaries.
-    fn trigger(callback: &Option<CallbackFn>, circuit: &str) {
+    fn trigger(callback: Option<&CallbackFn>, circuit: &str) {
         if let Some(callback) = callback {
             #[cfg(feature = "std")]
             {
                 let cb = std::panic::AssertUnwindSafe(callback);
+                // A panicking callback is contained here on purpose; its
+                // payload is dropped so the transition still completes.
                 let _ = std::panic::catch_unwind(|| cb(circuit));
             }
             #[cfg(not(feature = "std"))]
@@ -36,19 +39,19 @@ impl Callbacks {
         }
     }
 
-    /// Trigger the on_open callback safely.
+    /// Trigger the `on_open` callback safely.
     pub fn trigger_open(&self, circuit: &str) {
-        Self::trigger(&self.on_open, circuit);
+        Self::trigger(self.on_open.as_ref(), circuit);
     }
 
-    /// Trigger the on_close callback safely.
+    /// Trigger the `on_close` callback safely.
     pub fn trigger_close(&self, circuit: &str) {
-        Self::trigger(&self.on_close, circuit);
+        Self::trigger(self.on_close.as_ref(), circuit);
     }
 
-    /// Trigger the on_half_open callback safely.
+    /// Trigger the `on_half_open` callback safely.
     pub fn trigger_half_open(&self, circuit: &str) {
-        Self::trigger(&self.on_half_open, circuit);
+        Self::trigger(self.on_half_open.as_ref(), circuit);
     }
 }
 

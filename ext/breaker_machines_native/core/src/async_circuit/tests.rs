@@ -23,12 +23,15 @@ fn gated_success(
 #[test]
 fn records_success() {
     pollster::block_on(async {
-        let circuit = AsyncCircuitBreaker::builder("test").build_async();
+        for circuit in [
+            AsyncCircuitBreaker::builder("test").build_async(),
+            AsyncCircuitBreaker::new("test", Config::default()),
+        ] {
+            let result = circuit.call(|| async { Ok::<_, &str>("success") }).await;
 
-        let result = circuit.call(|| async { Ok::<_, &str>("success") }).await;
-
-        assert_matches!(result, Ok("success"));
-        assert!(circuit.is_closed());
+            assert_matches!(result, Ok("success"));
+            assert!(circuit.is_closed());
+        }
     });
 }
 

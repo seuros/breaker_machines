@@ -62,6 +62,11 @@ impl DistributedCircuitBreaker {
     }
 
     /// Execute an async operation using the shared FSM.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`call_with_options`](Self::call_with_options) without a
+    /// fallback.
     pub async fn call<F, Fut, T, E: 'static>(&self, operation: F) -> Result<T, CircuitError<E>>
     where
         F: FnOnce() -> Fut,
@@ -72,6 +77,17 @@ impl DistributedCircuitBreaker {
     }
 
     /// Execute an async operation with an optional async open-state fallback.
+    ///
+    /// # Errors
+    ///
+    /// - [`CircuitError::BulkheadFull`] when the concurrency limit is reached.
+    /// - [`CircuitError::HalfOpenLimitReached`] when another node holds the
+    ///   half-open probe lease.
+    /// - [`CircuitError::Open`] when the circuit is open and no fallback is set.
+    /// - [`CircuitError::Storage`] when the backend fails to load, elect, or
+    ///   record.
+    /// - [`CircuitError::Execution`] wrapping the operation's (or fallback's)
+    ///   own error.
     pub async fn call_with_options<F, Fut, T, E: 'static>(
         &self,
         operation: F,
@@ -142,11 +158,19 @@ impl DistributedCircuitBreaker {
     }
 
     /// Load the authoritative shared state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's [`StorageError`] if the state cannot be read.
     pub async fn state(&self) -> Result<CircuitSnapshot, StorageError> {
         self.storage.load_state(&self.name).await
     }
 
     /// Check whether the authoritative state is open.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's [`StorageError`] if the state cannot be read.
     pub async fn is_open(&self) -> Result<bool, StorageError> {
         self.state()
             .await
@@ -154,6 +178,10 @@ impl DistributedCircuitBreaker {
     }
 
     /// Check whether the authoritative state is closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's [`StorageError`] if the state cannot be read.
     pub async fn is_closed(&self) -> Result<bool, StorageError> {
         self.state()
             .await
@@ -161,6 +189,10 @@ impl DistributedCircuitBreaker {
     }
 
     /// Reset shared metrics and FSM state while advancing its generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's [`StorageError`] if the reset cannot be applied.
     pub async fn reset(&self) -> Result<CircuitSnapshot, StorageError> {
         self.storage.reset(&self.name).await
     }

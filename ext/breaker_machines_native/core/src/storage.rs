@@ -52,6 +52,7 @@ pub enum SharedCircuitState {
 
 impl SharedCircuitState {
     /// Stable state name for diagnostics and fallbacks.
+    #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::Closed => "Closed",
@@ -104,7 +105,7 @@ pub enum ProbeDecision {
         lease: ProbeLease,
         /// State after the lease was acquired.
         snapshot: CircuitSnapshot,
-        /// Whether this operation performed the Open -> HalfOpen transition.
+        /// Whether this operation performed the Open -> `HalfOpen` transition.
         transitioned: bool,
     },
 }
@@ -148,9 +149,9 @@ pub struct ProbePolicy {
 /// Shared transition won by a storage operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateTransition {
-    /// Closed or HalfOpen -> Open.
+    /// Closed or `HalfOpen` -> Open.
     Opened,
-    /// HalfOpen -> Closed.
+    /// `HalfOpen` -> Closed.
     Closed,
 }
 
@@ -180,6 +181,7 @@ impl StorageError {
     }
 
     /// Return the backend-provided message.
+    #[must_use]
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -345,21 +347,25 @@ pub struct MemoryStorage {
 
 impl MemoryStorage {
     /// Create a new storage instance
+    #[must_use]
     pub fn new() -> Self {
         Self::with_max_events(1000)
     }
 
     /// Create storage with custom max events per circuit
+    #[must_use]
     pub fn with_max_events(max_events: usize) -> Self {
         Self::with_max_events_and_clock(max_events, default_clock())
     }
 
     /// Create storage with a custom [`Clock`].
+    #[must_use]
     pub fn with_clock(clock: Box<dyn Clock>) -> Self {
         Self::with_max_events_and_clock(1000, clock)
     }
 
     /// Create storage with both a custom event cap and time source.
+    #[must_use]
     pub fn with_max_events_and_clock(max_events: usize, clock: Box<dyn Clock>) -> Self {
         Self {
             circuits: RwLock::new(HashMap::new()),
@@ -391,14 +397,7 @@ impl MemoryStorage {
 
         circuits
             .get(circuit_name)
-            .map(|circuit| {
-                circuit
-                    .events
-                    .iter()
-                    .filter(|e| e.kind == kind && e.timestamp >= cutoff)
-                    .count()
-            })
-            .unwrap_or(0)
+            .map_or(0, |circuit| Self::count_kind(circuit, kind, cutoff))
     }
 
     fn push_event(
@@ -420,7 +419,6 @@ impl MemoryStorage {
         }
     }
 
-    #[cfg(feature = "async")]
     fn count_kind(circuit: &MemoryCircuit, kind: EventKind, cutoff: f64) -> usize {
         circuit
             .events
@@ -555,19 +553,17 @@ impl AsyncStorageBackend for MemoryStorage {
                 self.push_outcome_event(circuit, outcome, now, duration);
             }
 
-            let mut transition = None;
-            if applied
+            let opened = applied
                 && circuit.state == SharedCircuitState::Closed
                 && outcome == StoredOutcome::Failure
-                && Self::failure_threshold_exceeded(circuit, now, policy)
-            {
+                && Self::failure_threshold_exceeded(circuit, now, policy);
+            if opened {
                 Self::open(circuit, now, policy.open_timeout_secs);
-                transition = Some(StateTransition::Opened);
             }
 
             Ok(StorageUpdate {
                 snapshot: circuit.snapshot(),
-                transition,
+                transition: opened.then_some(StateTransition::Opened),
                 applied,
             })
         })
@@ -713,6 +709,14 @@ pub struct NullStorage {
 
 impl NullStorage {
     /// Create a new null storage instance
+    #[must_use]
+    #[cfg_attr(
+        not(feature = "std"),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "`Instant::now()` makes this non-const whenever `std` is on"
+        )
+    )]
     pub fn new() -> Self {
         Self {
             #[cfg(feature = "std")]

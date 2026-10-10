@@ -11,6 +11,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 
 /// Builder for creating circuit breakers with fluent API
+#[must_use = "a builder does nothing until `build` is called"]
 pub struct CircuitBuilder {
     name: String,
     config: Config,
@@ -34,44 +35,44 @@ impl CircuitBuilder {
     }
 
     /// Set the absolute failure threshold (number of failures to open circuit)
-    pub fn failure_threshold(mut self, threshold: usize) -> Self {
+    pub const fn failure_threshold(mut self, threshold: usize) -> Self {
         self.config.failure_threshold = Some(threshold);
         self
     }
 
     /// Disable absolute failure threshold (use only rate-based)
-    pub fn disable_failure_threshold(mut self) -> Self {
+    pub const fn disable_failure_threshold(mut self) -> Self {
         self.config.failure_threshold = None;
         self
     }
 
     /// Set the failure rate threshold (0.0-1.0)
-    /// Circuit opens when (failures / total_calls) >= this value
-    pub fn failure_rate(mut self, rate: f64) -> Self {
+    /// Circuit opens when (failures / `total_calls`) >= this value
+    pub const fn failure_rate(mut self, rate: f64) -> Self {
         self.config.failure_rate_threshold = Some(rate.clamp(0.0, 1.0));
         self
     }
 
     /// Set minimum number of calls before rate-based threshold is evaluated
-    pub fn minimum_calls(mut self, calls: usize) -> Self {
+    pub const fn minimum_calls(mut self, calls: usize) -> Self {
         self.config.minimum_calls = calls;
         self
     }
 
     /// Set the failure window in seconds
-    pub fn failure_window_secs(mut self, seconds: f64) -> Self {
+    pub const fn failure_window_secs(mut self, seconds: f64) -> Self {
         self.config.failure_window_secs = seconds;
         self
     }
 
     /// Set the half-open timeout in seconds
-    pub fn half_open_timeout_secs(mut self, seconds: f64) -> Self {
+    pub const fn half_open_timeout_secs(mut self, seconds: f64) -> Self {
         self.config.half_open_timeout_secs = seconds;
         self
     }
 
     /// Set the success threshold (successes needed to close from half-open)
-    pub fn success_threshold(mut self, threshold: usize) -> Self {
+    pub const fn success_threshold(mut self, threshold: usize) -> Self {
         self.config.success_threshold = threshold;
         self
     }
@@ -80,14 +81,14 @@ impl CircuitBuilder {
     ///
     /// If the elected node crashes or its future is cancelled, another node
     /// may claim the probe after this duration.
-    pub fn probe_timeout_secs(mut self, seconds: f64) -> Self {
+    pub const fn probe_timeout_secs(mut self, seconds: f64) -> Self {
         self.config.probe_timeout_secs = seconds;
         self
     }
 
     /// Set the jitter factor (0.0 = no jitter, 1.0 = full jitter)
     /// Uses chrono-machines formula: timeout * (1 - jitter + rand * jitter)
-    pub fn jitter_factor(mut self, factor: f64) -> Self {
+    pub const fn jitter_factor(mut self, factor: f64) -> Self {
         self.config.jitter_factor = factor;
         self
     }
@@ -177,6 +178,7 @@ impl CircuitBuilder {
     }
 
     /// Build the circuit breaker
+    #[must_use]
     pub fn build(self) -> CircuitBreaker {
         let storage = self
             .storage
@@ -194,6 +196,7 @@ impl CircuitBuilder {
 
     /// Build an async-friendly circuit breaker wrapper.
     #[cfg(feature = "async")]
+    #[must_use]
     pub fn build_async(self) -> crate::async_circuit::AsyncCircuitBreaker {
         crate::async_circuit::AsyncCircuitBreaker::from_circuit(self.build())
     }
@@ -201,6 +204,7 @@ impl CircuitBuilder {
     /// Build an async breaker whose FSM and probe election live in a shared
     /// state-level storage backend.
     #[cfg(feature = "async")]
+    #[must_use]
     pub fn build_distributed(
         self,
         storage: Arc<dyn crate::AsyncStorageBackend>,

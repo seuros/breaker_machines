@@ -25,17 +25,17 @@ pub enum CircuitError<E = Box<dyn Error + Send + Sync>> {
 impl<E: fmt::Display> fmt::Display for CircuitError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CircuitError::Open { circuit, opened_at } => {
+            Self::Open { circuit, opened_at } => {
                 write!(f, "Circuit '{circuit}' is open (opened at {opened_at})")
             }
-            CircuitError::HalfOpenLimitReached { circuit } => {
+            Self::HalfOpenLimitReached { circuit } => {
                 write!(f, "Circuit '{circuit}' half-open request limit reached")
             }
-            CircuitError::BulkheadFull { circuit, limit } => {
+            Self::BulkheadFull { circuit, limit } => {
                 write!(f, "Circuit '{circuit}' bulkhead is full (limit: {limit})")
             }
-            CircuitError::Storage(error) => write!(f, "Circuit storage failed: {error}"),
-            CircuitError::Execution(e) => write!(f, "Circuit execution failed: {e}"),
+            Self::Storage(error) => write!(f, "Circuit storage failed: {error}"),
+            Self::Execution(e) => write!(f, "Circuit execution failed: {e}"),
         }
     }
 }
@@ -43,8 +43,8 @@ impl<E: fmt::Display> fmt::Display for CircuitError<E> {
 impl<E: Error + 'static> Error for CircuitError<E> {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            CircuitError::Storage(error) => Some(error),
-            CircuitError::Execution(e) => Some(e),
+            Self::Storage(error) => Some(error),
+            Self::Execution(e) => Some(e),
             _ => None,
         }
     }

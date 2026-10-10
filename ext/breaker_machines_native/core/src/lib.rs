@@ -1,8 +1,8 @@
-//! BreakerMachines - High-performance circuit breaker implementation
+//! `BreakerMachines` - High-performance circuit breaker implementation
 //!
 //! This crate provides a complete circuit breaker implementation with:
 //! - Thread-safe event storage with sliding window calculations
-//! - State machine for circuit breaker lifecycle (Closed → Open → HalfOpen)
+//! - State machine for circuit breaker lifecycle (Closed → Open → `HalfOpen`)
 //! - Monotonic time tracking to prevent NTP clock skew issues
 //! - Configurable failure thresholds and timeouts
 //! - Runtime-agnostic async calls behind the `async` feature
@@ -63,7 +63,10 @@ pub mod async_circuit;
 #[cfg(feature = "async")]
 pub mod distributed;
 
-#[cfg(all(test, feature = "std"))]
+// A bare `cfg(test)` (not `all(test, ..)`) so clippy treats the fixtures as
+// test code.
+#[cfg(test)]
+#[cfg(feature = "std")]
 mod test_support;
 
 #[cfg(feature = "async")]

@@ -75,7 +75,7 @@ fn concurrent_acquires_never_exceed_the_limit() {
 #[test]
 #[should_panic(expected = "Bulkhead limit must be greater than 0")]
 fn zero_limit_panics() {
-    BulkheadSemaphore::new(0);
+    _ = BulkheadSemaphore::new(0);
 }
 
 #[test]

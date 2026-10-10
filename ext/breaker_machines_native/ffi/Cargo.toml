@@ -1,7 +1,8 @@
 [package]
 name = "breaker_machines_native"
 version = "0.5.17"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
 authors = ["Abdelkader Boudih <oss@seuros.com>"]
 license = "MIT"
 description = "Ruby FFI bindings for breaker-machines circuit breaker"

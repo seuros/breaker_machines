@@ -11,7 +11,7 @@ use crate::{
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 pub(crate) type BoxFutureResult<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
@@ -19,6 +19,7 @@ pub(crate) type AsyncFallbackFn<T, E> =
     Box<dyn FnOnce(FallbackContext) -> BoxFutureResult<T, E> + Send>;
 
 /// Options for async circuit breaker calls.
+#[must_use = "call options do nothing unless passed to `call_with_options`"]
 pub struct AsyncCallOptions<T, E> {
     pub(crate) fallback: Option<AsyncFallbackFn<T, E>>,
 }
@@ -75,7 +76,7 @@ struct HalfOpenProbe<'a> {
 }
 
 impl<'a> HalfOpenProbe<'a> {
-    fn new(circuit: &'a AsyncCircuitBreaker, active: bool, state_epoch: u64) -> Self {
+    const fn new(circuit: &'a AsyncCircuitBreaker, active: bool, state_epoch: u64) -> Self {
         Self {
             circuit,
             active,
@@ -83,7 +84,7 @@ impl<'a> HalfOpenProbe<'a> {
         }
     }
 
-    fn disarm(&mut self) {
+    const fn disarm(&mut self) {
         self.active = false;
     }
 }
@@ -108,7 +109,11 @@ pub struct AsyncCircuitBreaker {
 
 impl AsyncCircuitBreaker {
     /// Create a new async circuit breaker.
-    pub fn new(name: String, config: Config) -> Self {
+    ///
+    /// `name` accepts `&str`, `String`, or an existing `Arc<str>`; the latter
+    /// is shared without copying the bytes.
+    #[must_use]
+    pub fn new(name: impl Into<Arc<str>>, config: Config) -> Self {
         Self::from_circuit(CircuitBreaker::new(name, config))
     }
 
@@ -118,7 +123,8 @@ impl AsyncCircuitBreaker {
     }
 
     /// Wrap an existing synchronous circuit breaker.
-    pub fn from_circuit(circuit: CircuitBreaker) -> Self {
+    #[must_use]
+    pub const fn from_circuit(circuit: CircuitBreaker) -> Self {
         Self {
             inner: Mutex::new(circuit),
         }
@@ -132,6 +138,11 @@ impl AsyncCircuitBreaker {
     }
 
     /// Execute an async fallible operation with circuit breaker protection.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`call_with_options`](Self::call_with_options) without a
+    /// fallback.
     pub async fn call<F, Fut, T, E: 'static>(&self, operation: F) -> Result<T, CircuitError<E>>
     where
         F: FnOnce() -> Fut,
@@ -142,6 +153,15 @@ impl AsyncCircuitBreaker {
     }
 
     /// Execute an async fallible operation with async call options.
+    ///
+    /// # Errors
+    ///
+    /// - [`CircuitError::BulkheadFull`] when the concurrency limit is reached.
+    /// - [`CircuitError::HalfOpenLimitReached`] when every half-open probe slot
+    ///   is taken.
+    /// - [`CircuitError::Open`] when the circuit is open and no fallback is set.
+    /// - [`CircuitError::Execution`] wrapping the operation's (or fallback's)
+    ///   own error.
     pub async fn call_with_options<F, Fut, T, E: 'static>(
         &self,
         operation: F,
@@ -194,7 +214,7 @@ impl AsyncCircuitBreaker {
         }
     }
 
-    /// Record a successful operation and drive HalfOpen -> Closed transitions.
+    /// Record a successful operation and drive `HalfOpen` -> Closed transitions.
     pub fn record_success_and_maybe_close(&self, duration: f64) {
         self.lock_inner().record_success_and_maybe_close(duration);
     }

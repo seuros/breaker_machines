@@ -126,11 +126,28 @@ fn consecutive_successes(circuit: &CircuitBreaker) -> Option<usize> {
 
 #[test]
 fn new_circuit_starts_closed() {
-    let circuit = CircuitBreaker::new("test".into(), Config::default());
+    let shared: Arc<str> = Arc::from("test");
+    let circuits = [
+        ("&str", CircuitBreaker::new("test", Config::default())),
+        (
+            "String",
+            CircuitBreaker::new(String::from("test"), Config::default()),
+        ),
+        (
+            "Arc<str>",
+            CircuitBreaker::new(Arc::clone(&shared), Config::default()),
+        ),
+    ];
 
-    assert!(circuit.is_closed());
-    assert!(!circuit.is_open());
-    assert_eq!(circuit.state_name(), "Closed");
+    for (name_type, circuit) in &circuits {
+        assert!(circuit.is_closed(), "{name_type}");
+        assert!(!circuit.is_open(), "{name_type}");
+        assert_eq!(circuit.state(), CircuitState::Closed, "{name_type}");
+        assert_eq!(circuit.state_name(), "Closed", "{name_type}");
+        assert_eq!(&*circuit.context.name, "test", "{name_type}");
+    }
+    // An `Arc<str>` name is shared, not copied.
+    assert!(Arc::ptr_eq(&circuits[2].1.context.name, &shared));
 }
 
 #[test]
@@ -142,6 +159,20 @@ fn opens_once_failure_threshold_is_reached() {
 
     fail(&mut circuit, 1);
     assert!(circuit.is_open());
+    assert_eq!(circuit.state(), CircuitState::Open);
+}
+
+#[test]
+fn call_accepts_closures_that_borrow_locals() {
+    let mut circuit = CircuitBreaker::builder("test").build();
+    let payload = String::from("borrowed");
+
+    // Neither operation is `'static`: both borrow `payload`.
+    assert_matches!(circuit.call(|| Ok::<_, &str>(payload.len())), Ok(8));
+    assert_matches!(
+        circuit.call((|| Ok::<_, &str>(payload.as_str()), CallOptions::new())),
+        Ok("borrowed")
+    );
 }
 
 #[test]
@@ -177,7 +208,7 @@ fn machine_trip_guard_waits_for_failure_threshold() {
         storage.record_failure("test", 0.1);
     }
 
-    assert_matches!(machine.handle(CircuitEvent::Trip), Ok(_));
+    assert_matches!(machine.handle(CircuitEvent::Trip), Ok(()));
     assert_eq!(machine.current_state(), CircuitState::Open);
 }
 
@@ -212,7 +243,7 @@ fn machine_half_opens_exactly_at_timeout_without_jitter() {
     );
 
     clock.advance(Duration::from_millis(1));
-    assert_matches!(machine.handle(CircuitEvent::AttemptReset), Ok(_));
+    assert_matches!(machine.handle(CircuitEvent::AttemptReset), Ok(()));
     assert_eq!(machine.current_state(), CircuitState::HalfOpen);
     assert_matches!(
         machine.half_open_data(),
@@ -253,7 +284,7 @@ fn machine_close_guard_requires_success_threshold() {
         .half_open_data_mut()
         .expect("HalfOpen carries HalfOpenData")
         .consecutive_successes = 2;
-    assert_matches!(machine.handle(CircuitEvent::Close), Ok(_));
+    assert_matches!(machine.handle(CircuitEvent::Close), Ok(()));
     assert_eq!(machine.current_state(), CircuitState::Closed);
 }
 
@@ -280,10 +311,20 @@ fn jitter_is_drawn_once_per_open_cycle() {
     };
     assert_eq!(opened_at, 100.0);
     assert_matches!(retry_at - opened_at, 0.5..=1.0);
-    let cooldown = Duration::from_millis(((retry_at - opened_at) * 1000.0).round() as u64);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the jittered cooldown is a positive whole number of ms below 1s"
+    )]
+    let cooldown_ms = ((retry_at - opened_at) * 1000.0).round() as u64;
+    let cooldown = Duration::from_millis(cooldown_ms);
 
     // Just short of retry_at, every check agrees: the delay is not redrawn.
-    clock.advance(cooldown - Duration::from_millis(1));
+    clock.advance(
+        cooldown
+            .checked_sub(Duration::from_millis(1))
+            .expect("the cooldown is at least 500ms"),
+    );
     for _ in 0..64 {
         assert_matches!(
             machine.handle(CircuitEvent::AttemptReset),
@@ -292,7 +333,7 @@ fn jitter_is_drawn_once_per_open_cycle() {
     }
 
     clock.advance(Duration::from_millis(1));
-    assert_matches!(machine.handle(CircuitEvent::AttemptReset), Ok(_));
+    assert_matches!(machine.handle(CircuitEvent::AttemptReset), Ok(()));
 }
 
 #[test]
@@ -318,7 +359,7 @@ fn jitter_varies_the_delay() {
 
     let first = config.half_open_delay_secs();
     assert!(
-        (0..20).any(|_| config.half_open_delay_secs() != first),
+        (0..20).any(|_| config.half_open_delay_secs().total_cmp(&first).is_ne()),
         "50% jitter produced a constant delay of {first}s"
     );
 }
@@ -634,6 +675,7 @@ fn half_open_failure_resets_consecutive_successes() {
     clock.advance(Duration::from_secs(5));
 
     assert_matches!(circuit.call(|| Ok::<_, &str>("ok")), Ok("ok"));
+    assert_eq!(circuit.state(), CircuitState::HalfOpen);
     assert_eq!(circuit.state_name(), "HalfOpen");
     assert_eq!(consecutive_successes(&circuit), Some(1));
 

@@ -28,10 +28,10 @@ pub struct Config {
     /// Time window in seconds for counting failures
     pub failure_window_secs: f64,
 
-    /// Timeout in seconds before transitioning from Open to HalfOpen
+    /// Timeout in seconds before transitioning from Open to `HalfOpen`
     pub half_open_timeout_secs: f64,
 
-    /// Number of successes required in HalfOpen to close the circuit
+    /// Number of successes required in `HalfOpen` to close the circuit
     pub success_threshold: usize,
 
     /// Maximum lifetime of a distributed half-open probe lease. A different
@@ -39,7 +39,7 @@ pub struct Config {
     /// its call future is cancelled.
     pub probe_timeout_secs: f64,
 
-    /// Jitter factor for half_open_timeout (0.0 = no jitter, 1.0 = full jitter)
+    /// Jitter factor for `half_open_timeout` (0.0 = no jitter, 1.0 = full jitter)
     /// Uses chrono-machines formula: timeout * (1 - jitter + rand * jitter)
     pub jitter_factor: f64,
 }
@@ -62,21 +62,43 @@ impl Default for Config {
 impl Config {
     pub(crate) fn half_open_delay_secs(&self) -> f64 {
         if self.jitter_factor > 0.0 {
+            let timeout_ms = secs_to_millis(self.half_open_timeout_secs);
             let policy = chrono_machines::Policy {
                 max_attempts: 1,
-                base_delay_ms: (self.half_open_timeout_secs * 1000.0) as u64,
+                base_delay_ms: timeout_ms,
                 multiplier: 1.0,
-                max_delay_ms: (self.half_open_timeout_secs * 1000.0) as u64,
+                max_delay_ms: timeout_ms,
             };
             #[cfg(feature = "std")]
             let timeout_ms = policy.calculate_delay(1, self.jitter_factor);
             #[cfg(not(feature = "std"))]
             let timeout_ms = policy.base_delay_ms;
-            (timeout_ms as f64) / 1000.0
+            millis_to_secs(timeout_ms)
         } else {
             self.half_open_timeout_secs
         }
     }
+}
+
+/// Whole milliseconds in `secs`, the unit chrono-machines works in.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "float-to-int `as` saturates: NaN and negative cooldowns clamp to 0, \
+              sub-millisecond precision is dropped on purpose"
+)]
+fn secs_to_millis(secs: f64) -> u64 {
+    (secs * 1000.0) as u64
+}
+
+/// Seconds in `millis`; a cooldown never approaches the 2^53 ms where `f64`
+/// stops being exact.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "exact for every delay below 2^53 ms (~285,000 years)"
+)]
+fn millis_to_secs(millis: u64) -> f64 {
+    millis as f64 / 1000.0
 }
 
 /// Context provided to fallback closures when circuit is open
@@ -104,6 +126,7 @@ impl FallbackContext {
 pub type FallbackFn<T, E> = Box<dyn FnOnce(&FallbackContext) -> Result<T, E> + Send>;
 
 /// Options for circuit breaker calls
+#[must_use = "call options do nothing unless passed to `CircuitBreaker::call`"]
 pub struct CallOptions<T, E> {
     /// Optional fallback function called when circuit is open
     pub fallback: Option<FallbackFn<T, E>>,
@@ -143,28 +166,37 @@ impl<T, E> CallOptions<T, E> {
 /// Type alias for callable function
 pub type CallableFn<T, E> = Box<dyn FnOnce() -> Result<T, E>>;
 
-/// Trait for converting into CallOptions - allows flexible call() API
+/// Trait for converting into `CallOptions` - allows flexible `call()` API
 pub trait IntoCallOptions<T, E> {
-    fn into_call_options(self) -> (CallableFn<T, E>, CallOptions<T, E>);
+    /// The protected operation, kept as its concrete type so `call` neither
+    /// boxes it nor requires it to be `'static`.
+    type Operation: FnOnce() -> Result<T, E>;
+
+    /// Split into the protected operation and its call options.
+    fn into_call_options(self) -> (Self::Operation, CallOptions<T, E>);
 }
 
 /// Implement for plain closures (backward compatibility)
 impl<T, E, F> IntoCallOptions<T, E> for F
 where
-    F: FnOnce() -> Result<T, E> + 'static,
+    F: FnOnce() -> Result<T, E>,
 {
-    fn into_call_options(self) -> (Box<dyn FnOnce() -> Result<T, E>>, CallOptions<T, E>) {
-        (Box::new(self), CallOptions::default())
+    type Operation = F;
+
+    fn into_call_options(self) -> (F, CallOptions<T, E>) {
+        (self, CallOptions::default())
     }
 }
 
-/// Implement for (closure, CallOptions) tuple
+/// Implement for `(closure, CallOptions)` tuple
 impl<T, E, F> IntoCallOptions<T, E> for (F, CallOptions<T, E>)
 where
-    F: FnOnce() -> Result<T, E> + 'static,
+    F: FnOnce() -> Result<T, E>,
 {
-    fn into_call_options(self) -> (Box<dyn FnOnce() -> Result<T, E>>, CallOptions<T, E>) {
-        (Box::new(self.0), self.1)
+    type Operation = F;
+
+    fn into_call_options(self) -> (F, CallOptions<T, E>) {
+        self
     }
 }
 
@@ -175,11 +207,11 @@ pub(crate) struct CallPermit {
 }
 
 impl CallPermit {
-    pub(crate) fn half_open_probe(&self) -> bool {
+    pub(crate) const fn half_open_probe(&self) -> bool {
         self.half_open_probe
     }
 
-    pub(crate) fn state_epoch(&self) -> u64 {
+    pub(crate) const fn state_epoch(&self) -> u64 {
         self.state_epoch
     }
 }
@@ -195,7 +227,7 @@ pub(crate) enum CallGate {
 /// RAII guard that releases a reserved half-open probe slot if the protected
 /// operation panics. On the normal path `complete_call` performs the release,
 /// so the guard is disarmed before it runs. Without this, a panicking probe
-/// would leak `in_flight` and wedge the circuit in HalfOpen forever.
+/// would leak `in_flight` and wedge the circuit in `HalfOpen` forever.
 struct HalfOpenProbeGuard<'a> {
     circuit: &'a mut CircuitBreaker,
     armed: bool,
@@ -203,7 +235,7 @@ struct HalfOpenProbeGuard<'a> {
 }
 
 impl HalfOpenProbeGuard<'_> {
-    fn disarm(&mut self) {
+    const fn disarm(&mut self) {
         self.armed = false;
     }
 }
@@ -281,7 +313,7 @@ impl OpenData {
     }
 }
 
-/// Data specific to the HalfOpen state
+/// Data specific to the `HalfOpen` state
 #[derive(Debug, Clone, Default)]
 pub struct HalfOpenData {
     pub consecutive_successes: usize,
@@ -327,6 +359,10 @@ state_machine! {
 /// The success count is queried lazily because it is only needed when a rate
 /// threshold is configured. Shared by the local circuit guards and the
 /// in-memory distributed store.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a failure ratio only loses precision past 2^53 calls in one window"
+)]
 pub(crate) fn thresholds_exceeded(
     failures: usize,
     successes: impl FnOnce() -> usize,
@@ -356,9 +392,13 @@ pub(crate) fn thresholds_exceeded(
 impl<S> Circuit<S> {
     /// Check if failure threshold is exceeded (absolute count or rate-based).
     ///
-    /// Used by the `trip` guard for both the Closed and HalfOpen typestates;
+    /// Used by the `trip` guard for both the Closed and `HalfOpen` typestates;
     /// the decision depends only on the context (storage counters + config),
     /// not on the current state data.
+    #[expect(
+        clippy::unused_self,
+        reason = "state_machine! invokes guards as methods: `self.should_open(&self.ctx)`"
+    )]
     fn should_open(&self, ctx: &CircuitContext) -> bool {
         let window = ctx.config.failure_window_secs;
         thresholds_exceeded(
@@ -420,12 +460,21 @@ pub struct CircuitBreaker {
 }
 
 impl CircuitBreaker {
-    /// Create a new circuit breaker (use builder() for more options)
-    pub fn new(name: String, config: Config) -> Self {
+    /// Create a new circuit breaker (use `builder()` for more options).
+    ///
+    /// `name` accepts `&str`, `String`, or an existing `Arc<str>`; the latter
+    /// is shared without copying the bytes.
+    #[must_use]
+    pub fn new(name: impl Into<Arc<str>>, config: Config) -> Self {
+        // Spelled out rather than `..CircuitContext::default()`, which would
+        // allocate a default `Arc<str>` name only to drop it.
         Self::from_context(CircuitContext {
             name: name.into(),
             config,
-            ..CircuitContext::default()
+            storage: Arc::new(crate::MemoryStorage::new()),
+            failure_classifier: None,
+            bulkhead: None,
+            callbacks: Callbacks::new(),
         })
     }
 
@@ -448,14 +497,23 @@ impl CircuitBreaker {
     /// Accepts either:
     /// - A plain closure: `circuit.call(|| api_request())`
     /// - A closure with options: `circuit.call((|| api_request(), CallOptions::new().with_fallback(...)))`
+    ///
+    /// # Errors
+    ///
+    /// - [`CircuitError::BulkheadFull`] when the concurrency limit is reached.
+    /// - [`CircuitError::HalfOpenLimitReached`] when every half-open probe slot
+    ///   is taken.
+    /// - [`CircuitError::Open`] when the circuit is open and no fallback is set.
+    /// - [`CircuitError::Execution`] wrapping the operation's (or fallback's)
+    ///   own error.
     pub fn call<I, T, E: 'static>(&mut self, input: I) -> Result<T, CircuitError<E>>
     where
         I: IntoCallOptions<T, E>,
     {
-        let (f, options) = input.into_call_options();
+        let (operation, options) = input.into_call_options();
 
         match self.prepare_call()? {
-            CallGate::Execute(permit) => self.execute_call(permit, f),
+            CallGate::Execute(permit) => self.execute_call(permit, operation),
             CallGate::Open {
                 _permit: permit,
                 context,
@@ -530,14 +588,14 @@ impl CircuitBreaker {
                 permit.half_open_probe = true;
                 Ok(CallGate::Execute(permit))
             }
-            _ => Ok(CallGate::Execute(permit)),
+            CircuitState::Closed => Ok(CallGate::Execute(permit)),
         }
     }
 
     fn execute_call<T, E: 'static>(
         &mut self,
         permit: CallPermit,
-        f: Box<dyn FnOnce() -> Result<T, E>>,
+        f: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, CircuitError<E>> {
         let half_open_probe = permit.half_open_probe();
         let state_epoch = permit.state_epoch();
@@ -621,7 +679,7 @@ impl CircuitBreaker {
     }
 
     /// Release a reserved probe slot. Stale epochs are ignored: the slot
-    /// belonged to a HalfOpen visit that has already ended. A poisoned
+    /// belonged to a `HalfOpen` visit that has already ended. A poisoned
     /// machine has no data left to release from.
     pub(crate) fn release_half_open_probe(&mut self, state_epoch: u64) {
         if state_epoch == self.state_epoch()
@@ -631,7 +689,7 @@ impl CircuitBreaker {
         }
     }
 
-    /// Record a successful operation and drive HalfOpen -> Closed transitions
+    /// Record a successful operation and drive `HalfOpen` -> Closed transitions
     pub fn record_success_and_maybe_close(&mut self, duration: f64) {
         self.record_success(duration);
         self.recover_if_poisoned();
@@ -683,25 +741,34 @@ impl CircuitBreaker {
     }
 
     /// Check failure threshold and attempt to trip the circuit
-    /// This should be called after record_failure() when not using call()
+    /// This should be called after `record_failure()` when not using `call()`
     pub fn check_and_trip(&mut self) -> bool {
         self.recover_if_poisoned();
         self.machine.handle(CircuitEvent::Trip).is_ok()
     }
 
     /// Check if circuit is open
+    #[must_use]
     pub fn is_open(&self) -> bool {
         self.machine.current_state() == CircuitState::Open
     }
 
     /// Check if circuit is closed
+    #[must_use]
     pub fn is_closed(&self) -> bool {
         self.machine.current_state() == CircuitState::Closed
     }
 
+    /// Get the current state.
+    #[must_use]
+    pub fn state(&self) -> CircuitState {
+        self.machine.current_state()
+    }
+
     /// Get current state name
+    #[must_use]
     pub fn state_name(&self) -> &'static str {
-        self.machine.current_state().name()
+        self.state().name()
     }
 
     /// Clear all events and reset circuit to Closed state
@@ -727,7 +794,7 @@ impl CircuitBreaker {
     /// Replace a machine poisoned by a panic during an earlier dispatch (a
     /// storage backend or unwinding callback). The replacement resumes the
     /// last committed state with fresh data: Open restarts its cooldown and
-    /// HalfOpen forgets probes, whose permits the epoch bump fences off.
+    /// `HalfOpen` forgets probes, whose permits the epoch bump fences off.
     fn recover_if_poisoned(&mut self) {
         if !self.machine.is_poisoned() {
             return;

@@ -55,7 +55,7 @@ fn callback_receives_circuit_name() {
     let sink = Arc::clone(&received);
     let callbacks = Callbacks {
         on_open: Some(Arc::new(move |name| {
-            *sink.lock().unwrap() = name.to_string()
+            *sink.lock().unwrap() = name.to_string();
         })),
         ..Callbacks::new()
     };

@@ -24,6 +24,7 @@ impl BulkheadSemaphore {
     /// # Panics
     ///
     /// Panics if `limit` is 0.
+    #[must_use]
     pub fn new(limit: usize) -> Self {
         assert!(limit > 0, "Bulkhead limit must be greater than 0");
         Self {
@@ -37,34 +38,18 @@ impl BulkheadSemaphore {
     /// Returns `Some(BulkheadGuard)` if a permit was acquired, or `None` if
     /// the bulkhead is at capacity.
     pub fn try_acquire(self: &Arc<Self>) -> Option<BulkheadGuard> {
-        // Try to increment the counter
-        let mut current = self.acquired.load(Ordering::Acquire);
+        // Increment unless at capacity; `try_update` retries the CAS when
+        // another thread moved the counter in between.
+        let acquired = self
+            .acquired
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < self.limit).then(|| current + 1)
+            })
+            .is_ok();
 
-        loop {
-            // Check if we're at capacity
-            if current >= self.limit {
-                return None;
-            }
-
-            // Try to increment atomically
-            match self.acquired.compare_exchange_weak(
-                current,
-                current + 1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    // Successfully acquired permit
-                    return Some(BulkheadGuard {
-                        semaphore: Arc::clone(self),
-                    });
-                }
-                Err(actual) => {
-                    // Another thread modified the counter, try again
-                    current = actual;
-                }
-            }
-        }
+        acquired.then(|| BulkheadGuard {
+            semaphore: Arc::clone(self),
+        })
     }
 
     /// Get the current number of acquired permits
@@ -73,7 +58,7 @@ impl BulkheadSemaphore {
     }
 
     /// Get the maximum number of permits (bulkhead limit)
-    pub fn limit(&self) -> usize {
+    pub const fn limit(&self) -> usize {
         self.limit
     }
 
@@ -82,7 +67,7 @@ impl BulkheadSemaphore {
         self.limit - self.acquired()
     }
 
-    /// Release a permit (called by BulkheadGuard on drop)
+    /// Release a permit (called by `BulkheadGuard` on drop)
     fn release(&self) {
         self.acquired.fetch_sub(1, Ordering::Release);
     }

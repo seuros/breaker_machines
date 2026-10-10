@@ -30,6 +30,7 @@ pub struct SystemClock {
 #[cfg(feature = "std")]
 impl SystemClock {
     /// Create a clock whose origin is the moment of construction.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             origin: std::time::Instant::now(),

@@ -88,6 +88,22 @@ class NativeStorageTest < ActiveSupport::TestCase
     assert_equal 5, events.size
   end
 
+  def test_circuit_names_in_other_encodings_match_their_utf8_form
+    { 'binary' => 'binary'.b, 'café' => 'café'.encode(Encoding::ISO_8859_1) }.each do |utf8, encoded|
+      @storage.record_failure(encoded, 0.1)
+
+      assert_equal 1, @storage.failure_count(utf8, 60.0), "name: #{encoded.inspect} (#{encoded.encoding})"
+      assert_equal 1, @storage.event_log(encoded, 10).size, "name: #{encoded.inspect} (#{encoded.encoding})"
+    end
+  end
+
+  def test_invalid_utf8_circuit_names_raise_encoding_error
+    invalid = (+"bad\xFF").force_encoding(Encoding::UTF_8)
+
+    assert_raises(EncodingError) { @storage.record_success(invalid, 0.1) }
+    assert_raises(EncodingError) { BreakerMachinesNative::Circuit.new(invalid, {}) }
+  end
+
   def test_isolates_circuits
     @storage.record_success('circuit_a', 0.1)
     @storage.record_failure('circuit_b', 0.2)

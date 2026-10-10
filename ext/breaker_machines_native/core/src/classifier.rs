@@ -76,7 +76,7 @@ where
     F: Fn(&FailureContext<'_>) -> bool + Send + Sync,
 {
     /// Create a new predicate-based classifier
-    pub fn new(predicate: F) -> Self {
+    pub const fn new(predicate: F) -> Self {
         Self { predicate }
     }
 }
