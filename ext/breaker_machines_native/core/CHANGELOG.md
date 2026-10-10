@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.18.0...breaker-machines-v0.19.0) (2026-10-10)
+
+
+### Features
+
+* **core:** add CallTicket admission (try_acquire/complete/abandon) ([9c00764](https://github.com/seuros/breaker_machines/commit/9c007649c2c47a66915587d6d43b48f44b8c39ca))
+* **core:** drop per-call allocations; adopt state-machines 0.31 ([89b8f53](https://github.com/seuros/breaker_machines/commit/89b8f5300d3e06383ba2351468ac7c0f00a01968))
+
+
+### Performance Improvements
+
+* **core:** keep the event buffer in a VecDeque ([871cd36](https://github.com/seuros/breaker_machines/commit/871cd3669503f0a5291f41f80315ae3c8fecbeab))
+
 ## [0.18.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.17.1...breaker-machines-v0.18.0) (2026-10-05)
 
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.19.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.18.0...breaker_machines/v0.19.0) (2026-10-10)
+
+
+### Features
+
+* **core:** add CallTicket admission (try_acquire/complete/abandon) ([9c00764](https://github.com/seuros/breaker_machines/commit/9c007649c2c47a66915587d6d43b48f44b8c39ca))
+* **core:** drop per-call allocations; adopt state-machines 0.31 ([89b8f53](https://github.com/seuros/breaker_machines/commit/89b8f5300d3e06383ba2351468ac7c0f00a01968))
+
+
+### Bug Fixes
+
+* **ci:** attach release gems with gh release upload ([9248788](https://github.com/seuros/breaker_machines/commit/924878817ef098e0f03340faebbe0fd7ba068a28))
+* **native:** admit Ruby calls through the core so circuits leave Open ([16a75ce](https://github.com/seuros/breaker_machines/commit/16a75ce4701db90432abf011983e33738ecd8fc1))
+* **storage:** stop scanning the memory event log on every write ([940a1fc](https://github.com/seuros/breaker_machines/commit/940a1fc580bb18b5078b000cc76bd02a50b9f169))
+
+
+### Performance Improvements
+
+* **core:** keep the event buffer in a VecDeque ([871cd36](https://github.com/seuros/breaker_machines/commit/871cd3669503f0a5291f41f80315ae3c8fecbeab))
+
 ## [0.18.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.17.0...breaker_machines/v0.18.0) (2026-10-05)
 
 
