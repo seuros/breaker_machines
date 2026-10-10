@@ -58,10 +58,12 @@ module BreakerMachines
           timestamp: current_time
         }
 
-        # Clean old events periodically (every 100 events)
-        return unless events.size > 100
+        # Keep 5 minutes of history. Events are appended oldest first, so only
+        # scan once the oldest has aged out; scanning on every write made each
+        # write O(n) once more than 100 events were retained.
+        cutoff_time = current_time - 300
+        return unless events.size > 100 && events.first[:timestamp] < cutoff_time
 
-        cutoff_time = current_time - 300 # Keep 5 minutes of history
         events.delete_if { |e| e[:timestamp] < cutoff_time }
       end
 

@@ -177,21 +177,18 @@ class StorageStressTest < ActiveSupport::TestCase
   def test_high_frequency_writes_stability
     storage = BreakerMachines::Storage::Memory.new
     circuit_name = :high_freq
+    writes = 10_000
 
+    # Rapid-fire writes; a fixed count bounds the memory the test retains
     start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-
-    # Rapid-fire writes for 1 second
-    count = 0
-    loop do
-      storage.record_success(circuit_name, 0.0001)
-      count += 1
-      break if Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time >= 1.0
-    end
+    writes.times { storage.record_success(circuit_name, 0.0001) }
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
 
     # Verify storage is stable after high-frequency writes
     successes = storage.success_count(circuit_name, 60.0)
+    rate = writes / elapsed
 
-    assert_predicate successes, :positive?, "Should have recorded events (got #{successes})"
-    assert_operator count, :>=, 1000, "Should achieve at least 1000 writes/sec (got #{count})"
+    assert_equal writes, successes, 'Every write should be counted'
+    assert_operator rate, :>=, 1000, "Should achieve at least 1000 writes/sec (got #{rate.round})"
   end
 end
