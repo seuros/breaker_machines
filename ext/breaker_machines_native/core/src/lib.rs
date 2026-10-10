@@ -46,7 +46,9 @@
 
 extern crate alloc;
 
-#[cfg(feature = "std")]
+// Tests always link `std` for the harness and fixtures; library code paths
+// stay gated on `feature = "std"`, so no_std tests exercise no_std behavior.
+#[cfg(any(feature = "std", test))]
 extern crate std;
 
 pub mod builder;
@@ -63,10 +65,7 @@ pub mod async_circuit;
 #[cfg(feature = "async")]
 pub mod distributed;
 
-// A bare `cfg(test)` (not `all(test, ..)`) so clippy treats the fixtures as
-// test code.
 #[cfg(test)]
-#[cfg(feature = "std")]
 mod test_support;
 
 #[cfg(feature = "async")]

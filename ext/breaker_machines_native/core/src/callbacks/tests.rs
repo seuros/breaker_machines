@@ -1,4 +1,5 @@
 use super::*;
+use alloc::string::{String, ToString};
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
@@ -12,6 +13,7 @@ fn flag() -> (Arc<AtomicBool>, CallbackFn) {
 }
 
 #[test]
+#[cfg(feature = "std")]
 fn panicking_callbacks_are_contained() {
     let callbacks = Callbacks {
         on_open: Some(Arc::new(|_| panic!("intentional panic in on_open"))),
@@ -23,6 +25,19 @@ fn panicking_callbacks_are_contained() {
     callbacks.trigger_open("test");
     callbacks.trigger_close("test");
     callbacks.trigger_half_open("test");
+}
+
+#[test]
+#[cfg(not(feature = "std"))]
+#[should_panic(expected = "intentional panic in on_open")]
+fn panicking_callbacks_propagate_without_std() {
+    let callbacks = Callbacks {
+        on_open: Some(Arc::new(|_| panic!("intentional panic in on_open"))),
+        ..Callbacks::new()
+    };
+
+    // Without `std` there is no `catch_unwind` to contain it.
+    callbacks.trigger_open("test");
 }
 
 #[test]
