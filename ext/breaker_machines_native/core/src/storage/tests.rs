@@ -62,6 +62,36 @@ fn memory_storage_event_log_keeps_order_and_limit() {
 }
 
 #[test]
+fn memory_storage_event_log_matches_vec_semantics_across_ring_wraps() {
+    // Caps whose overflow trims one event (5) and a batch of two (25).
+    for max_events in [5, 25] {
+        let storage = MemoryStorage::with_max_events(max_events);
+        let mut model = Vec::new();
+        for i in 0..80_u32 {
+            storage.record_success("test_circuit", f64::from(i));
+            model.push(f64::from(i));
+            if model.len() > max_events {
+                model.drain(..(max_events / 10).max(1));
+            }
+
+            for limit in [0, 1, 3, max_events, max_events + 3] {
+                let durations: Vec<f64> = storage
+                    .event_log("test_circuit", limit)
+                    .iter()
+                    .map(|event| event.duration)
+                    .collect();
+                assert_eq!(
+                    durations,
+                    model[model.len().saturating_sub(limit)..],
+                    "cap {max_events}, {} pushes, limit {limit}",
+                    i + 1
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn memory_storage_caps_retained_events() {
     let storage = MemoryStorage::with_max_events(100);
     for i in 0..150 {
@@ -96,6 +126,7 @@ fn memory_storage_window_follows_its_clock() {
 }
 
 #[test]
+#[cfg(feature = "std")]
 fn memory_storage_system_clock_is_monotonic() {
     let storage = MemoryStorage::new();
 
@@ -120,6 +151,7 @@ fn null_storage_discards_everything() {
 }
 
 #[test]
+#[cfg(feature = "std")]
 fn null_storage_time_still_advances() {
     let storage = NullStorage::new();
 
@@ -127,6 +159,14 @@ fn null_storage_time_still_advances() {
     std::thread::sleep(Duration::from_millis(10));
 
     assert!(storage.monotonic_time() > before);
+}
+
+#[test]
+#[cfg(not(feature = "std"))]
+fn default_clocks_read_zero_without_std() {
+    // `ZeroClock` is the no_std default; inject a real clock via `with_clock`.
+    assert_eq!(MemoryStorage::new().monotonic_time(), 0.0);
+    assert_eq!(NullStorage::new().monotonic_time(), 0.0);
 }
 
 #[test]

@@ -15,6 +15,7 @@ use crate::time::SystemClock;
 use crate::time::ZeroClock;
 use crate::{Event, EventKind};
 use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
@@ -282,7 +283,8 @@ pub trait StorageBackend: Send + Sync + core::fmt::Debug {
 #[derive(Debug)]
 #[cfg_attr(not(feature = "async"), allow(dead_code))]
 struct MemoryCircuit {
-    events: Vec<Event>,
+    /// Oldest first; trimmed from the front once over the cap.
+    events: VecDeque<Event>,
     state: SharedCircuitState,
     generation: u64,
     opened_at: Option<f64>,
@@ -295,7 +297,7 @@ struct MemoryCircuit {
 impl Default for MemoryCircuit {
     fn default() -> Self {
         Self {
-            events: Vec::new(),
+            events: VecDeque::new(),
             state: SharedCircuitState::Closed,
             generation: 0,
             opened_at: None,
@@ -407,7 +409,7 @@ impl MemoryStorage {
         timestamp: f64,
         duration: f64,
     ) {
-        circuit.events.push(Event {
+        circuit.events.push_back(Event {
             kind,
             timestamp,
             duration,
@@ -415,8 +417,23 @@ impl MemoryStorage {
 
         if circuit.events.len() > max_events {
             let remove_count = (max_events / 10).max(1);
-            circuit.events.drain(0..remove_count);
+            circuit.events.drain(..remove_count);
         }
+    }
+
+    /// The newest `limit` events, oldest first, copied straight from the
+    /// ring's two halves into an exactly sized `Vec`.
+    fn newest_events(events: &VecDeque<Event>, limit: usize) -> Vec<Event> {
+        let skip = events.len().saturating_sub(limit);
+        let (front, back) = events.as_slices();
+        let mut newest = Vec::with_capacity(events.len() - skip);
+        if let Some(front) = front.get(skip..) {
+            newest.extend_from_slice(front);
+            newest.extend_from_slice(back);
+        } else {
+            newest.extend_from_slice(&back[skip - front.len()..]);
+        }
+        newest
     }
 
     fn count_kind(circuit: &MemoryCircuit, kind: EventKind, cutoff: f64) -> usize {
@@ -507,14 +524,7 @@ impl StorageBackend for MemoryStorage {
         let circuits = self.circuits_read();
         circuits
             .get(circuit_name)
-            .map(|circuit| {
-                let start = if circuit.events.len() > limit {
-                    circuit.events.len() - limit
-                } else {
-                    0
-                };
-                circuit.events[start..].to_vec()
-            })
+            .map(|circuit| Self::newest_events(&circuit.events, limit))
             .unwrap_or_default()
     }
 
