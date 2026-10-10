@@ -329,7 +329,9 @@ let mut circuit = CircuitBreaker::builder("database")
     .failure_threshold(5)
     .build();
 
-// Up to 10 calls can run concurrently
+// The limit counts operations in flight together: futures sharing one
+// `AsyncCircuitBreaker`, or tickets held from `try_acquire`. A sync `call`
+// borrows the circuit mutably, so on its own it runs one at a time.
 let result = circuit.call(|| {
     database.query("SELECT * FROM users")
 });
