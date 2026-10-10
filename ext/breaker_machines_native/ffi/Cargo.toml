@@ -1,6 +1,6 @@
 [package]
 name = "breaker_machines_native"
-version = "0.5.17"
+version = "0.5.18"
 edition.workspace = true
 rust-version.workspace = true
 authors = ["Abdelkader Boudih <oss@seuros.com>"]
@@ -16,7 +16,7 @@ crate-type = ["cdylib"]
 workspace = true
 
 [dependencies]
-breaker-machines = { path = "../core", version = "0.18.0" }
+breaker-machines = { path = "../core", version = "0.19.0" }
 magnus = "0.9"
 rb-sys = "0.9.124"
 
