@@ -111,13 +111,14 @@ jobs:
       - name: List collected artifacts
         run: ls -R artifacts
 
+      # Upload only. softprops/action-gh-release PATCHes an existing release
+      # first, which GitHub rejects (403) for GITHUB_TOKEN when the run's ref
+      # has different workflow files than the tag.
       - name: Attach gems to GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: artifacts/**/*.gem
-          tag_name: ${{ needs.release-please.outputs.tag_name }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release upload "$TAG" artifacts/*/*.gem --clobber --repo "$GITHUB_REPOSITORY"
 
   publish-to-github-packages:
     needs:
