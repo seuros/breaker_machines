@@ -55,6 +55,12 @@ module BreakerMachines
         @cache.delete(success_key(circuit_name))
         @cache.delete(failure_key(circuit_name))
         @cache.delete(events_key(circuit_name))
+        return unless @cache.respond_to?(:increment)
+
+        keys = [success_key(circuit_name), failure_key(circuit_name)].flat_map do |key|
+          bucket_keys(key, @expires_in.ceil + 1)
+        end
+        @cache.delete_multi(keys)
       end
 
       def clear_all
@@ -106,7 +112,7 @@ module BreakerMachines
       def increment_counter(key)
         # Use increment if available, otherwise fetch-and-update
         if @cache.respond_to?(:increment)
-          @cache.increment(key, 1, expires_in: @expires_in)
+          @cache.increment("#{key}:#{current_bucket}", 1, expires_in: @expires_in)
         else
           # Fallback for caches without atomic increment
           current = @cache.fetch(key) { {} }
@@ -118,16 +124,15 @@ module BreakerMachines
 
       def get_window_count(key, window_seconds)
         if @cache.respond_to?(:increment)
-          # For simple counter-based caches, we can't get windowed counts
-          # Would need to implement bucketing similar to fallback
-          @cache.read(key) || 0
+          keys = bucket_keys(key, [window_seconds, @expires_in].min)
+          @cache.read_multi(*keys, raw: true).values.sum(&:to_i)
         else
           # Bucket-based counting for accurate windows
           buckets = @cache.read(key) || {}
           current_time = current_bucket
 
           total = 0
-          window_seconds.times do |i|
+          window_seconds.ceil.times do |i|
             bucket_key = current_time - i
             total += buckets[bucket_key] || 0
           end
@@ -136,8 +141,13 @@ module BreakerMachines
         end
       end
 
+      def bucket_keys(key, window_seconds)
+        now = current_bucket
+        window_seconds.ceil.times.map { |offset| "#{key}:#{now - offset}" }
+      end
+
       def prune_old_buckets(buckets)
-        cutoff = current_bucket - 300 # Keep 5 minutes of data
+        cutoff = current_bucket - @expires_in
         buckets.delete_if { |time, _| time < cutoff }
       end
 

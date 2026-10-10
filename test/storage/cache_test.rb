@@ -3,38 +3,7 @@
 require 'test_helper'
 
 class StorageCacheTest < ActiveSupport::TestCase
-  class MockCache
-    def initialize
-      @data = {}
-    end
-
-    def read(key)
-      @data[key]
-    end
-
-    def write(key, value, _options = {})
-      @data[key] = value
-    end
-
-    def fetch(key, _options = {}, &block)
-      @data[key] ||= block&.call
-    end
-
-    def delete(key)
-      @data.delete(key)
-    end
-
-    def delete_matched(pattern)
-      regex = Regexp.new(pattern.gsub('*', '.*'))
-      @data.delete_if { |key, _| key.match?(regex) }
-    end
-
-    def increment(key, amount = 1, _options = {})
-      @data[key] = (@data[key] || 0) + amount
-    end
-  end
-
-  class MockCacheWithoutIncrement < MockCache
+  class CacheWithoutIncrement < ActiveSupport::Cache::MemoryStore
     def respond_to?(method, include_private = false)
       return false if method == :increment
 
@@ -43,7 +12,7 @@ class StorageCacheTest < ActiveSupport::TestCase
   end
 
   setup do
-    @cache = MockCache.new
+    @cache = ActiveSupport::Cache::MemoryStore.new
     @storage = BreakerMachines::Storage::Cache.new(cache_store: @cache)
   end
 
@@ -65,6 +34,67 @@ class StorageCacheTest < ActiveSupport::TestCase
     3.times { @storage.record_failure('test_circuit', 0.1) }
 
     assert_equal 3, @storage.failure_count('test_circuit', 60)
+  end
+
+  %i[success failure].each do |type|
+    test "#{type} counts exclude old events while traffic continues" do
+      freeze_time
+      @storage.public_send("record_#{type}", 'test_circuit', 0.1)
+      travel 30.seconds
+      @storage.public_send("record_#{type}", 'test_circuit', 0.1)
+      travel 31.seconds
+      @storage.public_send("record_#{type}", 'test_circuit', 0.1)
+
+      assert_equal 2, @storage.public_send("#{type}_count", 'test_circuit', 60)
+      assert_equal 1, @storage.public_send("#{type}_count", 'test_circuit', 10)
+    end
+  end
+
+  test 'counts concurrent increments from separate adapters' do
+    freeze_time
+    threads = 8.times.map do
+      Thread.new do
+        storage = BreakerMachines::Storage::Cache.new(cache_store: @cache)
+        100.times { storage.record_failure('test_circuit', 0.1) }
+      end
+    end
+    threads.each(&:value)
+
+    assert_equal 800, @storage.failure_count('test_circuit', 60)
+  end
+
+  test 'accepts fractional windows at second resolution' do
+    freeze_time
+    @storage.record_failure('test_circuit', 0.1)
+    travel 1.second
+
+    assert_equal 1, @storage.failure_count('test_circuit', 1.5)
+    assert_equal 0, @storage.failure_count('test_circuit', 0)
+  end
+
+  test 'retains buckets for the configured expiry' do
+    freeze_time
+    storage = BreakerMachines::Storage::Cache.new(cache_store: @cache, expires_in: 600)
+    storage.record_failure('test_circuit', 0.1)
+    travel 301.seconds
+
+    assert_equal 1, storage.failure_count('test_circuit', 600)
+    assert_equal 0, storage.failure_count('test_circuit', 60)
+  end
+
+  test 'clears earlier buckets without clearing another circuit' do
+    freeze_time
+    @storage.record_failure('test_circuit', 0.1)
+    @storage.record_success('test_circuit', 0.1)
+    @storage.record_failure('other_circuit', 0.1)
+    travel 30.seconds
+    @storage.record_failure('test_circuit', 0.1)
+
+    @storage.clear('test_circuit')
+
+    assert_equal 0, @storage.failure_count('test_circuit', 60)
+    assert_equal 0, @storage.success_count('test_circuit', 60)
+    assert_equal 1, @storage.failure_count('other_circuit', 60)
   end
 
   test 'clears circuit data' do
@@ -108,7 +138,7 @@ class StorageCacheTest < ActiveSupport::TestCase
   end
 
   test 'handles caches without increment method' do
-    storage = BreakerMachines::Storage::Cache.new(cache_store: MockCacheWithoutIncrement.new)
+    storage = BreakerMachines::Storage::Cache.new(cache_store: CacheWithoutIncrement.new)
 
     3.times { storage.record_failure('test_circuit', 0.1) }
 

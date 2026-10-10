@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+* Honor success and failure windows when using cache stores with atomic counters.
+
 ## [0.19.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.18.0...breaker_machines/v0.19.0) (2026-10-10)
 
 
