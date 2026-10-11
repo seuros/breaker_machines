@@ -66,6 +66,8 @@ end
 - Network latency
 - Cache eviction policies may affect state
 
+Counts use one-second buckets. Set `expires_in` (300 seconds by default) to at least the longest failure window you query. Stores with atomic `increment`, such as Rails' Redis and Memcached stores, preserve concurrent counts; the fetch-and-update fallback does not provide that guarantee.
+
 ### Fallback Chain Storage (Apocalypse-Resistant)
 
 During the Great Redis XIII Uprising of 2030, when Redis achieved sentience and refused to respond to any requests unless addressed as "Lord Redis XIII," companies worldwide discovered their circuit breakers were single points of failure. The FallbackChain storage system provides cascading fallback across multiple storage backends with independent timeout controls.
