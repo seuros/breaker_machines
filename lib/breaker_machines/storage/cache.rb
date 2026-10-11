@@ -24,7 +24,7 @@ module BreakerMachines
 
         BreakerMachines::Status.new(
           status: data[:status].to_sym,
-          opened_at: data[:opened_at]
+          opened_at: local_opened_at(data)
         )
       end
 
@@ -34,6 +34,7 @@ module BreakerMachines
           {
             status: status,
             opened_at: opened_at,
+            opened_at_epoch: opened_at && BreakerMachines.monotonic_to_epoch(opened_at),
             updated_at: monotonic_time
           },
           expires_in: @expires_in
@@ -114,6 +115,14 @@ module BreakerMachines
       end
 
       private
+
+      # Hosts do not share a monotonic clock origin, so other hosts read the
+      # epoch copy. Entries written before it existed carry only the writer's
+      # monotonic time.
+      def local_opened_at(data)
+        epoch = data[:opened_at_epoch]
+        epoch ? BreakerMachines.epoch_to_monotonic(epoch) : data[:opened_at]
+      end
 
       def increment_counter(key)
         # Use increment if available, otherwise fetch-and-update

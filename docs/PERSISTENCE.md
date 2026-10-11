@@ -477,7 +477,7 @@ circuit :optimistic do
 end
 ```
 
-This is optimistic synchronization: reads and transitions are not a single atomic storage operation. Half-open probe limits apply per instance, not across the fleet. Stored `opened_at` values use a monotonic clock, so recovery timing requires a shared clock origin; do not rely on it across hosts or reboots. A distributed probe lease and portable recovery timestamps require additional storage support.
+This is optimistic synchronization: reads and transitions are not a single atomic storage operation. Half-open probe limits apply per instance, not across the fleet. Cache storage persists `opened_at` as epoch time as well, so every host measures `reset_timeout` from the same moment; keep host clocks synchronized (NTP). A custom storage shared between hosts should do the same with `BreakerMachines.monotonic_to_epoch` and `BreakerMachines.epoch_to_monotonic`. A `set_status` that returns `false` tells the circuit the write failed: it keeps its local transition instead of reverting to the stale stored status. A distributed probe lease requires additional storage support.
 
 ### Pessimistic Synchronization
 

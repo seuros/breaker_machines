@@ -210,4 +210,34 @@ class StorageCacheTest < ActiveSupport::TestCase
   ensure
     BreakerMachines.logger = previous_logger
   end
+
+  test 'reads the opening time of another host from its epoch copy' do
+    epoch = Process.clock_gettime(Process::CLOCK_REALTIME) - 30
+    # A host whose monotonic clock started 50,000 seconds before ours.
+    @cache.write('breaker_machines:test_circuit:status',
+                 { status: :open, opened_at: BreakerMachines.monotonic_time + 50_000, opened_at_epoch: epoch })
+
+    opened_at = @storage.get_status('test_circuit').opened_at
+
+    assert_in_delta BreakerMachines.monotonic_time - 30, opened_at, 0.5
+  end
+
+  test 'round-trips its own opening time' do
+    opened_at = BreakerMachines.monotonic_time
+    @storage.set_status('test_circuit', :open, opened_at)
+
+    assert_in_delta opened_at, @storage.get_status('test_circuit').opened_at, 0.001
+  end
+
+  test 'falls back to the monotonic opening time of entries without an epoch copy' do
+    @cache.write('breaker_machines:test_circuit:status', { status: :open, opened_at: 123.5 })
+
+    assert_equal 123.5, @storage.get_status('test_circuit').opened_at
+  end
+
+  test 'reports a failed status write' do
+    @cache.stub(:write, false) do
+      assert_equal false, @storage.set_status('test_circuit', :open, BreakerMachines.monotonic_time)
+    end
+  end
 end

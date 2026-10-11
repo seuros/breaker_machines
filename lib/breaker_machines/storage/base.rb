@@ -13,6 +13,8 @@ module BreakerMachines
         raise NotImplementedError
       end
 
+      # opened_at is a BreakerMachines.monotonic_time value. Return false when
+      # the write did not happen; any other value means it was stored.
       def set_status(circuit_name, status, opened_at = nil)
         raise NotImplementedError
       end

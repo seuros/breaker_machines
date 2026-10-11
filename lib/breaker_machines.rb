@@ -184,6 +184,35 @@ module BreakerMachines
     def monotonic_time
       Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
+
+    # Converts a {monotonic_time} value to Unix epoch seconds. Each host's
+    # monotonic clock has its own origin, so shared storage must persist
+    # timestamps in epoch time for other hosts to read them.
+    #
+    # @param monotonic [Float] a value from {monotonic_time}
+    # @return [Float] Unix epoch seconds
+    def monotonic_to_epoch(monotonic)
+      monotonic + clock_offset
+    end
+
+    # Converts Unix epoch seconds to this host's {monotonic_time}.
+    #
+    # @param epoch [Float] Unix epoch seconds
+    # @return [Float] the matching {monotonic_time} value on this host
+    def epoch_to_monotonic(epoch)
+      epoch - clock_offset
+    end
+
+    private
+
+    # Wall clock minus monotonic clock. Memoized so that converting the same
+    # timestamp twice gives the same result; re-measured only when the wall
+    # clock has stepped by more than a second.
+    def clock_offset
+      offset = Process.clock_gettime(Process::CLOCK_REALTIME) - monotonic_time
+      @clock_offset = offset if @clock_offset.nil? || (offset - @clock_offset).abs > 1.0
+      @clock_offset
+    end
   end
 
   # Set up notifications on first use

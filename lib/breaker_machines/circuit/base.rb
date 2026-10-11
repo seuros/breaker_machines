@@ -53,9 +53,20 @@ module BreakerMachines
         @semaphore = (Concurrent::Semaphore.new(@config[:max_concurrent]) if @config[:max_concurrent])
       end
 
+      # A round trip through epoch time is off by up to ~0.12µs (float64
+      # spacing near today's epoch); any larger difference is another opening.
+      OPENED_AT_TOLERANCE = 1e-6
+
+      # Reads the shared status without taking the lock. True when it differs
+      # from the last status this instance stored or observed.
+      def stored_status_changed?
+        stored_status = @storage&.get_status(@name)
+        !stored_status.nil? && !same_stored_status?(stored_status, @stored_status)
+      end
+
       def restore_status_from_storage
-        stored_status = @storage.get_status(@name)
-        return unless stored_status && stored_status != @stored_status
+        stored_status = @storage&.get_status(@name)
+        return if stored_status.nil? || same_stored_status?(stored_status, @stored_status)
 
         @stored_status = stored_status
         self.status = stored_status.status.to_s
@@ -69,8 +80,22 @@ module BreakerMachines
         @last_failure_at.value = nil
       end
 
+      def same_stored_status?(stored_status, known_status)
+        return false unless known_status && stored_status.status == known_status.status
+
+        stored_at = stored_status.opened_at
+        known_at = known_status.opened_at
+        return stored_at == known_at if stored_at.nil? || known_at.nil?
+
+        (stored_at - known_at).abs <= OPENED_AT_TOLERANCE
+      end
+
+      # When the storage reports a failed write (false), keep the last status
+      # observed there: the stale entry then reads as unchanged and cannot
+      # undo this transition.
       def persist_status(status, opened_at = nil)
-        @storage.set_status(@name, status, opened_at)
+        return if @storage.nil? || @storage.set_status(@name, status, opened_at) == false
+
         @stored_status = BreakerMachines::Status.new(status: status, opened_at: opened_at)
       end
     end

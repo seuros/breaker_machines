@@ -18,10 +18,25 @@ module BreakerMachines
 
       private
 
+      # Runs on every call: the write lock is taken only to apply a changed
+      # shared status or to start recovery.
       def attempt_recovery_if_ready
+        changed = stored_status_changed?
+        return unless changed || (open? && reset_timeout_elapsed?)
+
         @mutex.with_write_lock do
-          restore_status_from_storage
+          restore_status_from_storage if changed
           attempt_recovery if open? && reset_timeout_elapsed?
+        end
+      end
+
+      # Reads the shared status before taking the write lock, so storage I/O
+      # happens under it only when there is a change to apply.
+      def with_refreshed_status
+        changed = stored_status_changed?
+        @mutex.with_write_lock do
+          restore_status_from_storage if changed
+          yield
         end
       end
 
@@ -54,8 +69,7 @@ module BreakerMachines
       def handle_success(admission)
         return unless admission.half_open?
 
-        @mutex.with_write_lock do
-          restore_status_from_storage
+        with_refreshed_status do
           return unless admission_current?(admission) && half_open?
 
           successful_attempts = @half_open_successes.increment
@@ -68,8 +82,7 @@ module BreakerMachines
       end
 
       def handle_failure(admission)
-        @mutex.with_write_lock do
-          restore_status_from_storage
+        with_refreshed_status do
           return unless admission_current?(admission)
 
           if admission.closed? && closed? && failure_threshold_exceeded?
@@ -85,8 +98,7 @@ module BreakerMachines
       def release_abandoned_admission(admission)
         return unless admission.half_open?
 
-        @mutex.with_write_lock do
-          restore_status_from_storage
+        with_refreshed_status do
           next unless admission_current?(admission) && half_open?
           next unless @half_open_attempts.value.positive?
 

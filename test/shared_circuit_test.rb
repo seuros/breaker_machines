@@ -3,6 +3,30 @@
 require 'test_helper'
 
 class SharedCircuitTest < ActiveSupport::TestCase
+  class StatusWriteFailingStore < ActiveSupport::Cache::MemoryStore
+    attr_accessor :fail_status_writes
+
+    def write(name, value, options = nil)
+      return false if fail_status_writes && name.to_s.end_with?(':status')
+
+      super
+    end
+  end
+
+  class WriteLockCounter < SimpleDelegator
+    attr_reader :write_locks
+
+    def initialize(lock)
+      super
+      @write_locks = 0
+    end
+
+    def with_write_lock(&)
+      @write_locks += 1
+      __getobj__.with_write_lock(&)
+    end
+  end
+
   setup do
     @cache = ActiveSupport::Cache::MemoryStore.new
     @first = build_circuit
@@ -90,7 +114,77 @@ class SharedCircuitTest < ActiveSupport::TestCase
     assert_equal 1, @second.half_open_successes.value
   end
 
+  test 'measures the reset timeout from when another host opened the circuit' do
+    write_peer_status(:open, opened_seconds_ago: 1, clock_skew: -50_000)
+
+    assert_raises(BreakerMachines::CircuitOpenError) do
+      @second.call { flunk 'A circuit opened a second ago must stay open' }
+    end
+    assert_equal :open, @first.storage.get_status('shared').status
+  end
+
+  test 'recovers once the reset timeout has passed since another host opened the circuit' do
+    write_peer_status(:open, opened_seconds_ago: 3601, clock_skew: 50_000)
+
+    assert_equal :ok, @second.call { :ok }
+    assert_predicate @second, :closed?
+  end
+
+  test 'keeps its own trip when the shared status write fails' do
+    @cache = StatusWriteFailingStore.new
+    circuit = build_circuit
+    circuit.storage.set_status('shared', :closed)
+    circuit.call { :ok }
+
+    @cache.fail_status_writes = true
+    assert_raises(IOError) { circuit.call { raise IOError } }
+    @cache.fail_status_writes = false
+
+    assert_raises(BreakerMachines::CircuitOpenError) do
+      circuit.call { flunk 'A stale stored status must not undo the trip' }
+    end
+  end
+
+  test 'admits calls without the write lock while the shared status is unchanged' do
+    lock = WriteLockCounter.new(@second.mutex)
+    @second.instance_variable_set(:@mutex, lock)
+
+    5.times { @second.call { :ok } }
+
+    assert_equal 0, lock.write_locks
+
+    @first.trip
+
+    assert_raises(BreakerMachines::CircuitOpenError) { @second.call { :ok } }
+    assert_equal 1, lock.write_locks
+  end
+
+  test 'runs without a storage backend' do
+    previous_storage = BreakerMachines.config.default_storage
+    BreakerMachines.config.default_storage = nil
+    circuit = BreakerMachines::Circuit.new('no_storage', auto_register: false)
+
+    assert_nil circuit.storage
+    assert_equal :ok, circuit.call { :ok }
+
+    circuit.trip
+
+    assert_predicate circuit, :open?
+  ensure
+    BreakerMachines.config.default_storage = previous_storage
+  end
+
   private
+
+  # What another host writes: its monotonic clock is clock_skew seconds away
+  # from ours, its epoch copy is exact.
+  def write_peer_status(status, opened_seconds_ago:, clock_skew:)
+    @cache.write('breaker_machines:shared:status', {
+                   status: status,
+                   opened_at: BreakerMachines.monotonic_time - opened_seconds_ago + clock_skew,
+                   opened_at_epoch: Process.clock_gettime(Process::CLOCK_REALTIME) - opened_seconds_ago
+                 })
+  end
 
   def build_circuit(**options)
     storage = BreakerMachines::Storage::Cache.new(cache_store: @cache)
