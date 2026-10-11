@@ -66,7 +66,15 @@ end
 - Network latency
 - Cache eviction policies may affect state
 
-Counts use one-second buckets. Set `expires_in` (300 seconds by default) to at least the longest failure window you query. Stores with atomic `increment`, such as Rails' Redis and Memcached stores, preserve concurrent counts; the fetch-and-update fallback does not provide that guarantee.
+Counts use one-second buckets by default. Set `expires_in` (300 seconds by default) to at least the longest failure window you query; a longer window only counts the last `expires_in` seconds and logs a warning. Stores with atomic `increment`, such as Rails' Redis and Memcached stores, preserve concurrent counts; the fetch-and-update fallback does not provide that guarantee.
+
+Each bucket is one cache entry. Solid Cache, the Rails 8 default, does not delete entries when they expire; it keeps them until `max_age` or its size limit evicts them. Use coarser buckets there, and the same value on every process that shares the circuit:
+
+```ruby
+circuit :solid_cached do
+  storage :cache, bucket_seconds: 10 # windows are counted in 10-second steps
+end
+```
 
 ### Fallback Chain Storage (Apocalypse-Resistant)
 

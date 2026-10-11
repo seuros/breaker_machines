@@ -10,6 +10,12 @@ module BreakerMachines
         @cache = cache_store
         @prefix = options[:prefix] || 'breaker_machines'
         @expires_in = options[:expires_in] || 300 # 5 minutes default
+        # Counter resolution in seconds. Each bucket is its own cache entry, so
+        # stores that keep expired entries around (Solid Cache) want coarser buckets.
+        @bucket_seconds = Integer(options[:bucket_seconds] || 1)
+        raise ArgumentError, 'bucket_seconds must be positive' unless @bucket_seconds.positive?
+
+        @warned_windows = Concurrent::Set.new
       end
 
       def get_status(circuit_name)
@@ -58,9 +64,9 @@ module BreakerMachines
         return unless @cache.respond_to?(:increment)
 
         keys = [success_key(circuit_name), failure_key(circuit_name)].flat_map do |key|
-          bucket_keys(key, @expires_in.ceil + 1)
+          bucket_keys(key, bucket_count(@expires_in) + 1)
         end
-        @cache.delete_multi(keys)
+        delete_counters(keys)
       end
 
       def clear_all
@@ -112,7 +118,9 @@ module BreakerMachines
       def increment_counter(key)
         # Use increment if available, otherwise fetch-and-update
         if @cache.respond_to?(:increment)
-          @cache.increment("#{key}:#{current_bucket}", 1, expires_in: @expires_in)
+          # Expiry counts from the first increment, so a bucket must outlive
+          # the retention period by its own length.
+          @cache.increment("#{key}:#{current_bucket}", 1, expires_in: @expires_in + @bucket_seconds)
         else
           # Fallback for caches without atomic increment
           current = @cache.fetch(key) { {} }
@@ -123,36 +131,58 @@ module BreakerMachines
       end
 
       def get_window_count(key, window_seconds)
+        warn_window_exceeds_retention(window_seconds)
+        count = bucket_count([window_seconds, @expires_in].min)
+
         if @cache.respond_to?(:increment)
-          keys = bucket_keys(key, [window_seconds, @expires_in].min)
-          @cache.read_multi(*keys, raw: true).values.sum(&:to_i)
+          read_counters(bucket_keys(key, count)).sum(&:to_i)
         else
-          # Bucket-based counting for accurate windows
           buckets = @cache.read(key) || {}
-          current_time = current_bucket
-
-          total = 0
-          window_seconds.ceil.times do |i|
-            bucket_key = current_time - i
-            total += buckets[bucket_key] || 0
-          end
-
-          total
+          now = current_bucket
+          count.times.sum { |offset| buckets[now - offset] || 0 }
         end
       end
 
-      def bucket_keys(key, window_seconds)
+      # Counters live for expires_in, so a longer window silently undercounts.
+      def warn_window_exceeds_retention(window_seconds)
+        return if window_seconds <= @expires_in
+        return unless @warned_windows.add?(window_seconds)
+
+        BreakerMachines.logger&.warn(
+          "[BreakerMachines] Cache storage keeps counts for #{@expires_in}s, so a #{window_seconds}s " \
+          "window only sees the last #{@expires_in}s. Set expires_in to at least the window."
+        )
+      end
+
+      # read_multi is a single round trip; stores without it read each bucket.
+      def read_counters(keys)
+        return @cache.read_multi(*keys, raw: true).values if @cache.respond_to?(:read_multi)
+
+        keys.filter_map { |key| @cache.read(key) }
+      end
+
+      def delete_counters(keys)
+        return @cache.delete_multi(keys) if @cache.respond_to?(:delete_multi)
+
+        keys.each { |key| @cache.delete(key) }
+      end
+
+      def bucket_count(seconds)
+        (seconds.to_f / @bucket_seconds).ceil
+      end
+
+      def bucket_keys(key, count)
         now = current_bucket
-        window_seconds.ceil.times.map { |offset| "#{key}:#{now - offset}" }
+        Array.new(count) { |offset| "#{key}:#{now - offset}" }
       end
 
       def prune_old_buckets(buckets)
-        cutoff = current_bucket - @expires_in
-        buckets.delete_if { |time, _| time < cutoff }
+        cutoff = current_bucket - bucket_count(@expires_in)
+        buckets.delete_if { |bucket, _| bucket < cutoff }
       end
 
       def current_bucket
-        Time.now.to_i
+        Time.now.to_i / @bucket_seconds
       end
 
       def status_key(circuit_name)

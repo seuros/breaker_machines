@@ -11,6 +11,20 @@ class StorageCacheTest < ActiveSupport::TestCase
     end
   end
 
+  # An increment-capable store with neither read_multi nor delete_multi.
+  class MinimalCounterStore
+    def initialize
+      @data = {}
+    end
+
+    def read(key, _options = nil) = @data[key]
+    def write(key, value, _options = nil) = (@data[key] = value)
+    def delete(key) = @data.delete(key)
+    def fetch(key, _options = nil) = (@data[key] ||= yield)
+    def increment(key, amount = 1, _options = nil) = (@data[key] = (@data[key] || 0) + amount)
+    def keys = @data.keys
+  end
+
   setup do
     @cache = ActiveSupport::Cache::MemoryStore.new
     @storage = BreakerMachines::Storage::Cache.new(cache_store: @cache)
@@ -143,5 +157,57 @@ class StorageCacheTest < ActiveSupport::TestCase
     3.times { storage.record_failure('test_circuit', 0.1) }
 
     assert_operator storage.failure_count('test_circuit', 60), :>=, 3
+  end
+
+  test 'counts in coarser buckets when configured' do
+    freeze_time
+    store = MinimalCounterStore.new
+    storage = BreakerMachines::Storage::Cache.new(cache_store: store, bucket_seconds: 10)
+    travel_to Time.at((Time.now.to_i / 10 * 10) + 1)
+    2.times { storage.record_failure('test_circuit', 0.1) }
+    travel 5.seconds
+    storage.record_failure('test_circuit', 0.1)
+
+    assert_equal 3, storage.failure_count('test_circuit', 60)
+    assert_equal 1, store.keys.grep(/:failures:/).size
+
+    travel 65.seconds
+
+    assert_equal 0, storage.failure_count('test_circuit', 60)
+  end
+
+  test 'rejects a non-positive bucket size' do
+    assert_raises(ArgumentError) { BreakerMachines::Storage::Cache.new(cache_store: @cache, bucket_seconds: 0) }
+  end
+
+  test 'counts and clears with stores lacking read_multi and delete_multi' do
+    freeze_time
+    store = MinimalCounterStore.new
+    storage = BreakerMachines::Storage::Cache.new(cache_store: store)
+    storage.record_failure('test_circuit', 0.1)
+    travel 30.seconds
+    storage.record_failure('test_circuit', 0.1)
+
+    assert_equal 2, storage.failure_count('test_circuit', 60)
+    assert_equal 1, storage.failure_count('test_circuit', 10)
+
+    storage.clear('test_circuit')
+
+    assert_equal 0, storage.failure_count('test_circuit', 60)
+    assert_empty store.keys.grep(/:failures:/)
+  end
+
+  test 'warns once when a window outlives the counter retention' do
+    log = StringIO.new
+    previous_logger = BreakerMachines.logger
+    BreakerMachines.logger = Logger.new(log)
+    storage = BreakerMachines::Storage::Cache.new(cache_store: @cache, expires_in: 300)
+
+    2.times { storage.failure_count('test_circuit', 600) }
+    storage.failure_count('test_circuit', 300)
+
+    assert_equal 1, log.string.scan('only sees the last 300s').size
+  ensure
+    BreakerMachines.logger = previous_logger
   end
 end
