@@ -11,7 +11,7 @@ module BreakerMachines
       def on_circuit_open
         @state_epoch.increment
         @opened_at.value = BreakerMachines.monotonic_time
-        @storage&.set_status(@name, :open, @opened_at.value)
+        persist_status(:open, @opened_at.value)
         if @storage.respond_to?(:record_event_with_details)
           @storage.record_event_with_details(@name, :state_change, 0,
                                              new_state: :open)
@@ -25,7 +25,7 @@ module BreakerMachines
         @opened_at.value = nil
         @last_error.value = nil
         @last_failure_at.value = nil
-        @storage&.set_status(@name, :closed)
+        persist_status(:closed)
         if @storage.respond_to?(:record_event_with_details)
           @storage.record_event_with_details(@name, :state_change, 0,
                                              new_state: :closed)
@@ -38,7 +38,7 @@ module BreakerMachines
         @state_epoch.increment
         @half_open_attempts.value = 0
         @half_open_successes.value = 0
-        @storage&.set_status(@name, :half_open)
+        persist_status(:half_open, @opened_at.value)
         if @storage.respond_to?(:record_event_with_details)
           @storage.record_event_with_details(@name, :state_change, 0,
                                              new_state: :half_open)
