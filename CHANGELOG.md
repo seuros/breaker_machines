@@ -1,12 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Bug Fixes
-
-* Honor success and failure windows when using cache stores with atomic counters.
-* Refresh shared circuit status before admission and completion, preserving local probe limits and invalidating admissions after observed state changes.
-
 ## [0.19.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.18.0...breaker_machines/v0.19.0) (2026-10-10)
 
 
