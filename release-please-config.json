@@ -4,6 +4,7 @@
     ".": {
       "release-type": "ruby",
       "package-name": "breaker_machines",
+      "bump-minor-pre-major": true,
       "extra-files": [
         "lib/breaker_machines/version.rb"
       ]
