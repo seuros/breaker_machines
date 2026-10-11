@@ -42,14 +42,14 @@ Gem::Specification.new do |spec|
   spec.require_paths = ['lib']
 
   # Core dependencies
-  spec.add_dependency 'activesupport', '>= 8.0'
+  spec.add_dependency 'activesupport', '>= 8.1'
   spec.add_dependency 'chrono_machines', '~> 0.9'
   spec.add_dependency 'concurrent-ruby', '~> 1.3'
   spec.add_dependency 'state_machines', '~> 0.202'
   spec.add_dependency 'zeitwerk', '~> 2.7'
 
   # Development dependencies
-  spec.add_development_dependency 'minitest', '~> 5.16'
+  spec.add_development_dependency 'minitest', '~> 6.0'
   spec.add_development_dependency 'rb_sys', '~> 0.9'
   spec.add_development_dependency 'rake', '~> 13.0'
   spec.add_development_dependency 'rake-compiler', '~> 1.3'

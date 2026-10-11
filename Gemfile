@@ -10,20 +10,24 @@ gemspec
 
 gem 'rake', '~> 13.0'
 
-gem 'minitest', '~> 5.16'
+gem 'minitest', '~> 6.0'
+# Minitest 6 extracted minitest/mock; ActiveSupport::TestCase still requires it.
+gem 'minitest-mock', '~> 5.27'
 
 # Optional dependency for fiber-safe mode tests (MRI only)
 
 # Platform specific gems (MRI Ruby only)
 platforms :mri do
   gem 'irb'
+  gem 'padded_cell', '~> 0.2' # Fork-per-test runner for `rake test` (CRuby only)
 
   if ENV['ACTIVERECORD_VERSION'] == 'edge'
     gem 'activerecord', github: 'rails/rails', branch: 'main'
     gem 'railties', github: 'rails/rails', branch: 'main'
   else
-    gem 'activerecord', "~> #{ENV.fetch('ACTIVERECORD_VERSION', '8.0.4')}"
-    gem 'railties', "~> #{ENV.fetch('ACTIVERECORD_VERSION', '8.0.4')}"
+    rails_version = ENV.fetch('ACTIVERECORD_VERSION', '8.1')
+    gem 'activerecord', "~> #{rails_version}.0"
+    gem 'railties', "~> #{rails_version}.0"
   end
   gem 'async', '~> 2.31.0'
   gem 'rbs', '~> 3.0'

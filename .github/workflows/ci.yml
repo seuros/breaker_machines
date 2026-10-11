@@ -63,7 +63,6 @@ jobs:
         ruby:
           - "4.0"
         rails:
-          - "8.0"
           - "8.1"
         include:
           - ruby: "4.0"
@@ -92,8 +91,12 @@ jobs:
       - name: Run tests (Pure Ruby)
         run: |
           echo "::group::Running tests with Pure Ruby backend"
-          time bin/rails test
+          time bundle exec rake test TESTOPTS=--coverage
           echo "::endgroup::"
+
+      - name: Coverage summary
+        if: always() && hashFiles('coverage/coverage.md') != ''
+        run: cat coverage/coverage.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify pure Ruby mode
         run: |
@@ -118,7 +121,6 @@ jobs:
         ruby:
           - "4.0"
         rails:
-          - "8.0"
           - "8.1"
         include:
           - ruby: "4.0"
@@ -167,9 +169,13 @@ jobs:
           echo "::endgroup::"
 
       - name: Run tests (Native FFI)
+        env:
+          # Native is opt-in; padded_cell runs in a subprocess, so the path goes in RUBYLIB.
+          BREAKER_MACHINES_NATIVE: "1"
+          RUBYLIB: ${{ github.workspace }}/ext/breaker_machines_native
         run: |
           echo "::group::Running tests with Native FFI backend"
-          time ruby -Ilib:ext/breaker_machines_native bin/rails test
+          time bundle exec rake test
           echo "::endgroup::"
 
       - name: Verify native mode

@@ -2,8 +2,20 @@
 
 require 'bundler/gem_tasks'
 require 'minitest/test_task'
+require 'shellwords'
 
-Minitest::TestTask.create
+# Plain Minitest runner. JRuby and TruffleRuby use it for `rake test`.
+Minitest::TestTask.create(:minitest)
+
+# padded_cell runs each test in its own forked cell; it needs CRuby.
+desc 'Run the test suite (padded_cell on CRuby, plain Minitest elsewhere)'
+if RUBY_ENGINE == 'ruby'
+  task :test do
+    sh 'padded_cell', *Shellwords.split(ENV.fetch('TESTOPTS', ''))
+  end
+else
+  task test: :minitest
+end
 
 GEMSPEC = Gem::Specification.load('breaker_machines.gemspec')
 

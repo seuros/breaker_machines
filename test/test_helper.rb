@@ -6,6 +6,13 @@ require 'breaker_machines'
 require 'minitest/autorun'
 require 'active_support/test_case'
 
+# `rake test TESTOPTS=--coverage` measures with padded_cell; this shapes the report.
+if defined?(PaddedCell.coverage)
+  PaddedCell.coverage do
+    track 'lib/**/*.rb' # files the suite never loads report at 0%
+  end
+end
+
 # Require async for fiber tests
 ASYNC_AVAILABLE = begin
   require 'async'
@@ -32,9 +39,18 @@ if RUBY_ENGINE == 'ruby'
     require 'state_machines/integrations/active_record'
 
     # Load the schema
-    ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: ':memory:')
-    ActiveRecord::Schema.verbose = false
-    load File.expand_path('dummy/db/schema.rb', __dir__)
+    load_schema = lambda do
+      ActiveRecord::Base.establish_connection(adapter: 'sqlite3', database: ':memory:')
+      ActiveRecord::Schema.verbose = false
+      load File.expand_path('dummy/db/schema.rb', __dir__)
+    end
+    load_schema.call
+
+    # Forked test workers (padded_cell, parallelize) drop the inherited
+    # connection: give each its own in-memory database instead of letting
+    # Active Record create ":memory:_N" database files.
+    ActiveSupport.parallelize_test_databases = false
+    ActiveSupport::Testing::Parallelization.after_fork_hook { load_schema.call }
   rescue LoadError => e
     warn "Rails not available: #{e.message}"
   end
