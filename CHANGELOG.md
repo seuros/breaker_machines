@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.20.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.19.0...breaker_machines/v0.20.0) (2026-10-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* Rails 8.0 is no longer supported; activesupport >= 8.1 is required.
+
+### Features
+
+* add bucket_seconds to cache storage counters ([637aa5e](https://github.com/seuros/breaker_machines/commit/637aa5ec4ac0d32bb106cf70203f05bf9df2e3d5))
+
+
+### Bug Fixes
+
+* honor cache counter windows ([#78](https://github.com/seuros/breaker_machines/issues/78)) ([81437a6](https://github.com/seuros/breaker_machines/commit/81437a61803aaa344712487406a19a349c4d4c1f))
+* keep shared circuit state consistent across hosts ([39f9d11](https://github.com/seuros/breaker_machines/commit/39f9d11bed086f58bc9db5f85e9a70bc99aefb4d))
+* refresh shared circuit state before admission ([#79](https://github.com/seuros/breaker_machines/issues/79)) ([759b122](https://github.com/seuros/breaker_machines/commit/759b122f6ff52fa664b136501e7da54028e96754))
+
+
+### Build System
+
+* require Rails 8.1 and run tests with padded_cell ([bc575a9](https://github.com/seuros/breaker_machines/commit/bc575a9e37cd1113f28baa98749e8fdb8e4646ca))
+
 ## [0.19.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.18.0...breaker_machines/v0.19.0) (2026-10-10)
 
 
