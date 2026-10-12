@@ -12,6 +12,7 @@ module BreakerMachines
         include Circuit::Configuration
         include Circuit::Admission
         include Circuit::Execution
+        include Circuit::Protection
         include Circuit::HedgedExecution
         include Circuit::Introspection
         include Circuit::Callbacks

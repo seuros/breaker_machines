@@ -4,8 +4,17 @@ module BreakerMachines
     include Configuration
     include Admission
     include Execution
+    include Protection
     include Introspection
     include Callbacks
+
+    module Protection
+      def protect: (untyped object, methods: Array[Symbol | String]) -> untyped
+    end
+
+    class Native
+      include Protection
+    end
 
     # Instance variables from Configuration module
     @name: String

@@ -28,6 +28,23 @@ class PaymentService
 end
 ```
 
+### Protect an existing client
+
+Use `protect` to route selected public methods through an existing circuit:
+
+```ruby
+circuit = BreakerMachines::Circuit.new(:teleporter, failure_threshold: 3)
+protected_client = circuit.protect(teleporter, methods: %i[beam_up beam_down])
+
+protected_client.beam_up('Schrödinger', destination: :sickbay)
+```
+
+The wrapper forwards arguments, keywords, blocks, and results through `circuit.call`, including its configured error handling and fallback. Other methods pass through without consulting the circuit. `methods:` must be nonempty and name public methods the client responds to; otherwise `protect` raises `ArgumentError`.
+
+The original client stays unchanged. Each call through the wrapper counts as one operation, including any internal method calls. Returned objects stay unchanged too: later calls on a returned client or lazy stream need their own protection. Wrap the object that performs the external operation.
+
+Available on Ruby and native circuits, including circuits obtained through the DSL. Multiple wrappers can share the same circuit.
+
 ## A Message to the Resistance
 
 So AI took your job while you were waiting for Fireship to drop the next JavaScript framework?
