@@ -32,11 +32,6 @@ module BreakerMachines
         @storage = @config[:storage] || create_default_storage
         @metrics = @config[:metrics]
         initialize_runtime_state
-
-        restore_status_from_storage if @storage
-
-        # Register with global registry unless auto_register is disabled
-        BreakerMachines::Registry.instance.register(self) unless @config[:auto_register] == false
       end
 
       private

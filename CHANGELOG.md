@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+* Restore shared circuit state after state machine initialization.
+
 ## [0.21.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.20.0...breaker_machines/v0.21.0) (2026-10-13)
 
 

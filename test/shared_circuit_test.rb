@@ -42,6 +42,43 @@ class SharedCircuitTest < ActiveSupport::TestCase
     assert_predicate @second, :open?
   end
 
+  [BreakerMachines::Circuit, BreakerMachines::CoordinatedCircuit,
+   BreakerMachines::CascadingCircuit, BreakerMachines::AsyncCircuit].each do |circuit_class|
+    test "restores an open circuit when constructing #{circuit_class}" do
+      skip_async_dependent_test if circuit_class == BreakerMachines::AsyncCircuit
+      @first.trip
+      circuit = build_circuit(circuit_class:, on_open: -> { flunk 'Must not replay the opening callback' })
+
+      assert_raises(BreakerMachines::CircuitOpenError) do
+        circuit.call { flunk 'An open circuit must not run the operation' }
+      end
+      assert_predicate circuit, :open?
+      assert_in_delta @first.opened_at.value, circuit.opened_at.value, 0.001
+    end
+  end
+
+  test 'restores half-open probe admission on construction' do
+    @first.trip
+    @first.attempt_recovery
+    circuit = build_circuit
+
+    assert_predicate circuit, :half_open?
+    circuit.call do
+      assert_raises(BreakerMachines::CircuitOpenError) { circuit.call { :extra_probe } }
+      :ok
+    end
+    assert_predicate circuit, :closed?
+  end
+
+  test 'recovers on its first call when constructed after the cooldown' do
+    write_peer_status(:open, opened_seconds_ago: 3601, clock_skew: 50_000)
+    circuit = build_circuit
+
+    assert_predicate circuit, :open?
+    assert_equal :ok, circuit.call { :ok }
+    assert_predicate circuit, :closed?
+  end
+
   test 'observes a reset by another instance and clears the opening time' do
     @first.trip
     @second = build_circuit
@@ -186,9 +223,9 @@ class SharedCircuitTest < ActiveSupport::TestCase
                  })
   end
 
-  def build_circuit(**options)
+  def build_circuit(circuit_class: BreakerMachines::Circuit, **options)
     storage = BreakerMachines::Storage::Cache.new(cache_store: @cache)
-    BreakerMachines::Circuit.new('shared', {
+    circuit_class.new('shared', {
       storage: storage,
       failure_threshold: 1,
       reset_timeout: 3600,
