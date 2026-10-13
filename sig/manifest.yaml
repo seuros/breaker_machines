@@ -1,5 +1,0 @@
-dependencies:
-  - name: activesupport
-  - name: concurrent-ruby
-  - name: state_machines
-  - name: zeitwerk

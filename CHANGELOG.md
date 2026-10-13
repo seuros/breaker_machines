@@ -1,9 +1,5 @@
 # Changelog
 
-## Unreleased
-
-* Add `circuit.protect(object, methods:)` to protect selected client methods with an existing Ruby or native circuit.
-
 ## [0.20.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.19.0...breaker_machines/v0.20.0) (2026-10-12)
 
 

@@ -4,6 +4,8 @@ require 'delegate'
 
 module BreakerMachines
   class Circuit
+    # Proxy delegates to a wrapped object and routes the configured methods
+    # through a circuit. Unlisted methods pass straight through.
     class Proxy < SimpleDelegator
       def initialize(object, circuit:, methods:)
         raise ArgumentError, 'methods must not be empty' if methods.empty?
