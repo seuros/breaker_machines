@@ -16,6 +16,8 @@ module BreakerMachines
     #
     #   circuit.call { api.fetch_data }
     class Native
+      include Circuit::Protection
+
       # @return [String] Circuit name
       attr_reader :name
 
