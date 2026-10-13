@@ -30,7 +30,6 @@ platforms :mri do
     gem 'railties', "~> #{rails_version}.0"
   end
   gem 'async', '~> 2.31.0'
-  gem 'rbs', '~> 3.0'
   gem 'sqlite3', '~> 2.0'
   gem 'state_machines-activerecord'
 end

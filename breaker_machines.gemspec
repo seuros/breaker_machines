@@ -38,7 +38,7 @@ Gem::Specification.new do |spec|
   # Specify which files should be added to the gem. The generic `ruby` gem is
   # pure Ruby; native binaries are shipped only in platform gems built by rb_sys.
   lib_files = Dir['lib/**/*'].reject { |path| path =~ /\.(bundle|so|dll)\z/ }
-  spec.files = lib_files + Dir['sig/**/*'] + %w[LICENSE.txt README.md]
+  spec.files = lib_files + %w[LICENSE.txt README.md]
   spec.require_paths = ['lib']
 
   # Core dependencies
