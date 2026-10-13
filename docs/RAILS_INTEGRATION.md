@@ -428,45 +428,36 @@ end
 
 ## Mailer Protection
 
+Use `around_deliver` to protect the actual delivery. `around_action` only wraps message construction, which finishes before the SMTP request. Reuse one circuit across mailer instances, with a shared Rails cache store for deliveries in different processes.
+
 ```ruby
 class ApplicationMailer < ActionMailer::Base
-  include BreakerMachines::DSL
+  EMAIL_CIRCUIT = BreakerMachines::Circuit.new(
+    :email_service,
+    storage: BreakerMachines::Storage::Cache.new(cache_store: Rails.cache, expires_in: 15.minutes),
+    failure_threshold: 3,
+    failure_window: 5.minutes,
+    reset_timeout: 10.minutes,
+    exceptions: [Net::OpenTimeout, Net::ReadTimeout, Net::SMTPServerBusy]
+  )
 
-  circuit :email_service do
-    threshold failures: 3, within: 5.minutes
-    reset_after 10.minutes
-
-    fallback do |error|
-      # Queue for later delivery
-      EmailRetryJob.perform_later(
-        mailer: self.class.name,
-        action: action_name,
-        params: @params
-      )
-
-      # Return fake message to prevent errors
-      Mail::Message.new
-    end
-  end
-
-  around_action :wrap_in_circuit
+  around_deliver :wrap_in_circuit
 
   private
 
   def wrap_in_circuit
-    circuit(:email_service).wrap { yield }
+    EMAIL_CIRCUIT.wrap { yield }
   end
 end
 
-# Retry job
-class EmailRetryJob < ApplicationJob
-  queue_as :low
-
-  def perform(mailer:, action:, params:)
-    mailer.constantize.send(action, **params).deliver_now
-  end
-end
+# config/initializers/circuit_breakers.rb
+ActionMailer::MailDeliveryJob.retry_on BreakerMachines::CircuitOpenError,
+                                     wait: 10.minutes, attempts: 5
+ActionMailer::MailDeliveryJob.retry_on Net::OpenTimeout, Net::ReadTimeout, Net::SMTPServerBusy,
+                                     wait: :polynomially_longer, attempts: 5
 ```
+
+Use `deliver_later` to apply these retries. Active Job preserves the original mailer arguments and parameters. `deliver_now` raises failures to its caller.
 
 ## Health Checks
 
