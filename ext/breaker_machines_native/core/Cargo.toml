@@ -26,7 +26,7 @@ inspect = ["state-machines/inspect"]
 workspace = true
 
 [dependencies]
-state-machines = { version = "0.31", default-features = false }
+state-machines = { version = "0.32", default-features = false }
 chrono-machines = { version = "0.8", default-features = false }
 hashbrown = "0.17"
 spin = { version = "0.12", default-features = false, features = ["rwlock"] }
