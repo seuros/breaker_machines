@@ -563,12 +563,7 @@ impl CircuitBreaker {
             None
         };
         self.recover_if_poisoned();
-
-        // Open -> HalfOpen once the cooldown drawn on entry has elapsed; the
-        // guard rejecting simply keeps the circuit Open.
-        if self.machine.current_state() == CircuitState::Open {
-            let _ = self.machine.handle(CircuitEvent::AttemptReset);
-        }
+        self.half_open_if_due();
 
         let mut permit = CallPermit {
             _bulkhead: permit,
@@ -724,10 +719,20 @@ impl CircuitBreaker {
         // more states. Their outcomes still belong in the rolling metrics, but
         // they must not drive transitions for a newer state generation.
         let may_transition = state_epoch == self.state_epoch();
+        let duration = self.context.storage.monotonic_time() - start;
+        self.settle(result, duration, may_transition)
+    }
 
+    /// Record an outcome that took `duration` seconds and, when
+    /// `may_transition`, drive the transition it warrants.
+    fn settle<T, E: 'static>(
+        &mut self,
+        result: Result<T, E>,
+        duration: f64,
+        may_transition: bool,
+    ) -> Result<T, CircuitError<E>> {
         match result {
             Ok(val) => {
-                let duration = self.context.storage.monotonic_time() - start;
                 self.record_success(duration);
                 if may_transition {
                     self.maybe_close_after_success();
@@ -735,8 +740,6 @@ impl CircuitBreaker {
                 Ok(val)
             }
             Err(e) => {
-                let duration = self.context.storage.monotonic_time() - start;
-
                 // Check if this error should trip the circuit using failure classifier
                 let should_trip = if let Some(classifier) = &self.context.failure_classifier {
                     let ctx = crate::classifier::FailureContext {
@@ -760,6 +763,33 @@ impl CircuitBreaker {
 
                 Err(CircuitError::Execution(e))
             }
+        }
+    }
+
+    /// Record an operation that ran outside this circuit's admission, for a
+    /// circuit that watches work instead of gating it, and return the state
+    /// the outcome left it in.
+    ///
+    /// The outcome runs the same machine as [`call`](Self::call): an `Open`
+    /// circuit whose cooldown has elapsed moves to `HalfOpen` first, the
+    /// failure classifier applies, and the outcome drives the transition it
+    /// warrants. Nothing was admitted, so no probe slot or bulkhead permit is
+    /// taken. While the cooldown is still running the outcome is recorded in
+    /// the metrics, where it counts toward the failure window, but drives no
+    /// transition.
+    pub fn observe<E: 'static>(&mut self, outcome: Result<(), E>, duration: f64) -> CircuitState {
+        self.recover_if_poisoned();
+        self.half_open_if_due();
+        // The outcome is the caller's own; only the state it left is news.
+        let _ = self.settle(outcome, duration, true);
+        self.state()
+    }
+
+    /// Open -> `HalfOpen` once the cooldown drawn on entry has elapsed; the
+    /// guard rejecting simply keeps the circuit Open.
+    fn half_open_if_due(&mut self) {
+        if self.machine.current_state() == CircuitState::Open {
+            let _ = self.machine.handle(CircuitEvent::AttemptReset);
         }
     }
 

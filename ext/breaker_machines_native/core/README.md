@@ -135,6 +135,29 @@ let result = circuit.call((
 // Normal calls work as before: circuit.call(|| api_request())
 ```
 
+### Observing Outcomes
+
+When the work runs whether or not the circuit allows it (a health signal
+derived from requests you serve anyway), feed each outcome to `observe`
+instead of gating it with `call`. The outcome runs the same machine: an `Open`
+circuit whose cooldown has elapsed moves to `HalfOpen`, the failure classifier
+applies, and the outcome drives the transition it warrants. Nothing is
+admitted, so no probe slot or bulkhead permit is taken; outcomes observed
+during the cooldown are recorded in the metrics but cannot close the circuit.
+
+```rust
+use breaker_machines::{CircuitBreaker, circuit::CircuitState};
+
+let mut health = CircuitBreaker::builder("session_health")
+    .failure_threshold(3)
+    .build();
+
+for _ in 0..3 {
+    health.observe(Err("timeout"), 0.2);
+}
+assert_eq!(health.state(), CircuitState::Open);
+```
+
 ### Async Support
 
 Enable the `async` feature to use `AsyncCircuitBreaker` with Rust futures:

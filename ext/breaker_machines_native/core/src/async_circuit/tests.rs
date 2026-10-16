@@ -250,3 +250,16 @@ fn reset_fences_probes_from_before_the_reset() {
     let competing = pollster::block_on(circuit.call(|| async { Ok::<_, &str>(()) }));
     assert_matches!(competing, Err(CircuitError::HalfOpenLimitReached { .. }));
 }
+
+#[test]
+fn observe_drives_the_wrapped_circuit() {
+    let circuit = AsyncCircuitBreaker::builder("test")
+        .failure_threshold(1)
+        .build_async();
+    assert_eq!(
+        circuit.observe(Ok::<(), &str>(()), 0.01),
+        CircuitState::Closed
+    );
+    assert_eq!(circuit.observe(Err("boom"), 0.01), CircuitState::Open);
+    assert!(circuit.is_open());
+}

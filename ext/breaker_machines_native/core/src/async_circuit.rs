@@ -5,7 +5,7 @@
 
 use crate::{
     CircuitBreaker, CircuitBuilder, Config, FallbackContext,
-    circuit::{CallGate, CallPermit, CallTicket},
+    circuit::{CallGate, CallPermit, CallTicket, CircuitState},
     errors::CircuitError,
 };
 use std::{
@@ -196,6 +196,12 @@ impl AsyncCircuitBreaker {
                 options.resolve_open(context).await
             }
         }
+    }
+
+    /// Record an operation that ran outside this circuit's admission and
+    /// return the state it left; see [`CircuitBreaker::observe`].
+    pub fn observe<E: 'static>(&self, outcome: Result<(), E>, duration: f64) -> CircuitState {
+        self.lock_inner().observe(outcome, duration)
     }
 
     /// Record a successful operation and drive `HalfOpen` -> Closed transitions.

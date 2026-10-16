@@ -1041,3 +1041,98 @@ fn tickets_hold_the_bulkhead_permit_until_returned() {
     let ticket = circuit.try_acquire().expect("abandon released the permit");
     circuit.abandon(ticket);
 }
+
+/// Milliseconds to advance, whether the observed outcome succeeded, state after.
+type ObserveStep = (u64, bool, CircuitState);
+
+#[test]
+fn observe_runs_the_machine_without_admission() {
+    use CircuitState::{Closed, HalfOpen, Open};
+    // Failure threshold 1, cooldown 1 s, success threshold 2.
+    let cases: &[(&str, &[ObserveStep])] = &[
+        ("a success keeps it closed", &[(0, true, Closed)]),
+        ("a failure trips it", &[(0, false, Open)]),
+        (
+            "a success inside the cooldown leaves it open",
+            &[(0, false, Open), (999, true, Open)],
+        ),
+        (
+            "after the cooldown successes half-open then close it",
+            &[(0, false, Open), (1000, true, HalfOpen), (0, true, Closed)],
+        ),
+        (
+            "a half-open failure reopens it",
+            &[(0, false, Open), (1000, true, HalfOpen), (0, false, Open)],
+        ),
+        (
+            "a failure after the cooldown reopens it",
+            &[(0, false, Open), (1000, false, Open)],
+        ),
+    ];
+    for (label, steps) in cases {
+        let clock = ManualClock::starting_at(100);
+        let mut circuit = ticketed_circuit(&clock, 2);
+        for (step, &(advance, ok, expected)) in steps.iter().enumerate() {
+            clock.advance(Duration::from_millis(advance));
+            let outcome = if ok { Ok(()) } else { Err("boom") };
+            assert_eq!(
+                circuit.observe(outcome, 0.01),
+                expected,
+                "{label}, step {step}"
+            );
+            assert_eq!(circuit.state(), expected, "{label}, step {step}");
+        }
+    }
+}
+
+#[test]
+fn observe_inside_the_cooldown_still_records_metrics() {
+    let clock = ManualClock::starting_at(100);
+    let mut circuit = ticketed_circuit(&clock, 2);
+    assert_eq!(circuit.observe(Err("boom"), 0.01), CircuitState::Open);
+
+    assert_eq!(
+        circuit.observe(Ok::<(), &str>(()), 0.01),
+        CircuitState::Open
+    );
+    assert_eq!(circuit.observe(Err("boom"), 0.01), CircuitState::Open);
+    assert_eq!(circuit.context.storage.success_count("test", 60.0), 1);
+    assert_eq!(circuit.context.storage.failure_count("test", 60.0), 2);
+}
+
+#[test]
+fn observe_takes_no_probe_slot() {
+    let clock = ManualClock::starting_at(100);
+    let mut circuit = ticketed_circuit(&clock, 2);
+    trip_with_ticket(&mut circuit);
+    clock.advance(Duration::from_secs(1));
+    let probe = circuit.try_acquire().expect("the cooldown has elapsed");
+    let in_flight =
+        |circuit: &CircuitBreaker| circuit.machine.half_open_data().map(|d| d.in_flight);
+
+    assert_eq!(
+        circuit.observe(Ok::<(), &str>(()), 0.01),
+        CircuitState::HalfOpen
+    );
+    assert_eq!(
+        in_flight(&circuit),
+        Some(1),
+        "observe reserved or released a slot"
+    );
+    // The observed success counts toward closing, beside the admitted probe.
+    assert_matches!(circuit.complete(probe, Ok::<_, &str>(())), Ok(()));
+    assert_eq!(circuit.state(), CircuitState::Closed);
+}
+
+#[test]
+fn observe_applies_the_failure_classifier() {
+    let classifier = Arc::new(PredicateClassifier::new(|ctx| ctx.duration > 0.5));
+    let mut circuit = CircuitBreaker::builder("test")
+        .failure_threshold(1)
+        .failure_classifier(classifier)
+        .build();
+
+    assert_eq!(circuit.observe(Err("fast"), 0.1), CircuitState::Closed);
+    assert_eq!(circuit.context.storage.failure_count("test", 60.0), 0);
+    assert_eq!(circuit.observe(Err("slow"), 1.0), CircuitState::Open);
+}
