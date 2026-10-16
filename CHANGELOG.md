@@ -6,6 +6,13 @@
 
 * Restore shared circuit state after state machine initialization.
 
+## [0.22.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.21.2...breaker_machines/v0.22.0) (2026-10-16)
+
+
+### Features
+
+* **core:** observe outcomes that ran outside the circuit ([d9fcb64](https://github.com/seuros/breaker_machines/commit/d9fcb64ee045963f1a8a53f41d1768a6ca073cab))
+
 ## [0.21.2](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.21.1...breaker_machines/v0.21.2) (2026-10-14)
 
 

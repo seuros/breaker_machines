@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.19.1...breaker-machines-v0.20.0) (2026-10-16)
+
+
+### Features
+
+* **core:** observe outcomes that ran outside the circuit ([d9fcb64](https://github.com/seuros/breaker_machines/commit/d9fcb64ee045963f1a8a53f41d1768a6ca073cab))
+
 ## [0.19.1](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.19.0...breaker-machines-v0.19.1) (2026-10-14)
 
 
