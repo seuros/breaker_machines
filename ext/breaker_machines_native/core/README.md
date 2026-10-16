@@ -164,7 +164,7 @@ Enable the `async` feature to use `AsyncCircuitBreaker` with Rust futures:
 
 ```toml
 [dependencies]
-breaker-machines = { version = "0.19.1", features = ["async"] } # x-release-please-version
+breaker-machines = { version = "0.20.0", features = ["async"] } # x-release-please-version
 ```
 
 ```rust
@@ -222,7 +222,7 @@ metrics, but cannot drive transitions in a newer half-open generation.
 
 ```toml
 [dependencies]
-breaker-machines = { version = "0.19.1", features = ["async"] } # x-release-please-version
+breaker-machines = { version = "0.20.0", features = ["async"] } # x-release-please-version
 ```
 
 ```rust
