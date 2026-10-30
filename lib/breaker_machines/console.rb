@@ -221,7 +221,11 @@ module BreakerMachines
           puts '-' * 80
 
           events.each do |event|
-            timestamp = Time.at(event[:timestamp]).strftime('%Y-%m-%d %H:%M:%S')
+            timestamp = if event[:timestamp_epoch]
+                          Time.at(event[:timestamp_epoch]).strftime('%Y-%m-%d %H:%M:%S')
+                        else
+                          format('%.3fs', event[:timestamp])
+                        end
             type = colorize_event_type(event[:type])
             duration = event[:duration_ms] ? "#{event[:duration_ms]}ms" : '-'
             error = event[:error_class] || '-'

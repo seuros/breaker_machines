@@ -46,9 +46,11 @@ module BreakerMachines
       def record_event_with_details(circuit_name, type, duration, error: nil, new_state: nil)
         events = @event_logs.compute_if_absent(circuit_name) { Concurrent::Array.new }
 
+        now = monotonic_time
         event = {
           type: type,
-          timestamp: monotonic_time,
+          timestamp: now,
+          timestamp_epoch: BreakerMachines.monotonic_to_epoch(@start_time + now),
           duration_ms: (duration * 1000).round(2)
         }
 

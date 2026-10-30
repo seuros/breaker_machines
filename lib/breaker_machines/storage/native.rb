@@ -24,6 +24,7 @@ module BreakerMachines
         super
         # Native extension is guaranteed to be available when this class is loaded
         @backend = BreakerMachinesNative::Storage.new
+        @epoch_origin = BreakerMachines.monotonic_to_epoch(BreakerMachines.monotonic_time)
       end
 
       # Check if using native backend
@@ -81,7 +82,9 @@ module BreakerMachines
       end
 
       def event_log(circuit_name, limit)
-        @backend.event_log(circuit_name.to_s, limit)
+        @backend.event_log(circuit_name.to_s, limit).map do |event|
+          event.merge(timestamp_epoch: @epoch_origin + event[:timestamp])
+        end
       end
 
       def with_timeout(_timeout_ms)

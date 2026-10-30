@@ -78,6 +78,7 @@ class NativeStorageTest < ActiveSupport::TestCase
     # Check timestamps are present
     assert_kind_of Float, events[0][:timestamp]
     assert_kind_of Float, events[0][:duration_ms]
+    assert_in_delta Process.clock_gettime(Process::CLOCK_REALTIME), events[0][:timestamp_epoch], 5
   end
 
   def test_event_log_respects_limit

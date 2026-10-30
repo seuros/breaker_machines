@@ -9,6 +9,14 @@ class StorageTest < ActiveSupport::TestCase
     @circuit_name = :test_circuit
   end
 
+  def test_events_carry_wall_clock_time
+    @storage.record_event_with_details(@circuit_name, :failure, 0.1)
+
+    event = @storage.event_log(@circuit_name, 1).first
+
+    assert_in_delta Process.clock_gettime(Process::CLOCK_REALTIME), event[:timestamp_epoch], 5
+  end
+
   def test_get_status_returns_nil_for_unknown_circuit
     assert_nil @storage.get_status(:unknown_circuit)
   end
