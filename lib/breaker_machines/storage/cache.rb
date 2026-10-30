@@ -15,6 +15,9 @@ module BreakerMachines
         @bucket_seconds = Integer(options[:bucket_seconds] || 1)
         raise ArgumentError, 'bucket_seconds must be positive' unless @bucket_seconds.positive?
 
+        @max_events = Integer(options[:max_events] || 100)
+        raise ArgumentError, 'max_events must be positive' unless @max_events.positive?
+
         @warned_windows = Concurrent::Set.new
       end
 
@@ -67,28 +70,23 @@ module BreakerMachines
         keys = [success_key(circuit_name), failure_key(circuit_name)].flat_map do |key|
           bucket_keys(key, bucket_count(@expires_in) + 1)
         end
-        delete_counters(keys)
+        delete_counters(keys + [event_sequence_key(circuit_name)] + event_slot_keys(circuit_name))
       end
 
       def clear_all
-        # Clear all circuit data by pattern if cache supports it
-        if @cache.respond_to?(:delete_matched)
-          @cache.delete_matched("#{@prefix}:*")
-        else
-          # Fallback: can't efficiently clear all without pattern support
-          BreakerMachines.logger&.warn(
-            "[BreakerMachines] Cache store doesn't support delete_matched. " \
-            'Individual circuit data must be cleared manually.'
-          )
-        end
+        return @cache.delete_matched(prefix_matcher) if @cache.respond_to?(:delete_matched)
+
+        warn_clear_all_unsupported
+      rescue NotImplementedError
+        warn_clear_all_unsupported
       end
 
       def record_event_with_details(circuit_name, type, duration, error: nil, new_state: nil)
-        events = @cache.fetch(events_key(circuit_name)) { [] }
-
+        now = monotonic_time
         event = {
           type: type,
-          timestamp: monotonic_time,
+          timestamp: now,
+          timestamp_epoch: BreakerMachines.monotonic_to_epoch(now),
           duration_ms: (duration * 1000).round(2)
         }
 
@@ -96,15 +94,24 @@ module BreakerMachines
         event[:error_message] = error.message if error
         event[:new_state] = new_state if new_state
 
-        events << event
-        events.shift while events.size > (@max_events || 100)
+        return append_event(circuit_name, event) unless @cache.respond_to?(:increment)
 
-        @cache.write(events_key(circuit_name), events, expires_in: @expires_in)
+        sequence = @cache.increment(event_sequence_key(circuit_name), 1, expires_in: @expires_in)
+        return false unless sequence
+
+        @cache.write(event_slot_key(circuit_name, sequence % @max_events),
+                     event.merge(sequence: sequence), expires_in: @expires_in)
       end
 
       def event_log(circuit_name, limit)
-        events = @cache.read(events_key(circuit_name)) || []
-        events.last(limit)
+        events = if @cache.respond_to?(:increment)
+                   read_values(event_slot_keys(circuit_name)).sort_by do |event|
+                     [event[:timestamp_epoch], event[:sequence]]
+                   end
+                 else
+                   @cache.read(events_key(circuit_name)) || []
+                 end
+        events.last(limit).map { |event| local_event(event) }
       end
 
       def with_timeout(_timeout_ms)
@@ -165,9 +172,39 @@ module BreakerMachines
 
       # read_multi is a single round trip; stores without it read each bucket.
       def read_counters(keys)
-        return @cache.read_multi(*keys, raw: true).values if @cache.respond_to?(:read_multi)
+        read_values(keys, raw: true)
+      end
 
-        keys.filter_map { |key| @cache.read(key) }
+      def read_values(keys, **options)
+        return @cache.read_multi(*keys, **options).values if @cache.respond_to?(:read_multi)
+
+        keys.filter_map { |key| @cache.read(key, options) }
+      end
+
+      def append_event(circuit_name, event)
+        events = @cache.fetch(events_key(circuit_name)) { [] }
+        events << event
+        events.shift while events.size > @max_events
+        @cache.write(events_key(circuit_name), events, expires_in: @expires_in)
+      end
+
+      def local_event(event)
+        epoch = event[:timestamp_epoch]
+        local = event.except(:sequence)
+        epoch ? local.merge(timestamp: BreakerMachines.epoch_to_monotonic(epoch)) : local
+      end
+
+      def prefix_matcher
+        return "#{@prefix.gsub(/[?*\[\]\\]/) { |char| "\\#{char}" }}:*" if @cache.respond_to?(:redis)
+
+        /^#{Regexp.escape(@prefix)}:/
+      end
+
+      def warn_clear_all_unsupported
+        BreakerMachines.logger&.warn(
+          "[BreakerMachines] #{@cache.class} doesn't support delete_matched. " \
+          'Individual circuit data must be cleared manually.'
+        )
       end
 
       def delete_counters(keys)
@@ -208,6 +245,18 @@ module BreakerMachines
 
       def events_key(circuit_name)
         "#{@prefix}:#{circuit_name}:events"
+      end
+
+      def event_sequence_key(circuit_name)
+        "#{@prefix}:#{circuit_name}:event_sequence"
+      end
+
+      def event_slot_key(circuit_name, slot)
+        "#{@prefix}:#{circuit_name}:event:#{slot}"
+      end
+
+      def event_slot_keys(circuit_name)
+        Array.new(@max_events) { |slot| event_slot_key(circuit_name, slot) }
       end
 
       def monotonic_time

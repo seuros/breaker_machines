@@ -25,6 +25,29 @@ class StorageCacheTest < ActiveSupport::TestCase
     def keys = @data.keys
   end
 
+  class SlowWriteStore < ActiveSupport::Cache::MemoryStore
+    def write(...)
+      sleep 0.001
+      super
+    end
+  end
+
+  class StoreWithoutDeleteMatched < ActiveSupport::Cache::MemoryStore
+    def delete_matched(_matcher, _options = nil)
+      raise NotImplementedError, "#{self.class.name} does not support delete_matched"
+    end
+  end
+
+  class RedisLikeStore < ActiveSupport::Cache::MemoryStore
+    attr_reader :matchers
+
+    def redis = nil
+
+    def delete_matched(matcher, _options = nil)
+      (@matchers ||= []) << matcher
+    end
+  end
+
   setup do
     @cache = ActiveSupport::Cache::MemoryStore.new
     @storage = BreakerMachines::Storage::Cache.new(cache_store: @cache)
@@ -149,6 +172,100 @@ class StorageCacheTest < ActiveSupport::TestCase
     assert_equal 'StandardError', events.first[:error_class]
     assert_equal 'Test error', events.first[:error_message]
     assert_equal :open, events.first[:new_state]
+  end
+
+  test 'keeps every event appended concurrently from separate adapters' do
+    store = SlowWriteStore.new
+    threads = 8.times.map do
+      Thread.new do
+        storage = BreakerMachines::Storage::Cache.new(cache_store: store)
+        10.times { storage.record_event_with_details('test_circuit', :failure, 0.1) }
+      end
+    end
+    threads.each(&:value)
+
+    assert_equal 80, BreakerMachines::Storage::Cache.new(cache_store: store).event_log('test_circuit', 100).size
+  end
+
+  test 'keeps the most recent max_events events in order' do
+    storage = BreakerMachines::Storage::Cache.new(cache_store: @cache, max_events: 5)
+    8.times { |i| storage.record_event_with_details('test_circuit', :success, i / 1000.0) }
+
+    assert_equal [3.0, 4.0, 5.0, 6.0, 7.0], storage.event_log('test_circuit', 10).pluck(:duration_ms)
+    assert_equal [6.0, 7.0], storage.event_log('test_circuit', 2).pluck(:duration_ms)
+  end
+
+  test 'orders events by time after the sequence restarts' do
+    3.times { |i| @storage.record_event_with_details('test_circuit', :success, i / 1000.0) }
+    @cache.delete('breaker_machines:test_circuit:event_sequence')
+    @storage.record_event_with_details('test_circuit', :failure, 0.009)
+
+    events = @storage.event_log('test_circuit', 10)
+
+    assert_equal [1.0, 2.0, 9.0], events.pluck(:duration_ms)
+    assert_equal :failure, events.last[:type]
+  end
+
+  test 'reads events from another host in local monotonic time' do
+    epoch = Process.clock_gettime(Process::CLOCK_REALTIME) - 30
+    @cache.write('breaker_machines:test_circuit:event:1',
+                 { type: :failure, timestamp: BreakerMachines.monotonic_time + 50_000,
+                   timestamp_epoch: epoch, duration_ms: 1.0, sequence: 1 })
+
+    event = @storage.event_log('test_circuit', 1).first
+
+    assert_in_delta BreakerMachines.monotonic_time - 30, event[:timestamp], 0.5
+    assert_in_delta epoch, event[:timestamp_epoch], 0.001
+    assert_nil event[:sequence]
+  end
+
+  test 'clears logged events' do
+    @storage.record_event_with_details('test_circuit', :failure, 0.1)
+    @storage.clear('test_circuit')
+
+    assert_empty @storage.event_log('test_circuit', 10)
+  end
+
+  test 'rejects a non-positive event limit' do
+    assert_raises(ArgumentError) { BreakerMachines::Storage::Cache.new(cache_store: @cache, max_events: 0) }
+  end
+
+  test 'logs events with caches without increment method' do
+    storage = BreakerMachines::Storage::Cache.new(cache_store: CacheWithoutIncrement.new, max_events: 2)
+    3.times { |i| storage.record_event_with_details('test_circuit', :success, i / 1000.0) }
+
+    assert_equal [1.0, 2.0], storage.event_log('test_circuit', 10).pluck(:duration_ms)
+  end
+
+  test 'clears all circuit data within a namespace only' do
+    namespaced = ActiveSupport::Cache::MemoryStore.new(namespace: 'app')
+    storage = BreakerMachines::Storage::Cache.new(cache_store: namespaced)
+    namespaced.write('unrelated', 'kept')
+    storage.set_status('circuit1', :open)
+
+    storage.clear_all
+
+    assert_nil storage.get_status('circuit1')
+    assert_equal 'kept', namespaced.read('unrelated')
+  end
+
+  test 'clears all with a glob on redis stores' do
+    store = RedisLikeStore.new
+    BreakerMachines::Storage::Cache.new(cache_store: store, prefix: 'cb[1]').clear_all
+
+    assert_equal ['cb\[1\]:*'], store.matchers
+  end
+
+  test 'warns instead of raising when the store cannot delete by pattern' do
+    log = StringIO.new
+    previous_logger = BreakerMachines.logger
+    BreakerMachines.logger = Logger.new(log)
+
+    BreakerMachines::Storage::Cache.new(cache_store: StoreWithoutDeleteMatched.new).clear_all
+
+    assert_includes log.string, "StoreWithoutDeleteMatched doesn't support delete_matched"
+  ensure
+    BreakerMachines.logger = previous_logger
   end
 
   test 'handles caches without increment method' do
