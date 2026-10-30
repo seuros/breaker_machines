@@ -6,6 +6,14 @@
 
 * Restore shared circuit state after state machine initialization.
 
+## [0.22.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.22.0...breaker_machines/v0.22.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* **console:** show event times as wall-clock dates ([fc6a3fc](https://github.com/seuros/breaker_machines/commit/fc6a3fc0c58c228a513e1b8bd576ab4329e9189c))
+* **storage:** append Cache events atomically and clear stores without delete_matched ([26fdc66](https://github.com/seuros/breaker_machines/commit/26fdc66fa6b1c2e6c4b727847423ff11f8307723))
+
 ## [0.22.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.21.2...breaker_machines/v0.22.0) (2026-10-16)
 
 
