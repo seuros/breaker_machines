@@ -193,7 +193,7 @@ Example output:
 
 ### Continuous Integration
 
-Our CI tests ALL layers of the matryoshka across Rails 7.2, 8.0, and 8.1:
+Our CI tests ALL layers of the matryoshka on Ruby 4.0+ and Rails 8.1+:
 
 | Job | Layer | Purpose | Tests |
 |-----|-------|---------|-------|

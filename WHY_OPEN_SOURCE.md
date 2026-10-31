@@ -13,7 +13,7 @@ When I actually looked at the existing circuit breaker gems, it was like archaeo
 Meanwhile, my codebases are all running on the edge:
 - **Fiber-based concurrency** for non-blocking I/O
 - **Ractors** for true parallelism
-- **Ruby 3.3+** features that actually make the language pleasant
+- **Ruby 4.0+** features that actually make the language pleasant
 
 Using these ancient gems in modern Ruby is like putting wagon wheels on a Tesla. Sure, it might work, but why would you do that to yourself?
 

@@ -789,6 +789,7 @@ impl CircuitBreaker {
     /// guard rejecting simply keeps the circuit Open.
     fn half_open_if_due(&mut self) {
         if self.machine.current_state() == CircuitState::Open {
+            // Guarded by the cooldown; a rejected transition leaves it Open.
             let _ = self.machine.handle(CircuitEvent::AttemptReset);
         }
     }
