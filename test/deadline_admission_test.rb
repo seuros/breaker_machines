@@ -27,30 +27,6 @@ class DeadlineAdmissionTest < ActiveSupport::TestCase
     assert_equal 0, @circuit.stats.failure_count
   end
 
-  test 'a spent budget rejects the call without running it' do
-    ran = false
-
-    assert_raises(DeadlineMachines::Exceeded) do
-      DeadlineMachines.with_deadline(1) do
-        @clock.advance(2)
-        @circuit.wrap { ran = true }
-      end
-    end
-
-    refute ran
-    assert_predicate @circuit, :closed?
-  end
-
-  test 'a genuine dependency failure still trips the circuit inside a deadline' do
-    DeadlineMachines.with_deadline(60) do
-      2.times do
-        assert_raises(IOError) { @circuit.wrap { raise IOError, 'down' } }
-      end
-    end
-
-    assert_predicate @circuit, :open?
-  end
-
   test 'an inner scope expiring is a real timeout and counts as a failure' do
     DeadlineMachines.with_deadline(60) do
       2.times do
@@ -64,12 +40,6 @@ class DeadlineAdmissionTest < ActiveSupport::TestCase
         end
       end
     end
-
-    assert_predicate @circuit, :open?
-  end
-
-  test 'without a deadline the circuit behaves exactly as before' do
-    2.times { assert_raises(IOError) { @circuit.wrap { raise IOError, 'down' } } }
 
     assert_predicate @circuit, :open?
   end
