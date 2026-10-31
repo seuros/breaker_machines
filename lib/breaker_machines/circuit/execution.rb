@@ -32,6 +32,7 @@ module BreakerMachines
       private
 
       def execute_with_state_check(&)
+        DeadlineMachines.check!
         attempt_recovery_if_ready
 
         # Apply bulkheading first, outside of any locks
@@ -78,6 +79,8 @@ module BreakerMachines
           completed = true
           result
         rescue *@config[:exceptions] => e
+          raise if caller_gave_up?(e)
+
           complete_call_failure(admission, start_time, e)
           completed = true
           raise unless @config[:fallback]
@@ -86,6 +89,13 @@ module BreakerMachines
         ensure
           release_abandoned_admission(admission) unless completed
         end
+      end
+
+      # A caller abandoning its own budget says nothing about the dependency's
+      # health, so it must not count toward the failure threshold. An inner
+      # scope expiring is a genuine timeout and still does.
+      def caller_gave_up?(error)
+        error.is_a?(DeadlineMachines::Error) && DeadlineMachines.current&.done?
       end
 
       def execute_sync_operation(&)

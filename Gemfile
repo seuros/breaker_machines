@@ -6,6 +6,9 @@ source 'https://rubygems.org'
 gem 'state_machines'
 
 # Specify your gem's dependencies in breaker_machines.gemspec
+
+gem 'chrono_machines', path: '../chrono_machines'
+gem 'deadline_machines', path: '../deadline_machines'
 gemspec
 
 gem 'rake', '~> 13.0'

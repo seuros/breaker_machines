@@ -31,6 +31,7 @@ module BreakerMachines
       rescue StandardError => e
         # Re-raise if it's not an async timeout or configured exception
         raise unless e.is_a?(async_timeout_error_class) || @config[:exceptions].any? { |klass| e.is_a?(klass) }
+        raise if caller_gave_up?(e)
 
         complete_call_failure(admission, start_time, e)
         completed = true
