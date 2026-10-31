@@ -21,6 +21,7 @@ std = ["alloc", "state-machines/std", "chrono-machines/std"]
 alloc = ["chrono-machines/alloc"]
 async = ["std", "state-machines/async", "chrono-machines/async"]
 inspect = ["state-machines/inspect"]
+serde = ["state-machines/serde"]
 
 [lints]
 workspace = true
