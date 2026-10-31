@@ -59,7 +59,7 @@ module BreakerMachines
           callables.each_with_index do |callable, idx|
             barrier.async do
               # stagger hedged attempts
-              sleep(delay_ms / 1000.0) if idx.positive? && delay_ms.positive?
+              sleep(DeadlineMachines.clamp_sleep(delay_ms / 1000.0)) if idx.positive? && delay_ms.positive?
 
               begin
                 result = callable.call

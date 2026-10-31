@@ -12,6 +12,12 @@ module BreakerMachines
       extend ActiveSupport::Concern
 
       # Execute a hedged request pattern
+      # Seconds a hedge waits when the circuit configures no timeout.
+      HEDGE_TIMEOUT = 30
+
+      # Seconds between polls of the result queue.
+      HEDGE_POLL = 0.001
+
       def execute_hedged(&)
         return execute_single_hedged(&) unless @config[:backends]&.any?
 
@@ -55,7 +61,7 @@ module BreakerMachines
 
         callables.each_with_index do |callable, index|
           # Add delay for hedge requests (not the first one)
-          sleep(delay_ms / 1000.0) if index.positive? && delay_ms.positive?
+          sleep(DeadlineMachines.clamp_sleep(delay_ms / 1000.0)) if index.positive? && delay_ms.positive?
 
           # Skip if already got a result
           break if cancelled.value
@@ -75,7 +81,7 @@ module BreakerMachines
 
         # Wait for first result or all errors
         begin
-          Timeout.timeout(@config[:timeout] || 30) do
+          Timeout.timeout(DeadlineMachines.clamp_sleep(@config[:timeout] || HEDGE_TIMEOUT)) do
             # Check for successful result
             loop do
               unless result_queue.empty?
@@ -87,8 +93,8 @@ module BreakerMachines
               # Check if all requests failed
               raise error_queue.pop if error_queue.size >= callables.size
 
-              # Small sleep to prevent busy waiting
-              sleep 0.001
+              DeadlineMachines.check!
+              sleep HEDGE_POLL
             end
           end
         ensure
