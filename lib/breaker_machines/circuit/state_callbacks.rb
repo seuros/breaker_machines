@@ -11,6 +11,7 @@ module BreakerMachines
       def on_circuit_open
         @state_epoch.increment
         @opened_at.value = BreakerMachines.monotonic_time
+        @open_timeout.value = draw_reset_timeout
         persist_status(:open, @opened_at.value)
         if @storage.respond_to?(:record_event_with_details)
           @storage.record_event_with_details(@name, :state_change, 0,
@@ -23,6 +24,7 @@ module BreakerMachines
       def on_circuit_close
         @state_epoch.increment
         @opened_at.value = nil
+        @open_timeout.value = nil
         @last_error.value = nil
         @last_failure_at.value = nil
         persist_status(:closed)
@@ -50,13 +52,17 @@ module BreakerMachines
       def reset_timeout_elapsed?
         return false unless @opened_at.value
 
-        timeout_with_jitter = if (jitter_factor = @config[:reset_timeout_jitter]) && jitter_factor.positive?
-                                ChronoMachines.jitter(@config[:reset_timeout], factor: jitter_factor)
-                              else
-                                @config[:reset_timeout]
-                              end
+        BreakerMachines.monotonic_time - @opened_at.value >= (@open_timeout.value || draw_reset_timeout)
+      end
 
-        BreakerMachines.monotonic_time - @opened_at.value >= timeout_with_jitter
+      # Drawn once per opening. Re-drawing on every check would return the
+      # minimum of N samples, pinning the cooldown to the bottom of its range
+      # and synchronising a fleet instead of spreading it.
+      def draw_reset_timeout
+        jitter_factor = @config[:reset_timeout_jitter]
+        return @config[:reset_timeout] unless jitter_factor&.positive?
+
+        ChronoMachines.jitter(@config[:reset_timeout], factor: jitter_factor)
       end
 
     end

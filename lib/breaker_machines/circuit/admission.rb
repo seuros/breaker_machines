@@ -69,28 +69,32 @@ module BreakerMachines
       def handle_success(admission)
         return unless admission.half_open?
 
-        with_refreshed_status do
-          return unless admission_current?(admission) && half_open?
+        with_deferred_callbacks do
+          with_refreshed_status do
+            return unless admission_current?(admission) && half_open?
 
-          successful_attempts = @half_open_successes.increment
-          next unless successful_attempts >= @config[:half_open_calls] || success_threshold_reached?
+            successful_attempts = @half_open_successes.increment
+            next unless successful_attempts >= @config[:half_open_calls] || success_threshold_reached?
 
-          @half_open_attempts.value = 0
-          @half_open_successes.value = 0
-          reset
+            @half_open_attempts.value = 0
+            @half_open_successes.value = 0
+            reset
+          end
         end
       end
 
       def handle_failure(admission)
-        with_refreshed_status do
-          return unless admission_current?(admission)
+        with_deferred_callbacks do
+          with_refreshed_status do
+            return unless admission_current?(admission)
 
-          if admission.closed? && closed? && failure_threshold_exceeded?
-            trip
-          elsif admission.half_open? && half_open?
-            @half_open_attempts.value = 0
-            @half_open_successes.value = 0
-            trip
+            if admission.closed? && closed? && failure_threshold_exceeded?
+              trip
+            elsif admission.half_open? && half_open?
+              @half_open_attempts.value = 0
+              @half_open_successes.value = 0
+              trip
+            end
           end
         end
       end

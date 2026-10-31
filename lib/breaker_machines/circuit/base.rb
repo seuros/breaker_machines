@@ -38,6 +38,7 @@ module BreakerMachines
 
       def initialize_runtime_state
         @opened_at = Concurrent::AtomicReference.new(nil)
+        @open_timeout = Concurrent::AtomicReference.new(nil)
         @half_open_attempts = Concurrent::AtomicFixnum.new(0)
         @half_open_successes = Concurrent::AtomicFixnum.new(0)
         @state_epoch = Concurrent::AtomicFixnum.new(0)

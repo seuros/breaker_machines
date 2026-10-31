@@ -9,7 +9,32 @@ module BreakerMachines
 
       private
 
+      DEFERRED = :breaker_machines_deferred_callbacks
+
+      # A state-change callback is user code. Running it under the circuit's
+      # write lock lets it block every other caller, and letting it raise
+      # replaces the operation's own error, so it is collected here and run
+      # after the lock is released.
       def invoke_callback(callback_name)
+        pending = Thread.current[DEFERRED]
+        return pending << callback_name if pending
+
+        run_callback(callback_name)
+      end
+
+      def with_deferred_callbacks
+        outer = Thread.current[DEFERRED]
+        pending = []
+        Thread.current[DEFERRED] = pending
+        begin
+          yield
+        ensure
+          Thread.current[DEFERRED] = outer
+          pending.each { |name| run_callback(name) }
+        end
+      end
+
+      def run_callback(callback_name)
         callback = @config[callback_name]
         return unless callback
 
@@ -26,6 +51,8 @@ module BreakerMachines
         else
           callback.call
         end
+      rescue StandardError => e
+        BreakerMachines.instrument('callback_error', circuit: @name, callback: callback_name, error: e)
       end
 
       def invoke_fallback(error)
