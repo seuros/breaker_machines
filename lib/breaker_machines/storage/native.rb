@@ -68,18 +68,9 @@ module BreakerMachines
         @backend.clear_all
       end
 
-      def record_event_with_details(circuit_name, type, duration, error: nil, new_state: nil)
-        # Basic event recording (native extension handles type and duration)
-        case type
-        when :success
-          record_success(circuit_name, duration)
-        when :failure
-          record_failure(circuit_name, duration)
-        end
-
-        # NOTE: Error and state details not tracked in native backend
-        # This is intentional for performance - use Memory backend if you need full event details
-      end
+      # The caller has already recorded the outcome; this backend keeps no
+      # error or state detail, so there is nothing further to store.
+      def record_event_with_details(_circuit_name, _type, _duration, error: nil, new_state: nil); end
 
       def event_log(circuit_name, limit)
         @backend.event_log(circuit_name.to_s, limit).map do |event|

@@ -47,40 +47,43 @@ module BreakerMachines
     # Race callables; return first result or raise if it was an Exception
     # Uses modern Async::Promise and Async::Barrier for cleaner synchronization
     # @param callables [Array<Proc>] Tasks to race
+    # One hedge's outcome, so a returned exception object is not mistaken
+    # for a failure.
+    Hedge = Data.define(:value, :error)
+
     # @param delay_ms [Integer] Delay in milliseconds between task starts
     # @return [Object] First successful result
     # @raise [Exception] The first exception received
     def race_tasks(callables, delay_ms: 0)
       promise = Async::Promise.new
       barrier = Async::Barrier.new
+      outstanding = callables.size
+      failure = nil
 
       begin
-        result = Async do
+        outcome = Async do
           callables.each_with_index do |callable, idx|
             barrier.async do
-              # stagger hedged attempts
               sleep(DeadlineMachines.clamp_sleep(delay_ms / 1000.0)) if idx.positive? && delay_ms.positive?
 
               begin
-                result = callable.call
-                # Try to resolve the promise with this result
-                # Only the first resolution will succeed
-                promise.resolve(result) unless promise.resolved?
+                value = callable.call
+                promise.resolve(Hedge.new(value, nil)) unless promise.resolved?
               rescue StandardError => e
-                # Only set exception if no result has been resolved yet
-                promise.resolve(e) unless promise.resolved?
+                failure = e
+                outstanding -= 1
+                promise.resolve(Hedge.new(nil, e)) if outstanding.zero? && !promise.resolved?
               end
             end
           end
 
-          # Wait for the first resolution (either success or exception)
           promise.wait
         end.wait
 
-        # If result is an exception, raise it; otherwise return the result
-        result.is_a?(StandardError) ? raise(result) : result
+        raise outcome.error if outcome.error
+
+        outcome.value
       ensure
-        # Ensure all tasks are stopped
         barrier&.stop
       end
     end
