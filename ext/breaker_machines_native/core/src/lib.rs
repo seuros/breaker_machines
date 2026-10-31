@@ -68,6 +68,9 @@ pub mod distributed;
 #[cfg(test)]
 mod test_support;
 
+pub use chrono_machines;
+pub use state_machines;
+
 #[cfg(feature = "async")]
 pub use async_circuit::{AsyncCallOptions, AsyncCircuitBreaker};
 pub use builder::CircuitBuilder;
