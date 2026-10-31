@@ -110,6 +110,47 @@ class RegistryTest < ActiveSupport::TestCase
     assert_operator stats[:health][:total_failures], :>=, 1
   end
 
+  def test_registry_wide_reporting_covers_every_kind_of_circuit
+    circuits = register_every_kind
+    circuits.each_value { |circuit| circuit.call { 'success' } }
+
+    summary = @registry.stats_summary
+
+    assert_equal circuits.size, summary[:total]
+    assert_equal circuits.size, summary[:by_state][:closed]
+    assert_equal circuits.keys.map(&:to_s).sort, summary[:by_name].keys.sort
+
+    stats = @registry.all_stats
+
+    assert_equal circuits.size, stats[:circuits].size
+    assert_equal circuits.size, stats[:health][:closed_count]
+    assert_equal 0, stats[:health][:open_count]
+    assert_equal 0, stats[:health][:half_open_count]
+    assert_equal circuits.size, stats[:health][:total_successes]
+    assert_equal 0, stats[:health][:total_failures]
+
+    report = @registry.detailed_report
+
+    assert_equal circuits.keys.map(&:to_s).sort, report.map { |circuit| circuit[:name] }.sort
+    assert_equal [:closed], report.map { |circuit| circuit[:state] }.uniq
+  end
+
+  def test_registry_commands_drive_every_kind_of_circuit
+    register_every_kind.each do |kind, circuit|
+      assert @registry.force_open(circuit.name), kind
+      assert_predicate circuit, :open?
+
+      assert @registry.force_close(circuit.name), kind
+      assert_predicate circuit, :closed?
+
+      assert_raises(RuntimeError) { circuit.call { raise 'down' } }
+      assert_predicate circuit, :open?
+
+      assert @registry.reset(circuit.name), kind
+      assert_predicate circuit, :closed?
+    end
+  end
+
   def test_registry_handles_garbage_collected_circuits
     # Create circuit and ensure it can be GC'd
     initial_count = @registry.all_circuits.size
@@ -125,5 +166,17 @@ class RegistryTest < ActiveSupport::TestCase
     # Should still have the circuit since it's likely still alive
     # This test mainly verifies cleanup_dead_references doesn't crash
     assert_operator @registry.all_circuits.size, :>=, initial_count
+  end
+
+  private
+
+  # One circuit of every implementation the registry can hold, keyed by kind.
+  # The native circuit joins once the extension is loaded.
+  def register_every_kind
+    circuits = { ruby: BreakerMachines::Circuit.new('ruby', failure_threshold: 1) }
+    if BreakerMachines.native_available?
+      circuits[:native] = BreakerMachines::Circuit::Native.new('native', failure_threshold: 1)
+    end
+    circuits
   end
 end

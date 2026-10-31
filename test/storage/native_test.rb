@@ -71,9 +71,7 @@ class NativeStorageTest < ActiveSupport::TestCase
     events = @storage.event_log('test_circuit', 10)
 
     assert_equal 3, events.size
-    assert_equal 'success', events[0][:type]
-    assert_equal 'failure', events[1][:type]
-    assert_equal 'success', events[2][:type]
+    assert_equal %i[success failure success], events.map { |event| event[:type] }
 
     # Check timestamps are present
     assert_kind_of Float, events[0][:timestamp]

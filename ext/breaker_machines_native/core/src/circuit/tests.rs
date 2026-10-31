@@ -190,6 +190,93 @@ fn reset_closes_and_clears_events() {
 }
 
 #[test]
+fn force_open_opens_whatever_the_failure_count() {
+    let transitions = Transitions::default();
+    let mut circuit = transitions
+        .attach(CircuitBreaker::builder("test"))
+        .failure_threshold(5)
+        .build();
+
+    circuit.force_open();
+
+    assert!(circuit.is_open());
+    assert_eq!(circuit.failure_count(), 0);
+    assert_matches!(circuit.opened_at(), Some(_));
+    assert_eq!(transitions.counts(), (1, 0, 0));
+}
+
+#[test]
+fn force_open_restarts_the_cooldown_of_an_open_circuit() {
+    let clock = ManualClock::starting_at(100);
+    let mut circuit = CircuitBreaker::builder("test")
+        .failure_threshold(1)
+        .half_open_timeout_secs(10.0)
+        .storage(clock.storage())
+        .build();
+    fail(&mut circuit, 1);
+    clock.advance(Duration::from_secs(9));
+
+    circuit.force_open();
+
+    clock.advance(Duration::from_secs(9));
+    assert_matches!(
+        circuit.call(|| Ok::<_, &str>(())),
+        Err(CircuitError::Open { .. })
+    );
+
+    clock.advance(Duration::from_secs(1));
+    assert_matches!(circuit.call(|| Ok::<_, &str>(())), Ok(()));
+}
+
+#[test]
+fn force_close_closes_without_clearing_the_window() {
+    let transitions = Transitions::default();
+    let mut circuit = transitions
+        .attach(CircuitBreaker::builder("test"))
+        .failure_threshold(2)
+        .build();
+    fail(&mut circuit, 2);
+    assert!(circuit.is_open());
+
+    circuit.force_close();
+
+    assert!(circuit.is_closed());
+    assert_eq!(circuit.failure_count(), 2);
+    assert_eq!(circuit.opened_at(), None);
+    assert_eq!(transitions.counts(), (1, 0, 1));
+}
+
+#[test]
+fn counts_and_probes_report_the_current_visit() {
+    let clock = ManualClock::starting_at(100);
+    let mut circuit = CircuitBreaker::builder("test")
+        .failure_threshold(1)
+        .half_open_timeout_secs(1.0)
+        .success_threshold(2)
+        .storage(clock.storage())
+        .build();
+
+    assert_matches!(circuit.call(|| Ok::<_, &str>(())), Ok(()));
+    fail(&mut circuit, 1);
+
+    assert_eq!((circuit.success_count(), circuit.failure_count()), (1, 1));
+    assert_eq!(
+        (circuit.half_open_attempts(), circuit.half_open_successes()),
+        (0, 0)
+    );
+    assert_eq!(circuit.event_log(10).len(), 2);
+
+    clock.advance(Duration::from_secs(1));
+    assert_matches!(circuit.call(|| Ok::<_, &str>(())), Ok(()));
+
+    assert_eq!(circuit.state(), CircuitState::HalfOpen);
+    assert_eq!(
+        (circuit.half_open_attempts(), circuit.half_open_successes()),
+        (1, 1)
+    );
+}
+
+#[test]
 fn machine_trip_guard_waits_for_failure_threshold() {
     let storage = Arc::new(MemoryStorage::new());
     let config = Config {

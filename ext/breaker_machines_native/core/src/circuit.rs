@@ -372,6 +372,14 @@ state_machine! {
         reset {
             transition: { from: [Closed, Open, HalfOpen], to: Closed }
         }
+        force_open {
+            after: [notify_open],
+            transition: { from: [Closed, Open, HalfOpen], to: Open, data: enter_open }
+        }
+        force_close {
+            after: [notify_close],
+            transition: { from: [Closed, Open, HalfOpen], to: Closed }
+        }
     }
 }
 
@@ -885,6 +893,73 @@ impl CircuitBreaker {
     #[must_use]
     pub fn state_name(&self) -> &'static str {
         self.state().name()
+    }
+
+    /// Failures recorded in the configured failure window.
+    #[must_use]
+    pub fn failure_count(&self) -> usize {
+        self.context
+            .storage
+            .failure_count(&self.context.name, self.context.config.failure_window_secs)
+    }
+
+    /// Successes recorded in the configured failure window.
+    #[must_use]
+    pub fn success_count(&self) -> usize {
+        self.context
+            .storage
+            .success_count(&self.context.name, self.context.config.failure_window_secs)
+    }
+
+    /// Storage-clock time this circuit opened, while it is Open.
+    #[must_use]
+    pub fn opened_at(&self) -> Option<f64> {
+        self.machine.open_data().map(|data| data.opened_at)
+    }
+
+    /// Probe slots taken in the current `HalfOpen` visit: the probes that have
+    /// succeeded plus those still running. Zero in every other state.
+    #[must_use]
+    pub fn half_open_attempts(&self) -> usize {
+        self.machine
+            .half_open_data()
+            .map_or(0, |data| data.consecutive_successes + data.in_flight)
+    }
+
+    /// Probes that have succeeded in the current `HalfOpen` visit. Zero in
+    /// every other state.
+    #[must_use]
+    pub fn half_open_successes(&self) -> usize {
+        self.machine
+            .half_open_data()
+            .map_or(0, |data| data.consecutive_successes)
+    }
+
+    /// The last `limit` outcomes recorded for this circuit, oldest first.
+    #[must_use]
+    pub fn event_log(&self, limit: usize) -> Vec<crate::Event> {
+        self.context.storage.event_log(&self.context.name, limit)
+    }
+
+    /// Open the circuit whatever its thresholds say, restarting the cooldown.
+    pub fn force_open(&mut self) {
+        self.recover_if_poisoned();
+        let forced = self.machine.handle(CircuitEvent::ForceOpen);
+        debug_assert!(
+            forced.is_ok(),
+            "force_open is unguarded from every state: {forced:?}"
+        );
+    }
+
+    /// Close the circuit whatever its thresholds say, keeping the events in
+    /// its window. [`reset`](Self::reset) clears them too.
+    pub fn force_close(&mut self) {
+        self.recover_if_poisoned();
+        let forced = self.machine.handle(CircuitEvent::ForceClose);
+        debug_assert!(
+            forced.is_ok(),
+            "force_close is unguarded from every state: {forced:?}"
+        );
     }
 
     /// Clear all events and reset circuit to Closed state

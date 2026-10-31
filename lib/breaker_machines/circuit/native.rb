@@ -5,8 +5,9 @@ module BreakerMachines
     # Native circuit breaker implementation using Rust FFI
     #
     # This provides a high-performance circuit breaker with state machine logic
-    # implemented in Rust. It's fully compatible with the Ruby circuit API but
-    # significantly faster for high-throughput scenarios.
+    # implemented in Rust. It answers the same questions as the pure-Ruby
+    # circuit under the same names, so the global registry reports on both
+    # kinds of circuit alike.
     #
     # @example Basic usage
     #   circuit = BreakerMachines::Circuit::Native.new('api_calls',
@@ -53,6 +54,10 @@ module BreakerMachines
           }
         )
 
+        # Zero of the native circuit's own clock, which its timestamps count from.
+        @clock_origin = BreakerMachines.monotonic_time
+        @epoch_origin = BreakerMachines.monotonic_to_epoch(@clock_origin)
+
         # Register with global registry unless disabled
         BreakerMachines::Registry.instance.register(self) unless @config[:auto_register] == false
       end
@@ -88,30 +93,93 @@ module BreakerMachines
         @native_circuit.is_half_open
       end
 
-      # Get current state name
-      # @return [String] 'closed', 'open', or 'half_open'
-      def state
-        @native_circuit.state_name
+      # Current state name
+      # @return [Symbol] :closed, :open, or :half_open
+      def status_name
+        @native_circuit.state_name.to_sym
       end
 
-      # Reset the circuit (clear all events)
-      def reset!
-        @native_circuit.reset
+      # @return [BreakerMachines::Stats] counts over the configured failure window
+      def stats
+        BreakerMachines::Stats.new(
+          state: status_name,
+          failure_count: @native_circuit.failure_count,
+          success_count: @native_circuit.success_count,
+          last_failure_at: nil,
+          opened_at: opened_at,
+          half_open_attempts: @native_circuit.half_open_attempts,
+          half_open_successes: @native_circuit.half_open_successes
+        )
       end
 
-      # Get circuit status for inspection
-      # @return [Hash] Status information
-      def status
+      # @return [Hash] a copy of this circuit's configuration
+      def configuration
+        @config.dup
+      end
+
+      # @param limit [Integer] how many of the most recent outcomes to return
+      # @return [Array<Hash>] recorded outcomes, oldest first
+      def event_log(limit: 20)
+        @native_circuit.event_log(limit).map do |event|
+          event.merge(timestamp_epoch: @epoch_origin + event[:timestamp])
+        end
+      end
+
+      # The native circuit records outcomes, not the errors behind them.
+      # @return [nil]
+      def last_error
+        nil
+      end
+
+      # @return [nil] (see #last_error)
+      def last_error_info
+        nil
+      end
+
+      # @return [Hash] full state, statistics and configuration
+      def to_h
         {
           name: @name,
-          state: state,
-          open: open?,
-          closed: closed?,
-          config: @config
+          state: status_name,
+          stats: stats.to_h,
+          config: configuration,
+          event_log: event_log,
+          last_error: last_error_info&.to_h
         }
       end
 
+      # Open the circuit whatever its failure count
+      # @return [true]
+      def force_open
+        @native_circuit.force_open
+        true
+      end
+
+      # Close the circuit, keeping the events in its failure window
+      # @return [true]
+      def force_close
+        @native_circuit.force_close
+        true
+      end
+
+      alias reset force_close
+      alias reset! force_close
+
+      # Close the circuit and clear its failure window
+      # @return [true]
+      def hard_reset
+        @native_circuit.reset
+        true
+      end
+
       private
+
+      # Native timestamps count from the circuit's own clock; Stats reports
+      # BreakerMachines.monotonic_time.
+      def opened_at
+        opened = @native_circuit.opened_at
+        opened && @clock_origin + opened
+      end
 
       def default_config
         {

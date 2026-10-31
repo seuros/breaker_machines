@@ -11,7 +11,7 @@
 
 use breaker_machines::circuit::CircuitState;
 use breaker_machines::{
-    CircuitBreaker, CircuitError, Config, EventKind, MemoryStorage, StorageBackend,
+    CircuitBreaker, CircuitError, Config, Event, EventKind, MemoryStorage, StorageBackend,
 };
 use magnus::value::ReprValue;
 use magnus::{
@@ -245,27 +245,36 @@ impl RubyStorage {
             storage.inner.event_log(&name, limit)
         };
 
-        // Interned once per call (no Ruby allocation), not three times per event.
-        let type_key = ruby.sym_new("type");
-        let timestamp_key = ruby.sym_new("timestamp");
-        let duration_key = ruby.sym_new("duration_ms");
-        let array = ruby.ary_new_capa(events.len());
-
-        for event in &events {
-            let hash = ruby.hash_new_capa(3);
-            let kind = match event.kind {
-                EventKind::Success => "success",
-                EventKind::Failure => "failure",
-            };
-
-            hash.aset(type_key, kind)?;
-            hash.aset(timestamp_key, event.timestamp)?;
-            hash.aset(duration_key, (event.duration * 1000.0).round())?;
-            array.push(hash)?;
-        }
-
-        Ok(array)
+        event_array(ruby, &events)
     }
+}
+
+/// Recorded outcomes as the Ruby storage backends report them, oldest first.
+fn event_array(ruby: &Ruby, events: &[Event]) -> Result<RArray, Error> {
+    // Interned once per call (no Ruby allocation), not three times per event.
+    let type_key = ruby.sym_new("type");
+    let timestamp_key = ruby.sym_new("timestamp");
+    let duration_key = ruby.sym_new("duration_ms");
+    let array = ruby.ary_new_capa(events.len());
+
+    // The pure-Ruby storages report the kind as a symbol.
+    let success = ruby.sym_new("success");
+    let failure = ruby.sym_new("failure");
+
+    for event in events {
+        let hash = ruby.hash_new_capa(3);
+        let kind = match event.kind {
+            EventKind::Success => success,
+            EventKind::Failure => failure,
+        };
+
+        hash.aset(type_key, kind)?;
+        hash.aset(timestamp_key, event.timestamp)?;
+        hash.aset(duration_key, (event.duration * 1000.0).round())?;
+        array.push(hash)?;
+    }
+
+    Ok(array)
 }
 
 /// Ruby wrapper for the native circuit breaker
@@ -392,6 +401,47 @@ impl RubyCircuit {
         ruby_state_name(self.inner.borrow().state())
     }
 
+    /// Failures recorded in the configured failure window
+    fn failure_count(&self) -> usize {
+        self.inner.borrow().failure_count()
+    }
+
+    /// Successes recorded in the configured failure window
+    fn success_count(&self) -> usize {
+        self.inner.borrow().success_count()
+    }
+
+    /// Storage-clock seconds at which the circuit opened, while it is open
+    fn opened_at(&self) -> Option<f64> {
+        self.inner.borrow().opened_at()
+    }
+
+    /// Probe slots taken in the current half-open visit
+    fn half_open_attempts(&self) -> usize {
+        self.inner.borrow().half_open_attempts()
+    }
+
+    /// Probes that have succeeded in the current half-open visit
+    fn half_open_successes(&self) -> usize {
+        self.inner.borrow().half_open_successes()
+    }
+
+    /// The last `limit` outcomes, oldest first
+    fn event_log(ruby: &Ruby, circuit: &Self, limit: usize) -> Result<RArray, Error> {
+        let events = circuit.inner.borrow().event_log(limit);
+        event_array(ruby, &events)
+    }
+
+    /// Open the circuit whatever its thresholds say
+    fn force_open(&self) {
+        self.inner.borrow_mut().force_open();
+    }
+
+    /// Close the circuit, keeping the events in its window
+    fn force_close(&self) {
+        self.inner.borrow_mut().force_close();
+    }
+
     /// Reset the circuit (clear all events)
     fn reset(&self) {
         self.inner.borrow_mut().reset();
@@ -431,6 +481,20 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     circuit_class.define_method("is_half_open", method!(RubyCircuit::is_half_open, 0))?;
     circuit_class.define_method("call", method!(RubyCircuit::call, 0))?;
     circuit_class.define_method("state_name", method!(RubyCircuit::state_name, 0))?;
+    circuit_class.define_method("failure_count", method!(RubyCircuit::failure_count, 0))?;
+    circuit_class.define_method("success_count", method!(RubyCircuit::success_count, 0))?;
+    circuit_class.define_method("opened_at", method!(RubyCircuit::opened_at, 0))?;
+    circuit_class.define_method(
+        "half_open_attempts",
+        method!(RubyCircuit::half_open_attempts, 0),
+    )?;
+    circuit_class.define_method(
+        "half_open_successes",
+        method!(RubyCircuit::half_open_successes, 0),
+    )?;
+    circuit_class.define_method("event_log", method!(RubyCircuit::event_log, 1))?;
+    circuit_class.define_method("force_open", method!(RubyCircuit::force_open, 0))?;
+    circuit_class.define_method("force_close", method!(RubyCircuit::force_close, 0))?;
     circuit_class.define_method("reset", method!(RubyCircuit::reset, 0))?;
 
     Ok(())

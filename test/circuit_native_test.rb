@@ -23,7 +23,7 @@ class CircuitNativeTest < Minitest::Test
     assert_equal @circuit_name, circuit.name
     assert_predicate circuit, :closed?
     refute_predicate circuit, :open?
-    assert_equal 'closed', circuit.state
+    assert_equal :closed, circuit.status_name
   end
 
   def test_circuit_opens_after_failures
@@ -47,7 +47,7 @@ class CircuitNativeTest < Minitest::Test
 
     # Circuit should be open now
     assert_predicate circuit, :open?
-    assert_equal 'open', circuit.state
+    assert_equal :open, circuit.status_name
   end
 
   def test_circuit_raises_when_open
@@ -89,31 +89,37 @@ class CircuitNativeTest < Minitest::Test
     assert_predicate circuit, :closed?
   end
 
-  def test_circuit_reset
+  def test_reset_closes_and_keeps_the_failure_window
     skip_if_native_unavailable
+    circuit = opened_circuit
 
-    circuit = BreakerMachines::Circuit::Native.new(
-      @circuit_name,
-      failure_threshold: 2,
-      failure_window_secs: 60.0
-    )
+    assert circuit.reset
+    assert_predicate circuit, :closed?
+    assert_equal 2, circuit.stats.failure_count
+  end
 
-    # Open the circuit
-    2.times do
-      assert_raises(StandardError) do
-        circuit.call { raise StandardError, 'test error' }
-      end
-    end
+  def test_hard_reset_closes_and_clears_the_failure_window
+    skip_if_native_unavailable
+    circuit = opened_circuit
 
+    assert circuit.hard_reset
+    assert_predicate circuit, :closed?
+    assert_equal 0, circuit.stats.failure_count
+  end
+
+  def test_force_open_and_force_close_ignore_the_failure_count
+    skip_if_native_unavailable
+    circuit = BreakerMachines::Circuit::Native.new(@circuit_name, failure_threshold: 2, auto_register: false)
+
+    assert circuit.force_open
     assert_predicate circuit, :open?
+    assert_equal 0, circuit.stats.failure_count
 
-    # Reset should close it
-    circuit.reset!
-
+    assert circuit.force_close
     assert_predicate circuit, :closed?
   end
 
-  def test_circuit_status
+  def test_circuit_to_h
     skip_if_native_unavailable
 
     circuit = BreakerMachines::Circuit::Native.new(
@@ -121,14 +127,16 @@ class CircuitNativeTest < Minitest::Test
       failure_threshold: 3,
       failure_window_secs: 60.0
     )
+    circuit.call { :ok }
 
-    status = circuit.status
+    report = circuit.to_h
 
-    assert_equal @circuit_name, status[:name]
-    assert_equal 'closed', status[:state]
-    assert status[:closed]
-    refute status[:open]
-    assert_kind_of Hash, status[:config]
+    assert_equal @circuit_name, report[:name]
+    assert_equal :closed, report[:state]
+    assert_equal 3, report[:config][:failure_threshold]
+    assert_equal 1, report[:stats][:success_count]
+    assert_equal %i[success], report[:event_log].map { |event| event[:type] }
+    assert_nil report[:last_error]
   end
 
   def test_native_unavailable_raises_error
@@ -159,7 +167,7 @@ class CircuitNativeTest < Minitest::Test
 
     assert_equal(:probe, circuit.call { :probe })
     assert_predicate circuit, :half_open?
-    assert_equal 'half_open', circuit.state
+    assert_equal :half_open, circuit.status_name
 
     assert_equal(:probe, circuit.call { :probe })
     assert_predicate circuit, :closed?
@@ -195,9 +203,9 @@ class CircuitNativeTest < Minitest::Test
     wait_for_cooldown
 
     # No borrow is held while the block runs, so it may read or call the circuit.
-    seen = circuit.call { [circuit.state, circuit.open?, circuit.call { :nested }] }
+    seen = circuit.call { [circuit.status_name, circuit.open?, circuit.call { :nested }] }
 
-    assert_equal ['half_open', false, :nested], seen
+    assert_equal [:half_open, false, :nested], seen
   end
 
   def test_non_standard_errors_and_throw_do_not_count
@@ -247,6 +255,17 @@ class CircuitNativeTest < Minitest::Test
   end
 
   private
+
+  def opened_circuit
+    circuit = BreakerMachines::Circuit::Native.new(
+      @circuit_name,
+      failure_threshold: 2,
+      auto_register: false
+    )
+    2.times { assert_raises(RuntimeError) { circuit.call { raise 'down' } } }
+    assert_predicate circuit, :open?
+    circuit
+  end
 
   def tripped_circuit(success_threshold: 2)
     circuit = BreakerMachines::Circuit::Native.new(
