@@ -81,6 +81,7 @@ module BreakerMachines
 
         # Wait for first result or all errors
         begin
+          DeadlineMachines.check!
           Timeout.timeout(DeadlineMachines.clamp_sleep(@config[:timeout] || HEDGE_TIMEOUT)) do
             # Check for successful result
             loop do
