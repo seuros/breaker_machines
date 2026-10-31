@@ -49,3 +49,9 @@ unnecessary_lazy_evaluations = "deny"
 unnecessary_sort_by = "deny"
 unnecessary_to_owned = "deny"
 unwrap_used = "deny"
+
+# Local builds resolve the sibling crates from the working tree, so a change
+# there can be tested here before it is published. Ignored for dependents.
+[patch.crates-io]
+state-machines = { path = "../state-machines-rs/state-machines" }
+chrono-machines = { path = "../chrono_machines/ext/chrono_machines_native/core" }
