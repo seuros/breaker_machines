@@ -6,6 +6,32 @@
 
 * Restore shared circuit state after state machine initialization.
 
+## [0.23.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.22.1...breaker_machines/v0.23.0) (2026-11-01)
+
+
+### Features
+
+* **core:** forward state-machines' serde feature ([42361d7](https://github.com/seuros/breaker_machines/commit/42361d77fdd462bf644611fc4c2a264b6f262cde))
+* **core:** re-export state-machines and chrono-machines ([b32e43a](https://github.com/seuros/breaker_machines/commit/b32e43a26290b7f8e063222318873f6169e7700b))
+* honour an ambient deadline at admission ([210555f](https://github.com/seuros/breaker_machines/commit/210555fabceb5f4e31d89b33f4183f8c40feeb79))
+
+
+### Bug Fixes
+
+* a failed gem push fails the release ([8ce3858](https://github.com/seuros/breaker_machines/commit/8ce38582e9621eec5eb9106c19a04f7ea18eb107))
+* a lone checkout can bundle ([ed39395](https://github.com/seuros/breaker_machines/commit/ed39395189c692876d008becbe59e846b586a92e))
+* both circuit backends follow one recovery rule ([c4a731b](https://github.com/seuros/breaker_machines/commit/c4a731bbbee111242d35bc4b2f9dd72f0dd518ce))
+* call chrono for jitter instead of reimplementing it ([c203132](https://github.com/seuros/breaker_machines/commit/c20313268b61b13b38cce877ccfe258e3af2b987))
+* check the budget before clamping the hedge timeout ([536f102](https://github.com/seuros/breaker_machines/commit/536f1020b62fae55b6bf7b2a20852bef3152a2f0))
+* cooldown jitter is drawn once, and observers run outside the lock ([1f75a21](https://github.com/seuros/breaker_machines/commit/1f75a217fe7b098d8f18d5e8afa821057efe459d))
+* hedges prefer a slow success, and native storage counts once ([3a6ffe6](https://github.com/seuros/breaker_machines/commit/3a6ffe67d5f5c8e3b551a955d5d4df2a0abfcab9))
+* native circuits answer the registry's protocol ([fa74516](https://github.com/seuros/breaker_machines/commit/fa74516b19305b8b1a0546a74f4a13ad78b15a9b))
+* resolve the sibling crates from the registry ([83927b3](https://github.com/seuros/breaker_machines/commit/83927b3131556a25aa19bb8d0dc47ef7c397964b))
+* ship the core's test files so the packaged crate builds ([05f5937](https://github.com/seuros/breaker_machines/commit/05f5937b44e75c8e0bfd0ebe52eb85fabf8d0d61))
+* the circuit registry retained every circuit forever ([3fc5d8d](https://github.com/seuros/breaker_machines/commit/3fc5d8dd10a719d6f1c2681da141c30a20f58f3a))
+* the hedged path no longer overruns the budget it just checked ([60a9ccd](https://github.com/seuros/breaker_machines/commit/60a9ccdbf5060e54ce6ec15224db149f62588c53))
+* the native circuit honours half_open_calls ([2ac5f46](https://github.com/seuros/breaker_machines/commit/2ac5f4636e97ae0e2b967e690d6f2cd425c29ab6))
+
 ## [0.22.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.22.0...breaker_machines/v0.22.1) (2026-10-30)
 
 
