@@ -186,6 +186,7 @@ fn stale_half_open_probe_does_not_affect_new_half_open_generation() {
         .failure_threshold(1)
         .half_open_timeout_secs(0.0)
         .success_threshold(2)
+        .half_open_calls(2)
         .build_async();
     let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("initial error") }));
     assert!(circuit.is_open());
