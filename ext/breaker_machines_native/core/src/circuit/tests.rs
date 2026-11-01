@@ -1019,7 +1019,13 @@ fn try_acquire_admits_while_closed_and_rejects_while_open() {
 #[test]
 fn try_acquire_half_opens_after_cooldown_and_limits_probes() {
     let clock = ManualClock::starting_at(100);
-    let mut circuit = ticketed_circuit(&clock, 2);
+    let mut circuit = CircuitBreaker::builder("test")
+        .failure_threshold(1)
+        .half_open_timeout_secs(1.0)
+        .success_threshold(2)
+        .half_open_calls(2)
+        .storage(clock.storage())
+        .build();
     trip_with_ticket(&mut circuit);
 
     clock.advance(Duration::from_millis(999));
@@ -1038,6 +1044,32 @@ fn try_acquire_half_opens_after_cooldown_and_limits_probes() {
     assert_eq!(circuit.state(), CircuitState::HalfOpen);
     assert_matches!(circuit.complete(second, Ok::<_, &str>(2)), Ok(2));
     assert_eq!(circuit.state(), CircuitState::Closed);
+}
+
+#[test]
+fn half_open_calls_caps_probes_whatever_the_success_threshold() {
+    let clock = ManualClock::starting_at(100);
+    let mut circuit = CircuitBreaker::builder("test")
+        .failure_threshold(1)
+        .half_open_timeout_secs(1.0)
+        .success_threshold(3)
+        .half_open_calls(1)
+        .storage(clock.storage())
+        .build();
+    trip_with_ticket(&mut circuit);
+    clock.advance(Duration::from_secs(1));
+
+    let probe = circuit.try_acquire().expect("the cooldown has elapsed");
+    assert_matches!(
+        circuit.try_acquire(),
+        Err(CircuitError::HalfOpenLimitReached { .. })
+    );
+
+    // The slot frees on completion, and one success is short of closing.
+    assert_matches!(circuit.complete(probe, Ok::<_, &str>(())), Ok(()));
+    assert_eq!(circuit.state(), CircuitState::HalfOpen);
+    assert_eq!(consecutive_successes(&circuit), Some(1));
+    assert_matches!(circuit.try_acquire(), Ok(_));
 }
 
 #[test]

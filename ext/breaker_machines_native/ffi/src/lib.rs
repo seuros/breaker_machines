@@ -299,6 +299,7 @@ impl RubyCircuit {
     ///   - `failure_window_secs`: Time window for counting failures (default: 60.0)
     ///   - `half_open_timeout_secs`: Timeout before attempting reset (default: 30.0)
     ///   - `success_threshold`: Successes needed to close from half-open (default: 2)
+    ///   - `half_open_calls`: Probes admitted at a time while half-open (default: 1)
     ///   - `jitter_factor`: Cooldown jitter, 0.0-1.0 (default: 0.0)
     ///   - `failure_rate_threshold`: Failure ratio that opens the circuit (default: none)
     ///   - `minimum_calls`: Calls required before the rate applies (default: 20)
@@ -320,6 +321,7 @@ impl RubyCircuit {
             failure_window_secs: config_value(ruby, config, "failure_window_secs")?.unwrap_or(60.0),
             half_open_timeout_secs,
             success_threshold: config_value(ruby, config, "success_threshold")?.unwrap_or(2),
+            half_open_calls: config_value(ruby, config, "half_open_calls")?.unwrap_or(1),
             probe_timeout_secs: half_open_timeout_secs,
             jitter_factor: config_value(ruby, config, "jitter_factor")?.unwrap_or(0.0),
         };

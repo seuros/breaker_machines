@@ -46,6 +46,40 @@ class CircuitRecoveryRuleTest < ActiveSupport::TestCase
     end
   end
 
+  def test_half_open_calls_caps_the_probes_in_flight
+    each_backend do |klass|
+      circuit = tripped_circuit(klass, failure_threshold: 1, success_threshold: SUCCESS_THRESHOLD,
+                                       half_open_calls: 1)
+
+      nested = circuit.call do
+        begin
+          circuit.call { :admitted }
+        rescue BreakerMachines::CircuitOpenError
+          :refused
+        end
+      end
+
+      assert_equal :refused, nested, klass.name
+    end
+  end
+
+  def test_half_open_calls_admits_up_to_its_limit
+    each_backend do |klass|
+      circuit = tripped_circuit(klass, failure_threshold: 1, success_threshold: SUCCESS_THRESHOLD,
+                                       half_open_calls: 2)
+
+      nested = circuit.call do
+        begin
+          circuit.call { :admitted }
+        rescue BreakerMachines::CircuitOpenError
+          :refused
+        end
+      end
+
+      assert_equal :admitted, nested, klass.name
+    end
+  end
+
   private
 
   def each_backend(&)
@@ -54,24 +88,23 @@ class CircuitRecoveryRuleTest < ActiveSupport::TestCase
     backends.each(&)
   end
 
-  def tripped_circuit(klass, failure_threshold:, success_threshold:)
-    circuit = build_circuit(klass, failure_threshold: failure_threshold, success_threshold: success_threshold)
+  def tripped_circuit(klass, failure_threshold:, **options)
+    circuit = build_circuit(klass, failure_threshold: failure_threshold, **options)
     failure_threshold.times { assert_raises(RuntimeError) { circuit.call { raise 'down' } } }
     assert_predicate circuit, :open?
     wait_for_cooldown
     circuit
   end
 
-  def forced_open_circuit(klass, failure_threshold:, success_threshold:)
-    circuit = build_circuit(klass, failure_threshold: failure_threshold, success_threshold: success_threshold)
+  def forced_open_circuit(klass, **options)
+    circuit = build_circuit(klass, **options)
     circuit.force_open
     assert_predicate circuit, :open?
     wait_for_cooldown
     circuit
   end
 
-  def build_circuit(klass, failure_threshold:, success_threshold:)
-    options = { failure_threshold: failure_threshold, success_threshold: success_threshold }
+  def build_circuit(klass, **options)
     options.merge!(
       if klass == BreakerMachines::Circuit::Native
         { failure_window_secs: FAILURE_WINDOW.to_f, half_open_timeout_secs: COOLDOWN, auto_register: false }

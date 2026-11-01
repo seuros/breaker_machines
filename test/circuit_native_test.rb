@@ -199,7 +199,7 @@ class CircuitNativeTest < Minitest::Test
 
   def test_block_can_reenter_the_circuit
     skip_if_native_unavailable
-    circuit = tripped_circuit(success_threshold: 2)
+    circuit = tripped_circuit(success_threshold: 2, half_open_calls: 2)
     wait_for_cooldown
 
     # No borrow is held while the block runs, so it may read or call the circuit.
@@ -252,6 +252,26 @@ class CircuitNativeTest < Minitest::Test
     assert_in_delta(60.0, circuit.config[:failure_window_secs])
     assert_in_delta(30.0, circuit.config[:half_open_timeout_secs])
     assert_equal 2, circuit.config[:success_threshold]
+    assert_equal 1, circuit.config[:half_open_calls]
+  end
+
+  def test_options_the_native_circuit_cannot_honour_are_refused
+    skip_if_native_unavailable
+
+    error = assert_raises(BreakerMachines::ConfigurationError) do
+      BreakerMachines::Circuit::Native.new(@circuit_name, max_concurrent: 5, fallback: :cached)
+    end
+
+    assert_match(/max_concurrent, fallback/, error.message)
+  end
+
+  # The binding rejects the wrong type, so only a forwarded key can raise here.
+  def test_cooldown_jitter_reaches_the_native_circuit
+    skip_if_native_unavailable
+
+    assert_raises(TypeError) do
+      BreakerMachines::Circuit::Native.new(@circuit_name, jitter_factor: 'half', auto_register: false)
+    end
   end
 
   private
@@ -267,12 +287,13 @@ class CircuitNativeTest < Minitest::Test
     circuit
   end
 
-  def tripped_circuit(success_threshold: 2)
+  def tripped_circuit(success_threshold: 2, half_open_calls: 1)
     circuit = BreakerMachines::Circuit::Native.new(
       @circuit_name,
       failure_threshold: 1,
       half_open_timeout_secs: HALF_OPEN_TIMEOUT,
       success_threshold: success_threshold,
+      half_open_calls: half_open_calls,
       auto_register: false
     )
     assert_raises(RuntimeError) { circuit.call { raise 'down' } }

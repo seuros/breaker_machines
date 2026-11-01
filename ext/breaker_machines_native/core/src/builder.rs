@@ -77,6 +77,12 @@ impl CircuitBuilder {
         self
     }
 
+    /// Set how many probes run at a time while half-open
+    pub const fn half_open_calls(mut self, calls: usize) -> Self {
+        self.config.half_open_calls = calls;
+        self
+    }
+
     /// Set the lifetime of a distributed half-open probe lease.
     ///
     /// If the elected node crashes or its future is cancelled, another node

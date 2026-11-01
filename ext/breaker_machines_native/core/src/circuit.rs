@@ -35,6 +35,9 @@ pub struct Config {
     /// Number of successes required in `HalfOpen` to close the circuit
     pub success_threshold: usize,
 
+    /// Number of probes admitted at a time while `HalfOpen`
+    pub half_open_calls: usize,
+
     /// Maximum lifetime of a distributed half-open probe lease. A different
     /// node may take over after this duration if the elected caller crashes or
     /// its call future is cancelled.
@@ -54,6 +57,7 @@ impl Default for Config {
             failure_window_secs: 60.0,
             half_open_timeout_secs: 30.0,
             success_threshold: 2,
+            half_open_calls: 1,
             probe_timeout_secs: 30.0,
             jitter_factor: 0.0,
         }
@@ -601,12 +605,11 @@ impl CircuitBreaker {
                 })
             }
             CircuitState::HalfOpen => {
-                // Check if we've reached the success threshold
+                let probe_limit = self.context.config.half_open_calls;
                 let Some(data) = self.machine.half_open_data_mut() else {
                     unreachable!("HalfOpen state always carries HalfOpenData");
                 };
-                let reserved_probes = data.consecutive_successes + data.in_flight;
-                if reserved_probes >= self.context.config.success_threshold {
+                if data.in_flight >= probe_limit {
                     return Err(CircuitError::HalfOpenLimitReached {
                         circuit: self.context.name.clone(),
                     });

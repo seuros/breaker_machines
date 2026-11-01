@@ -32,27 +32,28 @@ module BreakerMachines
       # @option options [Integer] :failure_threshold Number of failures to open circuit (default: 5)
       # @option options [Float] :failure_window_secs Time window for counting failures (default: 60.0)
       # @option options [Float] :half_open_timeout_secs Timeout before attempting reset (default: 30.0)
+      # @option options [Float] :jitter_factor Cooldown jitter, 0.0-1.0 (default: 0.0)
       # @option options [Integer] :success_threshold Successes needed to close from half-open (default: 2)
+      # @option options [Integer] :half_open_calls Probes admitted at a time while half-open (default: 1)
       # @option options [Boolean] :auto_register Register with global registry (default: true)
+      # @raise [ConfigurationError] for an option the native circuit cannot honour
       def initialize(name, options = {})
         unless BreakerMachines.native_available?
           raise BreakerMachines::ConfigurationError,
                 'Native extension not available. Install with native support or use Circuit::Ruby'
         end
 
+        unhonoured = options.keys - default_config.keys
+        if unhonoured.any?
+          raise BreakerMachines::ConfigurationError,
+                "Circuit::Native cannot honour #{unhonoured.join(', ')}; use BreakerMachines::Circuit for those"
+        end
+
         @name = name
         @config = default_config.merge(options)
 
         # Create the native circuit breaker
-        @native_circuit = BreakerMachinesNative::Circuit.new(
-          name,
-          {
-            failure_threshold: @config[:failure_threshold],
-            failure_window_secs: @config[:failure_window_secs],
-            half_open_timeout_secs: @config[:half_open_timeout_secs],
-            success_threshold: @config[:success_threshold]
-          }
-        )
+        @native_circuit = BreakerMachinesNative::Circuit.new(name, native_config)
 
         # Zero of the native circuit's own clock, which its timestamps count from.
         @clock_origin = BreakerMachines.monotonic_time
@@ -186,9 +187,15 @@ module BreakerMachines
           failure_threshold: 5,
           failure_window_secs: 60.0,
           half_open_timeout_secs: 30.0,
+          jitter_factor: 0.0,
           success_threshold: 2,
+          half_open_calls: 1,
           auto_register: true
         }
+      end
+
+      def native_config
+        @config.except(:auto_register)
       end
     end
   end
