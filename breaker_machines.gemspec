@@ -46,7 +46,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'chrono_machines', '>= 0.12.1'
   spec.add_dependency 'deadline_machines', '>= 0.1'
   spec.add_dependency 'concurrent-ruby', '~> 1.3'
-  spec.add_dependency 'state_machines', '~> 0.202'
+  spec.add_dependency 'state_machines', '>= 0.202'
   spec.add_dependency 'zeitwerk', '~> 2.7'
 
   # Development dependencies
