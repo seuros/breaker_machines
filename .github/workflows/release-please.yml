@@ -114,11 +114,25 @@ jobs:
       # Upload only. softprops/action-gh-release PATCHes an existing release
       # first, which GitHub rejects (403) for GITHUB_TOKEN when the run's ref
       # has different workflow files than the tag.
-      - name: Attach gems to GitHub Release
+      - name: Attach gems and checksums to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
-        run: gh release upload "$TAG" artifacts/*/*.gem --clobber --repo "$GITHUB_REPOSITORY"
+        run: |
+          set -euo pipefail
+          mkdir combined existing
+          # A release without assets yet makes a pattern download exit non-zero.
+          gh release download "$TAG" --dir existing --pattern '*.gem' --pattern SHA256SUMS || true
+          if [ -f existing/SHA256SUMS ]; then
+            (cd existing && sha256sum --check SHA256SUMS)
+          fi
+          # download-artifact flattens a lone artifact and nests several, so
+          # the depth is not fixed.
+          find artifacts -name '*.gem' -exec cp {} combined/ \;
+          find existing -name '*.gem' -exec cp -n {} combined/ \;
+          (cd combined && sha256sum -- *.gem > SHA256SUMS)
+          gh release upload "$TAG" combined/*.gem combined/SHA256SUMS --clobber
 
   publish-to-github-packages:
     needs:
