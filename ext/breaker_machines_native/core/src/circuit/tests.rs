@@ -762,7 +762,7 @@ fn check_and_trip_stamps_opened_at_and_fires_on_open() {
 }
 
 #[test]
-fn half_open_failure_resets_consecutive_successes() {
+fn half_open_failure_reopens_below_the_failure_threshold() {
     let clock = ManualClock::starting_at(100);
     let mut circuit = CircuitBreaker::builder("test")
         .failure_threshold(2)
@@ -782,11 +782,14 @@ fn half_open_failure_resets_consecutive_successes() {
     assert_eq!(circuit.state_name(), "HalfOpen");
     assert_eq!(consecutive_successes(&circuit), Some(1));
 
-    // One failure is below the threshold: stay HalfOpen, restart the count.
+    // One failure ends the recovery attempt, whatever the window still holds.
     fail(&mut circuit, 1);
-    assert_eq!(circuit.state_name(), "HalfOpen");
-    assert_eq!(consecutive_successes(&circuit), Some(0));
+    assert_eq!(circuit.state_name(), "Open");
+    assert_eq!(consecutive_successes(&circuit), None);
+    assert_eq!(circuit.opened_at(), Some(105.0));
 
+    // The cooldown restarts from the failed probe.
+    clock.advance(Duration::from_secs(5));
     assert_matches!(circuit.call(|| Ok::<_, &str>("ok")), Ok("ok"));
     assert_eq!(consecutive_successes(&circuit), Some(1));
 }

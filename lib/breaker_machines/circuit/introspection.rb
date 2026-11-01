@@ -67,7 +67,7 @@ module BreakerMachines
                            "It opened at #{opened_time} after #{@config[:failure_threshold]} failures.#{error_info}"
                        when :half_open
                          "Circuit '#{@name}' is HALF-OPEN. Testing with limited requests " \
-                         "(#{@half_open_attempts.value}/#{@config[:half_open_calls]} attempts)."
+                         "(#{@half_open_successes.value}/#{@config[:success_threshold]} successes)."
                        end
 
         # Add cascade information if this is a cascading circuit

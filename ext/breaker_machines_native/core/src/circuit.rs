@@ -357,7 +357,11 @@ state_machine! {
         trip {
             guards: [should_open],
             after: [notify_open],
-            transition: { from: [Closed, HalfOpen], to: Open, data: enter_open }
+            transition: { from: Closed, to: Open, data: enter_open }
+        }
+        reopen {
+            after: [notify_open],
+            transition: { from: HalfOpen, to: Open, data: enter_open }
         }
         attempt_reset {
             guards: [timeout_elapsed],
@@ -765,7 +769,7 @@ impl CircuitBreaker {
                 if should_trip {
                     self.record_failure(duration);
                     if may_transition {
-                        self.maybe_trip_after_failure();
+                        self.trip_after_failure();
                     }
                 }
 
@@ -836,18 +840,19 @@ impl CircuitBreaker {
     pub fn record_failure_and_maybe_trip(&mut self, duration: f64) {
         self.record_failure(duration);
         self.recover_if_poisoned();
-        self.maybe_trip_after_failure();
+        self.trip_after_failure();
     }
 
-    fn maybe_trip_after_failure(&mut self) {
-        if self.machine.handle(CircuitEvent::Trip).is_err()
-            && self.machine.current_state() == CircuitState::HalfOpen
-        {
-            let Some(data) = self.machine.half_open_data_mut() else {
-                unreachable!("HalfOpen state always carries HalfOpenData");
-            };
-            data.consecutive_successes = 0;
-        }
+    /// Drive the transition a recorded failure warrants: a failed probe ends
+    /// the `HalfOpen` visit and restarts the cooldown, while a Closed circuit
+    /// opens only once its failure threshold is met.
+    fn trip_after_failure(&mut self) -> bool {
+        let event = if self.machine.current_state() == CircuitState::HalfOpen {
+            CircuitEvent::Reopen
+        } else {
+            CircuitEvent::Trip
+        };
+        self.machine.handle(event).is_ok()
     }
 
     /// Record a successful operation (for manual tracking)
@@ -868,7 +873,7 @@ impl CircuitBreaker {
     /// This should be called after `record_failure()` when not using `call()`
     pub fn check_and_trip(&mut self) -> bool {
         self.recover_if_poisoned();
-        self.machine.handle(CircuitEvent::Trip).is_ok()
+        self.trip_after_failure()
     }
 
     /// Check if circuit is open

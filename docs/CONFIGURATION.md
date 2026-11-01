@@ -122,11 +122,16 @@ Control how circuits test recovery:
 
 ```ruby
 circuit :careful_service do
-  threshold failures: 3, within: 60
+  threshold failures: 3, within: 60, successes: 2  # 2 successful probes close it
   reset_after 30
-  half_open_requests 3  # Test with 3 requests before fully closing
+  half_open_requests 3  # at most 3 probes running at a time
 end
 ```
+
+The two settings answer different questions: `half_open_requests` caps how many
+trial calls run at once while the circuit is half-open, while `successes:`
+(`success_threshold`) is how many of them must succeed before it closes. A
+single failed probe reopens the circuit and restarts the reset timer.
 
 ## Callbacks
 

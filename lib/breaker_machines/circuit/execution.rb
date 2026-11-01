@@ -167,11 +167,6 @@ module BreakerMachines
         end
       end
 
-      def success_threshold_reached?
-        recent_successes = @storage.success_count(@name, @config[:failure_window])
-        recent_successes >= @config[:success_threshold]
-      end
-
       def record_success(duration)
         @metrics&.record_success(@name, duration)
         @storage&.record_success(@name, duration)

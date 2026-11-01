@@ -53,9 +53,10 @@ module BreakerMachines
 
       def admit_half_open_call
         state_epoch = @state_epoch.value
-        new_attempts = @half_open_attempts.increment
+        # Slots taken, less those already banked as successes.
+        probes_in_flight = @half_open_attempts.increment - @half_open_successes.value
 
-        return Call.new(state: :half_open, state_epoch:) if new_attempts <= @config[:half_open_calls]
+        return Call.new(state: :half_open, state_epoch:) if probes_in_flight <= @config[:half_open_calls]
 
         # This caller lost the race for a probe slot.
         @half_open_attempts.decrement
@@ -74,7 +75,7 @@ module BreakerMachines
             return unless admission_current?(admission) && half_open?
 
             successful_attempts = @half_open_successes.increment
-            next unless successful_attempts >= @config[:half_open_calls] || success_threshold_reached?
+            next unless successful_attempts >= @config[:success_threshold]
 
             @half_open_attempts.value = 0
             @half_open_successes.value = 0

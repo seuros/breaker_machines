@@ -425,7 +425,9 @@ Closed → Open → HalfOpen → Closed
 
 - **Closed**: Normal operation, tracking failures
 - **Open**: Circuit tripped, rejecting calls immediately
-- **HalfOpen**: Testing recovery with limited requests
+- **HalfOpen**: Testing recovery with limited requests. `success_threshold`
+  successful probes close the circuit; one failed probe reopens it and restarts
+  the cooldown, whatever the failure window still holds
 
 Transitions are guarded by configurable thresholds and timeouts.
 
