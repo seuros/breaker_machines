@@ -18,7 +18,10 @@ workspace = true
 [dependencies]
 breaker-machines = { path = "../core", version = "0.21.0" }
 magnus = { version = ">= 0.9.3", default-features = false, features = ["io"] }
-rb-sys = "0.9.124"
+# Nothing here calls rb-sys directly: this is the compiled fallback that
+# implements the stable API for a Ruby rb-sys ships no pre-generated bindings
+# for, such as a preview. magnus asks for "stable-api" without it, and its
+# default-features = false drops the default that would have supplied it, so
+# dropping this line breaks the build on every Ruby newer than rb-sys.
+rb-sys = { version = ">= 0.9.130", default-features = false, features = ["stable-api-compiled-fallback"] }
 
-[build-dependencies]
-rb-sys = "0.9"
