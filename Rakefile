@@ -103,7 +103,7 @@ namespace :gems do
     release_gems(version).each_key { |name| puts "pkg/#{name} (#{File.size(File.join('pkg', name))} bytes)" }
   end
 
-  desc 'Push gems in pkg/ for VERSION (default: current) to rubygems.org, skipping platforms already published'
+  desc 'Fetch the release gems for VERSION (default: current) and push every platform to rubygems.org (resumable)'
   task :push_all, [:version] do |_t, args|
     version = args[:version] || GEMSPEC.version.to_s
     published = published_platforms(version)
@@ -114,8 +114,10 @@ namespace :gems do
       next
     end
 
+    Rake::Task['gems:pull_all'].invoke(version) if pending.keys.any? { |name| !File.exist?(File.join('pkg', name)) }
+
     missing = pending.keys.reject { |name| File.exist?(File.join('pkg', name)) }
-    abort "Missing in pkg/ (run rake gems:pull_all[#{version}] first): #{missing.join(', ')}" unless missing.empty?
+    abort "Release #{version} is missing gems: #{missing.join(', ')}" unless missing.empty?
 
     (release_gems(version).keys - pending.keys).each { |name| puts "skip #{name}: already on rubygems.org" }
     pending.each_key { |name| sh 'gem', 'push', File.join('pkg', name) }
