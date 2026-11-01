@@ -6,6 +6,21 @@
 
 * Restore shared circuit state after state machine initialization.
 
+## [0.24.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.23.0...breaker_machines/v0.24.0) (2026-11-01)
+
+
+### Features
+
+* gems:push_all fetches the release itself ([3b4eb6d](https://github.com/seuros/breaker_machines/commit/3b4eb6d3e7b54bbc60639cc6659a3b3a652ec02d))
+* pass a rubygems OTP through GEM_OTP ([188ea57](https://github.com/seuros/breaker_machines/commit/188ea57b4c9f193c8f202a14fd1a44b01f46a70b))
+* verify release gem checksums before pushing ([1000edf](https://github.com/seuros/breaker_machines/commit/1000edf92efd75518e1aaa0609b807351e0f5135))
+
+
+### Bug Fixes
+
+* enable the rb-sys compiled fallback so new Rubies can build ([db6d75e](https://github.com/seuros/breaker_machines/commit/db6d75e0feadc2ade27518aad47eaba370ee1526))
+* raise the chrono_machines floor to 0.12.1 ([2959305](https://github.com/seuros/breaker_machines/commit/295930570ef92754ba38bc9697a755227c640fb6))
+
 ## [0.23.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.22.1...breaker_machines/v0.23.0) (2026-11-01)
 
 
