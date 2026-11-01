@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.20.0...breaker-machines-v0.21.0) (2026-11-01)
+
+
+### Features
+
+* **core:** forward state-machines' serde feature ([42361d7](https://github.com/seuros/breaker_machines/commit/42361d77fdd462bf644611fc4c2a264b6f262cde))
+* **core:** re-export state-machines and chrono-machines ([b32e43a](https://github.com/seuros/breaker_machines/commit/b32e43a26290b7f8e063222318873f6169e7700b))
+
+
+### Bug Fixes
+
+* a lone checkout can bundle ([ed39395](https://github.com/seuros/breaker_machines/commit/ed39395189c692876d008becbe59e846b586a92e))
+* both circuit backends follow one recovery rule ([c4a731b](https://github.com/seuros/breaker_machines/commit/c4a731bbbee111242d35bc4b2f9dd72f0dd518ce))
+* native circuits answer the registry's protocol ([fa74516](https://github.com/seuros/breaker_machines/commit/fa74516b19305b8b1a0546a74f4a13ad78b15a9b))
+* ship the core's test files so the packaged crate builds ([05f5937](https://github.com/seuros/breaker_machines/commit/05f5937b44e75c8e0bfd0ebe52eb85fabf8d0d61))
+* the native circuit honours half_open_calls ([2ac5f46](https://github.com/seuros/breaker_machines/commit/2ac5f4636e97ae0e2b967e690d6f2cd425c29ab6))
+
 ## [0.20.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.19.1...breaker-machines-v0.20.0) (2026-10-16)
 
 
