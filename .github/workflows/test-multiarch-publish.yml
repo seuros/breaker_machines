@@ -287,7 +287,7 @@ jobs:
             else
               echo "Publishing: $gem"
               gem push --key github --host "${HOST}" "$gem" 2>&1 | tee /tmp/push.log
-              EXIT_CODE=$?
+              EXIT_CODE=${PIPESTATUS[0]}
 
               if [ $EXIT_CODE -eq 0 ]; then
                 echo "✓ Successfully pushed $gem"
