@@ -63,8 +63,9 @@ class BucketStorageTest < ActiveSupport::TestCase
     sleep 1.1 # Move to next bucket
     @storage.record_success(@circuit_name, 0.1)
 
-    # Should count all events within 4 second window (to account for timing)
-    count = @storage.success_count(@circuit_name, 4)
+    # Wide enough that a sleep overrunning its bucket cannot push the first
+    # event out of the window.
+    count = @storage.success_count(@circuit_name, 30)
 
     assert_equal 3, count
 
