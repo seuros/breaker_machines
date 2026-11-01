@@ -7,8 +7,13 @@ gem 'state_machines'
 
 # Specify your gem's dependencies in breaker_machines.gemspec
 
-gem 'chrono_machines', path: '../chrono_machines'
-gem 'deadline_machines', path: '../deadline_machines'
+# Use a sibling checkout when there is one, so a change there is tested here
+# before it is published, and the published gem otherwise.
+%w[chrono_machines deadline_machines].each do |name|
+  sibling = File.expand_path("../#{name}", __dir__)
+  gem name, path: sibling if File.directory?(sibling)
+end
+
 gemspec
 
 gem 'rake', '~> 13.0'
