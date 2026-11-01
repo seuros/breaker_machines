@@ -1,5 +1,7 @@
 {
-  "plugins": ["cargo-workspace"],
+  "plugins": [
+    "cargo-workspace"
+  ],
   "packages": {
     ".": {
       "release-type": "ruby",
@@ -13,7 +15,10 @@
       "release-type": "rust",
       "package-name": "breaker-machines",
       "changelog-path": "CHANGELOG.md",
-      "extra-files": ["README.md"]
+      "extra-files": [
+        "README.md"
+      ],
+      "bump-minor-pre-major": true
     }
   }
 }
