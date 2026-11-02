@@ -6,6 +6,17 @@
 
 * Restore shared circuit state after state machine initialization.
 
+## [0.25.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.24.1...breaker_machines/v0.25.0) (2026-11-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* breaker-machines re-exports state-machines, now 0.34. A crate that names the re-export, or pairs breaker-machines with its own state-machines, needs state-machines 0.34.
+
+### Bug Fixes
+
+* build on state-machines 0.34 ([add4838](https://github.com/seuros/breaker_machines/commit/add4838e63d9cb60ecf8751da71c2d8def890735))
+
 ## [0.24.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.24.0...breaker_machines/v0.24.1) (2026-11-01)
 
 

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.21.0...breaker-machines-v0.22.0) (2026-11-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* breaker-machines re-exports state-machines, now 0.34. A crate that names the re-export, or pairs breaker-machines with its own state-machines, needs state-machines 0.34.
+
+### Bug Fixes
+
+* build on state-machines 0.34 ([add4838](https://github.com/seuros/breaker_machines/commit/add4838e63d9cb60ecf8751da71c2d8def890735))
+
 ## [0.21.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.20.0...breaker-machines-v0.21.0) (2026-11-01)
 
 
