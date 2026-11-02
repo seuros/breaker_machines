@@ -6,6 +6,13 @@
 
 * Restore shared circuit state after state machine initialization.
 
+## [0.24.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.24.0...breaker_machines/v0.24.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* express the state_machines constraint as a floor ([131264c](https://github.com/seuros/breaker_machines/commit/131264cdd9b0e1e6192627b7b3503e3daec7aa55))
+
 ## [0.24.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.23.0...breaker_machines/v0.24.0) (2026-11-01)
 
 
