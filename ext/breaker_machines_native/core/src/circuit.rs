@@ -9,6 +9,7 @@ use crate::{
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::convert::Infallible;
 use state_machines::state_machine;
 
