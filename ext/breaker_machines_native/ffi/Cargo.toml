@@ -1,6 +1,6 @@
 [package]
 name = "breaker_machines_native"
-version = "0.5.23"
+version = "0.5.24"
 edition.workspace = true
 rust-version.workspace = true
 authors = ["Abdelkader Boudih <oss@seuros.com>"]
@@ -16,7 +16,7 @@ crate-type = ["cdylib"]
 workspace = true
 
 [dependencies]
-breaker-machines = { path = "../core", version = "0.23.0" }
+breaker-machines = { path = "../core", version = "0.23.1" }
 magnus = { version = ">= 0.9.3", default-features = false, features = ["io"] }
 # Nothing here calls rb-sys directly: this is the compiled fallback that
 # implements the stable API for a Ruby rb-sys ships no pre-generated bindings

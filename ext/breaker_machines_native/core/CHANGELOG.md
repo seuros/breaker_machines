@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.1](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.23.0...breaker-machines-v0.23.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* dedup closed-circuit gate and async circuit test helpers ([04dd0ac](https://github.com/seuros/breaker_machines/commit/04dd0ac88b6db46c7dbc8a49f6400d442e61a4cb))
+
 ## [0.23.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.22.0...breaker-machines-v0.23.0) (2026-11-06)
 
 
