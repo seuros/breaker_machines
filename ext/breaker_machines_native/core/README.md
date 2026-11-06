@@ -215,6 +215,57 @@ an in-flight call releases its bulkhead permit and half-open probe slot. Results
 from calls admitted before a state transition are still recorded in the rolling
 metrics, but cannot drive transitions in a newer half-open generation.
 
+### Admission Across an `.await`
+
+When the protected work is not a single future the circuit can run (a request
+whose outcome is only known after an `.await` elsewhere), take the admission
+first and settle it later. The ticket borrows the circuit, so a future dropped
+mid-probe gives the half-open slot and bulkhead permit back, as `call` does.
+The sync `CallTicket` cannot do that: it has no reference to its circuit, and
+a dropped probe ticket leaks the slot for that `HalfOpen` visit.
+
+`retry_after()` reports the seconds left on the cooldown the circuit drew when
+it opened, jitter included, so an actor can sleep exactly that long and wake to
+a probe instead of reconstructing the deadline from `on_open` callbacks.
+
+```rust
+# #[cfg(feature = "async")]
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# pollster::block_on(async {
+use breaker_machines::{AsyncCircuitBreaker, CircuitError, circuit::CircuitState};
+# struct Upstream;
+# impl Upstream {
+#     async fn fetch(&self) -> Result<&'static str, std::io::Error> { Ok("payload") }
+# }
+# let upstream = Upstream;
+
+let circuit = AsyncCircuitBreaker::builder("upstream")
+    .failure_threshold(3)
+    .half_open_timeout_secs(30.0)
+    .jitter_factor(0.1)
+    .build_async();
+
+match circuit.try_acquire() {
+    Ok(ticket) => {
+        let outcome = upstream.fetch().await;
+        let _ = ticket.complete(outcome);
+    }
+    Err(CircuitError::Open { .. }) => {
+        if let Some(delay) = circuit.retry_after() {
+            eprintln!("next probe in {delay:.1}s");
+        }
+    }
+    Err(_) => {}
+}
+
+assert_eq!(circuit.state(), CircuitState::Closed);
+# Ok::<(), Box<dyn std::error::Error>>(())
+# })
+# }
+# #[cfg(not(feature = "async"))]
+# fn main() {}
+```
+
 ### Distributed Async State
 
 `AsyncCircuitBreaker` intentionally owns a process-local FSM. Use

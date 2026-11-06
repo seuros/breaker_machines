@@ -1,9 +1,10 @@
 use super::*;
-use crate::test_support::poll_once;
+use crate::test_support::{ManualClock, poll_once};
 use core::assert_matches;
 use core::future::{pending, poll_fn};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
+use core::time::Duration;
 use std::sync::Arc;
 
 /// An operation that stays pending until `ready` is set, then succeeds.
@@ -263,4 +264,145 @@ fn observe_drives_the_wrapped_circuit() {
     );
     assert_eq!(circuit.observe(Err("boom"), 0.01), CircuitState::Open);
     assert!(circuit.is_open());
+}
+
+/// A circuit one failure opens, probing after a one second cooldown.
+fn ticketed_circuit(clock: &ManualClock) -> AsyncCircuitBreaker {
+    AsyncCircuitBreaker::builder("test")
+        .failure_threshold(1)
+        .half_open_timeout_secs(1.0)
+        .success_threshold(1)
+        .storage(clock.storage())
+        .build_async()
+}
+
+#[test]
+fn dropped_ticket_frees_the_probe_slot() {
+    let clock = ManualClock::starting_at(100);
+    let circuit = ticketed_circuit(&clock);
+    let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("error") }));
+    assert_eq!(circuit.state(), CircuitState::Open);
+    clock.advance(Duration::from_secs(1));
+
+    let probe = circuit.try_acquire().expect("the cooldown has elapsed");
+    assert_eq!(circuit.state(), CircuitState::HalfOpen);
+    assert_matches!(
+        circuit.try_acquire(),
+        Err(CircuitError::HalfOpenLimitReached { .. })
+    );
+    assert_matches!(
+        pollster::block_on(circuit.call(|| async { Ok::<_, &str>(()) })),
+        Err(CircuitError::HalfOpenLimitReached { .. })
+    );
+
+    // The future holding the ticket was cancelled mid-probe.
+    drop(probe);
+
+    let retry = circuit
+        .try_acquire()
+        .expect("the dropped slot is free again");
+    assert_matches!(retry.complete(Ok::<_, &str>("probe")), Ok("probe"));
+    assert_eq!(circuit.state(), CircuitState::Closed);
+}
+
+#[test]
+fn ticket_records_the_outcome_it_is_completed_with() {
+    let clock = ManualClock::starting_at(100);
+    let circuit = ticketed_circuit(&clock);
+
+    let ticket = circuit.try_acquire().expect("a closed circuit admits");
+    assert_matches!(
+        ticket.complete(Err::<(), _>("boom")),
+        Err(CircuitError::Execution("boom"))
+    );
+    assert_eq!(circuit.state(), CircuitState::Open);
+    assert_eq!(circuit.opened_at(), Some(100.0));
+    assert_matches!(
+        circuit.try_acquire(),
+        Err(CircuitError::Open {
+            opened_at: 100.0,
+            ..
+        })
+    );
+
+    clock.advance(Duration::from_secs(1));
+    let probe = circuit.try_acquire().expect("the cooldown has elapsed");
+    probe.abandon();
+    assert_eq!(circuit.state(), CircuitState::HalfOpen);
+    let probe = circuit.try_acquire().expect("abandon freed the slot");
+    assert_matches!(probe.complete(Ok::<_, &str>(())), Ok(()));
+    assert_eq!(circuit.state(), CircuitState::Closed);
+}
+
+#[test]
+fn ticket_releases_the_bulkhead_permit_on_drop() {
+    let circuit = AsyncCircuitBreaker::builder("test")
+        .max_concurrency(1)
+        .build_async();
+
+    let held = circuit.try_acquire().expect("a permit is free");
+    assert_matches!(
+        circuit.try_acquire(),
+        Err(CircuitError::BulkheadFull { limit: 1, .. })
+    );
+    drop(held);
+    let ticket = circuit.try_acquire().expect("drop released the permit");
+    ticket.abandon();
+}
+
+#[test]
+fn ticket_is_send() {
+    fn assert_send<T: Send>(_: T) {}
+
+    let circuit = AsyncCircuitBreaker::builder("test").build_async();
+    let ticket = circuit.try_acquire().expect("a closed circuit admits");
+    assert_send(async move {
+        ticket.complete(Ok::<_, &str>(())).ok();
+    });
+}
+
+#[test]
+fn retry_after_matches_when_call_next_probes() {
+    let clock = ManualClock::starting_at(100);
+    let circuit = AsyncCircuitBreaker::builder("test")
+        .failure_threshold(1)
+        .half_open_timeout_secs(1.0)
+        .jitter_factor(0.5)
+        .success_threshold(1)
+        .storage(clock.storage())
+        .build_async();
+    assert_eq!(circuit.retry_after(), None);
+
+    let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("error") }));
+    let cooldown = circuit
+        .retry_after()
+        .expect("an open circuit has a cooldown");
+    assert_matches!(cooldown, 0.5..=1.0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the jittered cooldown is a positive whole number of ms below 1s"
+    )]
+    let cooldown_ms = (cooldown * 1000.0).round() as u64;
+
+    // Sleeping for anything short of `retry_after` still finds the circuit
+    // Open, so a caller that sleeps exactly that long wakes to a probe.
+    clock.advance(Duration::from_millis(cooldown_ms - 1));
+    assert_matches!(
+        pollster::block_on(circuit.call(|| async { Ok::<_, &str>("early") })),
+        Err(CircuitError::Open {
+            opened_at: 100.0,
+            ..
+        })
+    );
+    assert_matches!(circuit.retry_after(), Some(remaining) if remaining > 0.0);
+
+    clock.advance(Duration::from_millis(1));
+    assert_eq!(circuit.retry_after(), Some(0.0));
+    assert_matches!(
+        pollster::block_on(circuit.call(|| async { Ok::<_, &str>("probe") })),
+        Ok("probe")
+    );
+    assert_eq!(circuit.state(), CircuitState::Closed);
+    assert_eq!(circuit.retry_after(), None);
 }

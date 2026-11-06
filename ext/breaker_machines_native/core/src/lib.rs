@@ -72,7 +72,7 @@ pub use chrono_machines;
 pub use state_machines;
 
 #[cfg(feature = "async")]
-pub use async_circuit::{AsyncCallOptions, AsyncCircuitBreaker};
+pub use async_circuit::{AsyncCallOptions, AsyncCallTicket, AsyncCircuitBreaker};
 pub use builder::CircuitBuilder;
 pub use bulkhead::{BulkheadGuard, BulkheadSemaphore};
 pub use circuit::{CallOptions, CircuitBreaker, Config, FallbackContext};

@@ -8,6 +8,7 @@ use crate::{
     circuit::{CallGate, CallPermit, CallTicket, CircuitState},
     errors::CircuitError,
 };
+use core::convert::Infallible;
 use std::{
     future::Future,
     pin::Pin,
@@ -90,6 +91,64 @@ impl Drop for HalfOpenProbe<'_> {
             self.circuit
                 .lock_inner()
                 .release_half_open_probe(self.state_epoch);
+        }
+    }
+}
+
+/// Admission for one operation that runs across `.await`, from
+/// [`AsyncCircuitBreaker::try_acquire`].
+///
+/// Hand it to [`complete`](Self::complete) once the outcome is known, or
+/// [`abandon`](Self::abandon) when nothing should be recorded. Unlike the sync
+/// [`CallTicket`], dropping it (a cancelled future, an early return) gives the
+/// half-open probe slot and bulkhead permit back, as [`AsyncCircuitBreaker::call`]
+/// does for the future it runs.
+#[must_use = "pass the ticket to `complete` or `abandon`; dropping it records no outcome"]
+pub struct AsyncCallTicket<'a> {
+    circuit: &'a AsyncCircuitBreaker,
+    ticket: Option<CallTicket>,
+}
+
+impl core::fmt::Debug for AsyncCallTicket<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AsyncCallTicket")
+            .field("ticket", &self.ticket)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AsyncCallTicket<'_> {
+    /// Record the outcome of the admitted operation, exactly as
+    /// [`AsyncCircuitBreaker::call`] would: the failure classifier applies, and
+    /// an outcome admitted before the circuit last changed state still counts
+    /// in the metrics but cannot drive a transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns the operation's own error as [`CircuitError::Execution`].
+    pub fn complete<T, E: 'static>(mut self, result: Result<T, E>) -> Result<T, CircuitError<E>> {
+        let ticket = self.take();
+        self.circuit.lock_inner().complete(ticket, result)
+    }
+
+    /// Give back the admission without recording an outcome; see
+    /// [`CircuitBreaker::abandon`].
+    pub fn abandon(mut self) {
+        let ticket = self.take();
+        self.circuit.lock_inner().abandon(ticket);
+    }
+
+    fn take(&mut self) -> CallTicket {
+        self.ticket
+            .take()
+            .unwrap_or_else(|| unreachable!("a ticket is consumed once, by complete or abandon"))
+    }
+}
+
+impl Drop for AsyncCallTicket<'_> {
+    fn drop(&mut self) {
+        if let Some(ticket) = self.ticket.take() {
+            self.circuit.lock_inner().abandon(ticket);
         }
     }
 }
@@ -198,6 +257,26 @@ impl AsyncCircuitBreaker {
         }
     }
 
+    /// Admit one operation without running it, for work whose outcome is
+    /// only known after an `.await` this circuit cannot wrap; see
+    /// [`CircuitBreaker::try_acquire`]. The ticket borrows the circuit and
+    /// releases its half-open probe slot if it is dropped before
+    /// [`AsyncCallTicket::complete`] or [`AsyncCallTicket::abandon`].
+    ///
+    /// # Errors
+    ///
+    /// The same rejections [`call`](Self::call) returns without a fallback:
+    /// - [`CircuitError::BulkheadFull`] when the concurrency limit is reached.
+    /// - [`CircuitError::Open`] while the cooldown has not elapsed.
+    /// - [`CircuitError::HalfOpenLimitReached`] when every probe slot is taken.
+    pub fn try_acquire(&self) -> Result<AsyncCallTicket<'_>, CircuitError<Infallible>> {
+        let ticket = self.lock_inner().try_acquire()?;
+        Ok(AsyncCallTicket {
+            circuit: self,
+            ticket: Some(ticket),
+        })
+    }
+
     /// Record an operation that ran outside this circuit's admission and
     /// return the state it left; see [`CircuitBreaker::observe`].
     pub fn observe<E: 'static>(&self, outcome: Result<(), E>, duration: f64) -> CircuitState {
@@ -239,9 +318,26 @@ impl AsyncCircuitBreaker {
         self.lock_inner().is_closed()
     }
 
+    /// Get the current state.
+    pub fn state(&self) -> CircuitState {
+        self.lock_inner().state()
+    }
+
     /// Get current state name.
     pub fn state_name(&self) -> &'static str {
         self.lock_inner().state_name()
+    }
+
+    /// Storage-clock time this circuit opened, while it is Open; see
+    /// [`CircuitBreaker::opened_at`].
+    pub fn opened_at(&self) -> Option<f64> {
+        self.lock_inner().opened_at()
+    }
+
+    /// Seconds until the next admission may run a half-open probe, while the
+    /// circuit is Open; see [`CircuitBreaker::retry_after`].
+    pub fn retry_after(&self) -> Option<f64> {
+        self.lock_inner().retry_after()
     }
 
     /// Clear all events and reset circuit to Closed state.

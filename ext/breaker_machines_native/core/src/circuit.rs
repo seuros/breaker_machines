@@ -223,6 +223,11 @@ pub(crate) struct CallPermit {
 /// circuit: dropping a half-open probe ticket leaks its probe slot for the
 /// rest of that `HalfOpen` visit. Once every slot has leaked no probe can
 /// run, and only [`CircuitBreaker::reset`] recovers the circuit.
+///
+/// A ticket held across an `.await` is dropped whenever that future is
+/// cancelled, so async callers should take their admission from
+/// `AsyncCircuitBreaker::try_acquire` (feature `async`) instead, whose guard
+/// gives the slot back on drop.
 #[derive(Debug)]
 #[must_use = "pass the ticket to `complete` or `abandon`; dropping it leaks a half-open probe slot"]
 pub struct CallTicket {
@@ -923,6 +928,17 @@ impl CircuitBreaker {
     #[must_use]
     pub fn opened_at(&self) -> Option<f64> {
         self.machine.open_data().map(|data| data.opened_at)
+    }
+
+    /// Seconds until a half-open probe may run, while the circuit is Open.
+    /// Measures the cooldown drawn on entry, jitter included, against the
+    /// storage clock, so it is zero exactly when the next admission would
+    /// move the circuit to `HalfOpen`.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<f64> {
+        self.machine
+            .open_data()
+            .map(|data| (data.retry_at - self.monotonic_time()).max(0.0))
     }
 
     /// Probe slots taken in the current `HalfOpen` visit: the probes that have

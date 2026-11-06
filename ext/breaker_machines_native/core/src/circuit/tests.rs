@@ -646,6 +646,47 @@ fn classifier_downcasts_custom_error_types() {
 }
 
 #[test]
+fn classifier_downcasts_through_a_boxed_error() {
+    use alloc::boxed::Box;
+    use core::error::Error;
+
+    #[derive(Debug)]
+    struct Transient;
+
+    impl core::fmt::Display for Transient {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("transient")
+        }
+    }
+
+    impl Error for Transient {}
+
+    type Boxed = Box<dyn Error + Send + Sync>;
+
+    // The circuit sees only `&dyn Any`; the caller's closure unwraps its own
+    // error wrapper (a boxed error here, `anyhow::Error` in practice) and
+    // then the type inside.
+    let classifier = Arc::new(PredicateClassifier::new(|ctx| {
+        ctx.error
+            .downcast_ref::<Boxed>()
+            .is_some_and(|boxed| boxed.downcast_ref::<Transient>().is_some())
+    }));
+    let mut circuit = CircuitBreaker::builder("test")
+        .failure_threshold(1)
+        .failure_classifier(classifier)
+        .build();
+
+    let _ = circuit.call(|| Err::<(), Boxed>("permanent".into()));
+    assert!(circuit.is_closed(), "an unwrapped &str tripped the circuit");
+
+    let _ = circuit.call(|| Err::<(), Boxed>(Box::new(Transient)));
+    assert!(
+        circuit.is_open(),
+        "the boxed Transient did not trip the circuit"
+    );
+}
+
+#[test]
 fn bulkhead_permit_is_released_after_each_call() {
     let mut circuit = CircuitBreaker::builder("test")
         .max_concurrency(1)
@@ -1125,6 +1166,54 @@ fn abandon_frees_the_probe_slot_without_recording() {
         .expect("the abandoned slot is free again");
     assert_matches!(circuit.complete(retry, Ok::<_, &str>(())), Ok(()));
     assert_eq!(circuit.state(), CircuitState::Closed);
+}
+
+#[test]
+fn retry_after_counts_down_the_drawn_cooldown() {
+    let clock = ManualClock::starting_at(100);
+    let mut circuit = CircuitBreaker::builder("test")
+        .failure_threshold(1)
+        .half_open_timeout_secs(1.0)
+        .jitter_factor(0.5)
+        .storage(clock.storage())
+        .build();
+    assert_eq!(circuit.retry_after(), None);
+    trip_with_ticket(&mut circuit);
+
+    let cooldown = circuit
+        .retry_after()
+        .expect("an open circuit has a cooldown");
+    assert_matches!(cooldown, 0.5..=1.0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the jittered cooldown is a positive whole number of ms below 1s"
+    )]
+    let cooldown_ms = (cooldown * 1000.0).round() as u64;
+
+    // The same reading the guard will use, so it shrinks with the clock and
+    // never admits before the drawn delay.
+    clock.advance(Duration::from_millis(cooldown_ms - 1));
+    assert_matches!(circuit.retry_after(), Some(remaining) if remaining > 0.0 && remaining <= 0.0011);
+    assert_matches!(circuit.try_acquire(), Err(CircuitError::Open { .. }));
+
+    clock.advance(Duration::from_millis(1));
+    assert_eq!(circuit.retry_after(), Some(0.0));
+    let probe = circuit.try_acquire().expect("the cooldown has elapsed");
+    assert_eq!(circuit.state(), CircuitState::HalfOpen);
+    assert_eq!(circuit.retry_after(), None);
+    circuit.abandon(probe);
+}
+
+#[test]
+fn retry_after_saturates_once_the_cooldown_is_overdue() {
+    let clock = ManualClock::starting_at(100);
+    let mut circuit = ticketed_circuit(&clock, 1);
+    trip_with_ticket(&mut circuit);
+
+    clock.advance(Duration::from_secs(5));
+    assert_eq!(circuit.retry_after(), Some(0.0));
+    assert_eq!(circuit.opened_at(), Some(100.0));
 }
 
 #[test]
