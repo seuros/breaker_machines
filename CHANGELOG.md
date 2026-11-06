@@ -6,6 +6,22 @@
 
 * Restore shared circuit state after state machine initialization.
 
+## [0.27.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.26.1...breaker_machines/v0.27.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* the re-exported chrono-machines is now 0.11.
+
+### Features
+
+* require chrono-machines 0.11 ([082c156](https://github.com/seuros/breaker_machines/commit/082c1560219f0bdc5240ec208ebbb2e4e667c893))
+
+
+### Bug Fixes
+
+* build without default features again ([4e9f993](https://github.com/seuros/breaker_machines/commit/4e9f993f414f3646ecc805b5d7ac8dcf51be002b))
+
 ## [0.26.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.26.0...breaker_machines/v0.26.1) (2026-11-06)
 
 

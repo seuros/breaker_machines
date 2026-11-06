@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.23.1...breaker-machines-v0.24.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* the re-exported chrono-machines is now 0.11.
+
+### Features
+
+* require chrono-machines 0.11 ([082c156](https://github.com/seuros/breaker_machines/commit/082c1560219f0bdc5240ec208ebbb2e4e667c893))
+
+
+### Bug Fixes
+
+* build without default features again ([4e9f993](https://github.com/seuros/breaker_machines/commit/4e9f993f414f3646ecc805b5d7ac8dcf51be002b))
+
 ## [0.23.1](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.23.0...breaker-machines-v0.23.1) (2026-11-06)
 
 
