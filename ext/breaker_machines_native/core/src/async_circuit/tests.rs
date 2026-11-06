@@ -21,6 +21,30 @@ fn gated_success(
     })
 }
 
+/// A circuit one failure opens, probing immediately and closing on one success.
+fn instant_probe_circuit() -> AsyncCircuitBreaker {
+    AsyncCircuitBreaker::builder("test")
+        .failure_threshold(1)
+        .half_open_timeout_secs(0.0)
+        .success_threshold(1)
+        .build_async()
+}
+
+/// Run one failing call to completion.
+fn fail(circuit: &AsyncCircuitBreaker, error: &'static str) {
+    let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>(error) }));
+}
+
+/// Start a call that never completes and poll it once, so it holds its
+/// admission (a half-open probe slot, when there is one) until dropped.
+fn parked_call(
+    circuit: &AsyncCircuitBreaker,
+) -> Pin<Box<impl Future<Output = Result<(), CircuitError<&'static str>>> + '_>> {
+    let mut call = Box::pin(circuit.call(pending::<Result<(), &'static str>>));
+    assert_matches!(poll_once(call.as_mut()), Poll::Pending);
+    call
+}
+
 #[test]
 fn records_success() {
     pollster::block_on(async {
@@ -102,12 +126,8 @@ fn call_with_fallback_future_is_send() {
 
 #[test]
 fn half_open_limits_in_flight_probes() {
-    let circuit = AsyncCircuitBreaker::builder("test")
-        .failure_threshold(1)
-        .half_open_timeout_secs(0.0)
-        .success_threshold(1)
-        .build_async();
-    let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("error") }));
+    let circuit = instant_probe_circuit();
+    fail(&circuit, "error");
     assert!(circuit.is_open());
 
     let mut first = Box::pin(circuit.call(pending::<Result<&'static str, &'static str>>));
@@ -130,7 +150,7 @@ fn open_fallback_does_not_hold_bulkhead_permit() {
         .failure_threshold(1)
         .max_concurrency(1)
         .build_async();
-    let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("error") }));
+    fail(&circuit, "error");
     assert!(circuit.is_open());
 
     let mut fallback = Box::pin(
@@ -150,22 +170,17 @@ fn open_fallback_does_not_hold_bulkhead_permit() {
 
 #[test]
 fn stale_closed_success_does_not_close_half_open_circuit() {
-    let circuit = AsyncCircuitBreaker::builder("test")
-        .failure_threshold(1)
-        .half_open_timeout_secs(0.0)
-        .success_threshold(1)
-        .build_async();
+    let circuit = instant_probe_circuit();
     let stale_ready = Arc::new(AtomicBool::new(false));
 
     // Admitted while Closed; completes after the circuit has moved on.
     let mut stale_call = Box::pin(circuit.call(|| gated_success(&stale_ready)));
     assert_matches!(poll_once(stale_call.as_mut()), Poll::Pending);
 
-    let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("error") }));
+    fail(&circuit, "error");
     assert!(circuit.is_open());
 
-    let mut current_probe = Box::pin(circuit.call(pending::<Result<(), &'static str>>));
-    assert_matches!(poll_once(current_probe.as_mut()), Poll::Pending);
+    let current_probe = parked_call(&circuit);
     assert_eq!(circuit.state_name(), "HalfOpen");
 
     stale_ready.store(true, Ordering::Release);
@@ -189,7 +204,7 @@ fn stale_half_open_probe_does_not_affect_new_half_open_generation() {
         .success_threshold(2)
         .half_open_calls(2)
         .build_async();
-    let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("initial error") }));
+    fail(&circuit, "initial error");
     assert!(circuit.is_open());
 
     let stale_ready = Arc::new(AtomicBool::new(false));
@@ -197,11 +212,10 @@ fn stale_half_open_probe_does_not_affect_new_half_open_generation() {
     assert_matches!(poll_once(stale_probe.as_mut()), Poll::Pending);
 
     // A failing probe reopens; the next call starts a new HalfOpen generation.
-    let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("probe error") }));
+    fail(&circuit, "probe error");
     assert!(circuit.is_open());
 
-    let mut current_probe = Box::pin(circuit.call(pending::<Result<(), &'static str>>));
-    assert_matches!(poll_once(current_probe.as_mut()), Poll::Pending);
+    let current_probe = parked_call(&circuit);
     assert_eq!(circuit.state_name(), "HalfOpen");
 
     stale_ready.store(true, Ordering::Release);
@@ -222,12 +236,8 @@ fn stale_half_open_probe_does_not_affect_new_half_open_generation() {
 
 #[test]
 fn reset_fences_probes_from_before_the_reset() {
-    let circuit = AsyncCircuitBreaker::builder("test")
-        .failure_threshold(1)
-        .half_open_timeout_secs(0.0)
-        .success_threshold(1)
-        .build_async();
-    let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("error") }));
+    let circuit = instant_probe_circuit();
+    fail(&circuit, "error");
 
     let stale_ready = Arc::new(AtomicBool::new(false));
     let mut stale_probe = Box::pin(circuit.call(|| gated_success(&stale_ready)));
@@ -237,9 +247,8 @@ fn reset_fences_probes_from_before_the_reset() {
     // per-machine counter restarted by the reset would collide with the stale
     // probe's epoch.
     circuit.reset();
-    let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("error") }));
-    let mut current_probe = Box::pin(circuit.call(pending::<Result<(), &'static str>>));
-    assert_matches!(poll_once(current_probe.as_mut()), Poll::Pending);
+    fail(&circuit, "error");
+    let _current_probe = parked_call(&circuit);
 
     stale_ready.store(true, Ordering::Release);
     assert_matches!(
@@ -280,7 +289,7 @@ fn ticketed_circuit(clock: &ManualClock) -> AsyncCircuitBreaker {
 fn dropped_ticket_frees_the_probe_slot() {
     let clock = ManualClock::starting_at(100);
     let circuit = ticketed_circuit(&clock);
-    let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("error") }));
+    fail(&circuit, "error");
     assert_eq!(circuit.state(), CircuitState::Open);
     clock.advance(Duration::from_secs(1));
 
@@ -373,7 +382,7 @@ fn retry_after_matches_when_call_next_probes() {
         .build_async();
     assert_eq!(circuit.retry_after(), None);
 
-    let _ = pollster::block_on(circuit.call(|| async { Err::<(), _>("error") }));
+    fail(&circuit, "error");
     let cooldown = circuit
         .retry_after()
         .expect("an open circuit has a cooldown");

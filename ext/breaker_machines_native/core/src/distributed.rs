@@ -217,20 +217,18 @@ impl DistributedCircuitBreaker {
             .await
             .map_err(CircuitError::Storage)?;
 
-        if snapshot.state == SharedCircuitState::Closed {
-            return Ok(DistributedCallGate::Execute {
-                _permit: permit,
-                generation: snapshot.generation,
-                probe: None,
-            });
-        }
+        // A closed circuit needs no probe election; route it through the same
+        // `Closed` arm the backend answers with.
+        let decision = if snapshot.state == SharedCircuitState::Closed {
+            ProbeDecision::Closed(snapshot)
+        } else {
+            self.storage
+                .try_begin_probe(&self.name, self.config.probe_timeout_secs)
+                .await
+                .map_err(CircuitError::Storage)?
+        };
 
-        match self
-            .storage
-            .try_begin_probe(&self.name, self.config.probe_timeout_secs)
-            .await
-            .map_err(CircuitError::Storage)?
-        {
+        match decision {
             ProbeDecision::Closed(snapshot) => Ok(DistributedCallGate::Execute {
                 _permit: permit,
                 generation: snapshot.generation,
