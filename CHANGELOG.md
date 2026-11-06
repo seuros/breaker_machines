@@ -6,6 +6,13 @@
 
 * Restore shared circuit state after state machine initialization.
 
+## [0.26.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.26.0...breaker_machines/v0.26.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* dedup closed-circuit gate and async circuit test helpers ([04dd0ac](https://github.com/seuros/breaker_machines/commit/04dd0ac88b6db46c7dbc8a49f6400d442e61a4cb))
+
 ## [0.26.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.25.0...breaker_machines/v0.26.0) (2026-11-06)
 
 
