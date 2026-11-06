@@ -164,7 +164,7 @@ Enable the `async` feature to use `AsyncCircuitBreaker` with Rust futures:
 
 ```toml
 [dependencies]
-breaker-machines = { version = "0.22.0", features = ["async"] } # x-release-please-version
+breaker-machines = { version = "0.23.0", features = ["async"] } # x-release-please-version
 ```
 
 ```rust
@@ -273,7 +273,7 @@ assert_eq!(circuit.state(), CircuitState::Closed);
 
 ```toml
 [dependencies]
-breaker-machines = { version = "0.22.0", features = ["async"] } # x-release-please-version
+breaker-machines = { version = "0.23.0", features = ["async"] } # x-release-please-version
 ```
 
 ```rust

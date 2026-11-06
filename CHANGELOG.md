@@ -6,6 +6,18 @@
 
 * Restore shared circuit state after state machine initialization.
 
+## [0.26.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.25.0...breaker_machines/v0.26.0) (2026-11-06)
+
+
+### Features
+
+* expose retry timing and a drop-safe probe ticket on the async breaker ([f963c02](https://github.com/seuros/breaker_machines/commit/f963c02176526dfad1db26d8bcfad6ee8f3c36a2))
+
+
+### Bug Fixes
+
+* keep test modules out of the packaged crate ([269e5c9](https://github.com/seuros/breaker_machines/commit/269e5c9be8d302e98d1c31d6d66d03df23921450))
+
 ## [0.25.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.24.1...breaker_machines/v0.25.0) (2026-11-02)
 
 
