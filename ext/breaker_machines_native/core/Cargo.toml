@@ -10,7 +10,7 @@ repository = "https://github.com/seuros/breaker_machines"
 readme = "README.md"
 keywords = ["circuit-breaker", "reliability", "fault-tolerance", "state-machine"]
 categories = ["concurrency"]
-
+exclude = ["src/**/tests.rs", "tests/"]
 [lib]
 crate-type = ["lib"]
 
