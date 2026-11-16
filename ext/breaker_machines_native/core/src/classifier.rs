@@ -1,69 +1,27 @@
-//! Failure classification for exception filtering
-//!
-//! This module provides traits and types for determining which errors
-//! should trip the circuit breaker vs. being ignored.
+//! Deciding which errors count against a runtime circuit.
 
 use core::any::Any;
+use core::time::Duration;
 
-/// Context provided to failure classifiers for error evaluation
+/// What a classifier sees of a failed call.
 #[derive(Debug)]
 pub struct FailureContext<'a> {
-    /// Circuit name
+    /// The circuit's name.
     pub circuit_name: &'a str,
-    /// The error that occurred (can be downcast to specific types)
+    /// The error, to downcast to the caller's own types.
     pub error: &'a dyn Any,
-    /// Duration of the failed call in seconds
-    pub duration: f64,
+    /// How long the call ran.
+    pub took: Duration,
 }
 
-/// Trait for classifying failures - determines if an error should trip the circuit
-///
-/// Implementors can inspect the error type and context to decide whether
-/// this particular failure should count toward opening the circuit.
-///
-/// # Examples
-///
-/// ```rust
-/// use breaker_machines::{FailureClassifier, FailureContext};
-/// use std::sync::Arc;
-///
-/// #[derive(Debug)]
-/// struct ServerErrorClassifier;
-///
-/// impl FailureClassifier for ServerErrorClassifier {
-///     fn should_trip(&self, ctx: &FailureContext<'_>) -> bool {
-///         // Only trip on server errors (5xx), not client errors (4xx)
-///         // This would require your error type to be downcast-able
-///         true // Default: trip on all errors
-///     }
-/// }
-/// ```
+/// Decides whether a failed call counts against the circuit. An error that
+/// does not count is abandoned: it frees its slots and is not recorded.
 pub trait FailureClassifier: Send + Sync + core::fmt::Debug {
-    /// Determine if this error should count as a failure for circuit breaker logic
-    ///
-    /// Returns `true` if the error should trip the circuit, `false` to ignore it.
+    /// `true` when the failure counts.
     fn should_trip(&self, ctx: &FailureContext<'_>) -> bool;
 }
 
-/// Default classifier that trips on all errors
-#[derive(Debug, Clone, Copy)]
-pub struct DefaultClassifier;
-
-impl FailureClassifier for DefaultClassifier {
-    fn should_trip(&self, _ctx: &FailureContext<'_>) -> bool {
-        true // All errors trip the circuit (backward compatible)
-    }
-}
-
-impl Default for DefaultClassifier {
-    fn default() -> Self {
-        Self
-    }
-}
-
-/// Predicate-based classifier using a closure
-///
-/// Allows using simple closures for common filtering patterns.
+/// A classifier from a closure.
 pub struct PredicateClassifier<F>
 where
     F: Fn(&FailureContext<'_>) -> bool + Send + Sync,
@@ -75,7 +33,7 @@ impl<F> PredicateClassifier<F>
 where
     F: Fn(&FailureContext<'_>) -> bool + Send + Sync,
 {
-    /// Create a new predicate-based classifier
+    /// A classifier that counts the failures `predicate` accepts.
     pub const fn new(predicate: F) -> Self {
         Self { predicate }
     }
@@ -96,8 +54,7 @@ where
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PredicateClassifier")
-            .field("predicate", &"<closure>")
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

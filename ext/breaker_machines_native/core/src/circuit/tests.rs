@@ -1,1349 +1,265 @@
 use super::*;
-use crate::test_support::ManualClock;
-use crate::{Event, MemoryStorage, PredicateClassifier};
-use alloc::string::ToString;
-use alloc::vec::Vec;
+use crate::PredicateClassifier;
+use crate::test_support::{ManualClock, policy};
 use core::assert_matches;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use core::time::Duration;
-use state_machines::DynamicError;
+use std::string::{String, ToString};
+use std::sync::Mutex;
 
-fn context(config: Config, storage: Arc<MemoryStorage>) -> CircuitContext {
-    CircuitContext {
-        name: "test".into(),
-        config,
-        storage,
-        ..CircuitContext::default()
-    }
+/// A circuit on `clock` recording every hook it fires.
+fn traced(clock: &ManualClock, policy: Policy) -> (CircuitBreaker, Arc<Mutex<Vec<String>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let hook = |tag: &'static str| {
+        let seen = Arc::clone(&seen);
+        move |_: &str| seen.lock().expect("unpoisoned").push(tag.to_string())
+    };
+    let circuit = CircuitBreaker::builder("svc", policy)
+        .clock(clock.clone())
+        .on_open(hook("open"))
+        .on_half_open(hook("half_open"))
+        .on_close(hook("close"))
+        .build();
+    (circuit, seen)
 }
 
-fn trip(machine: &mut DynamicCircuit) {
-    machine
-        .handle(CircuitEvent::Trip)
-        .expect("threshold reached");
+fn fail(circuit: &mut CircuitBreaker) -> Result<(), CircuitError<&'static str>> {
+    circuit.call(|| Err::<(), _>("boom"))
 }
 
-/// Counts every callback invocation, keyed by transition.
-#[derive(Debug, Clone, Default)]
-struct Transitions {
-    opened: Arc<AtomicUsize>,
-    half_opened: Arc<AtomicUsize>,
-    closed: Arc<AtomicUsize>,
+#[test]
+fn a_full_cycle_fires_each_hook_once() {
+    let clock = ManualClock::default();
+    let (mut circuit, seen) = traced(&clock, policy(2, 1, 1, None));
+    assert_eq!(circuit.call(|| Ok::<_, &str>(7)).expect("closed"), 7);
+    assert_matches!(fail(&mut circuit), Err(CircuitError::Execution("boom")));
+    assert_matches!(fail(&mut circuit), Err(CircuitError::Execution("boom")));
+    assert!(circuit.is_open());
+    assert_eq!(circuit.opened_at(), Some(Duration::ZERO));
+    assert_matches!(
+        fail(&mut circuit),
+        Err(CircuitError::Refused {
+            refusal: Refusal::Open,
+            ..
+        })
+    );
+    clock.advance(Duration::from_secs(10));
+    assert_eq!(circuit.retry_after(), Some(Duration::from_secs(20)));
+    clock.advance(Duration::from_secs(20));
+    assert_eq!(circuit.call(|| Ok::<_, &str>(1)).expect("probe"), 1);
+    assert!(circuit.is_closed());
+    assert_eq!(
+        *seen.lock().expect("unpoisoned"),
+        ["open", "half_open", "close"].map(ToString::to_string)
+    );
 }
 
-impl Transitions {
-    fn attach(&self, builder: crate::CircuitBuilder) -> crate::CircuitBuilder {
-        let (opened, half_opened, closed) = (
-            Arc::clone(&self.opened),
-            Arc::clone(&self.half_opened),
-            Arc::clone(&self.closed),
-        );
-        builder
-            .on_open(move |_| _ = opened.fetch_add(1, Ordering::SeqCst))
-            .on_half_open(move |_| _ = half_opened.fetch_add(1, Ordering::SeqCst))
-            .on_close(move |_| _ = closed.fetch_add(1, Ordering::SeqCst))
-    }
-
-    fn counts(&self) -> (usize, usize, usize) {
-        (
-            self.opened.load(Ordering::SeqCst),
-            self.half_opened.load(Ordering::SeqCst),
-            self.closed.load(Ordering::SeqCst),
-        )
-    }
+#[test]
+fn the_fallback_sees_why_the_call_was_refused() {
+    let clock = ManualClock::default();
+    let (mut circuit, _) = traced(&clock, policy(1, 1, 1, None));
+    assert!(fail(&mut circuit).is_err());
+    clock.advance(Duration::from_secs(5));
+    let answer = circuit.call_with_fallback(
+        || Ok::<_, &str>("live"),
+        |context| {
+            assert_eq!(context.refusal, Refusal::Open);
+            assert_eq!(context.retry_after, Some(Duration::from_secs(25)));
+            assert_eq!(&*context.circuit, "svc");
+            Ok("cached")
+        },
+    );
+    assert_eq!(answer.expect("fallback"), "cached");
 }
 
-/// Memory storage whose reads can be made to panic, to poison a dispatch.
-#[derive(Debug)]
-struct FlakyStorage {
-    inner: Arc<MemoryStorage>,
-    panic_counting: AtomicBool,
-    panic_clock: AtomicBool,
-}
-
-impl FlakyStorage {
-    fn new(clock: &ManualClock) -> Self {
-        Self {
-            inner: clock.storage(),
-            panic_counting: AtomicBool::new(false),
-            panic_clock: AtomicBool::new(false),
-        }
-    }
-}
-
-impl StorageBackend for FlakyStorage {
-    fn record_success(&self, circuit_name: &str, duration: f64) {
-        self.inner.record_success(circuit_name, duration);
-    }
-
-    fn record_failure(&self, circuit_name: &str, duration: f64) {
-        self.inner.record_failure(circuit_name, duration);
-    }
-
-    fn success_count(&self, circuit_name: &str, window_seconds: f64) -> usize {
-        self.inner.success_count(circuit_name, window_seconds)
-    }
-
-    fn failure_count(&self, circuit_name: &str, window_seconds: f64) -> usize {
-        assert!(
-            !self.panic_counting.load(Ordering::SeqCst),
-            "storage unavailable"
-        );
-        self.inner.failure_count(circuit_name, window_seconds)
-    }
-
-    fn clear(&self, circuit_name: &str) {
-        self.inner.clear(circuit_name);
-    }
-
-    fn clear_all(&self) {
-        self.inner.clear_all();
-    }
-
-    fn event_log(&self, circuit_name: &str, limit: usize) -> Vec<Event> {
-        self.inner.event_log(circuit_name, limit)
-    }
-
-    fn monotonic_time(&self) -> f64 {
-        assert!(
-            !self.panic_clock.load(Ordering::SeqCst),
-            "clock unavailable"
-        );
-        self.inner.monotonic_time()
-    }
-}
-
-fn fail(circuit: &mut CircuitBreaker, times: usize) {
-    for _ in 0..times {
-        let _ = circuit.call(|| Err::<(), _>("boom"));
-    }
-}
-
-fn consecutive_successes(circuit: &CircuitBreaker) -> Option<usize> {
+#[test]
+fn calls_accept_closures_that_borrow_locals() {
+    let mut circuit = CircuitBreaker::new("borrowing", policy(5, 1, 1, None));
+    let mut seen = Vec::new();
     circuit
-        .machine
-        .half_open_data()
-        .map(|data| data.consecutive_successes)
+        .call(|| {
+            seen.push(1);
+            Ok::<_, &str>(())
+        })
+        .expect("closed");
+    assert_eq!(seen, [1]);
+    assert_eq!(circuit.name(), "borrowing");
+    assert_eq!(circuit.successes(), 1);
 }
 
 #[test]
-fn new_circuit_starts_closed() {
-    let shared: Arc<str> = Arc::from("test");
-    let circuits = [
-        ("&str", CircuitBreaker::new("test", Config::default())),
-        (
-            "String",
-            CircuitBreaker::new(String::from("test"), Config::default()),
-        ),
-        (
-            "Arc<str>",
-            CircuitBreaker::new(Arc::clone(&shared), Config::default()),
-        ),
-    ];
-
-    for (name_type, circuit) in &circuits {
-        assert!(circuit.is_closed(), "{name_type}");
-        assert!(!circuit.is_open(), "{name_type}");
-        assert_eq!(circuit.state(), CircuitState::Closed, "{name_type}");
-        assert_eq!(circuit.state_name(), "Closed", "{name_type}");
-        assert_eq!(&*circuit.context.name, "test", "{name_type}");
-    }
-    // An `Arc<str>` name is shared, not copied.
-    assert!(Arc::ptr_eq(&circuits[2].1.context.name, &shared));
+fn the_classifier_decides_what_counts() {
+    let mut circuit = CircuitBreaker::builder("classified", policy(1, 1, 1, Some(1)))
+        .classifier(PredicateClassifier::new(|ctx| {
+            ctx.error.downcast_ref::<&str>() != Some(&"client error")
+        }))
+        .build();
+    assert!(circuit.call(|| Err::<(), _>("client error")).is_err());
+    assert!(circuit.is_closed(), "an ignored error does not count");
+    assert_eq!(circuit.failures(), 0);
+    assert_eq!(circuit.breaker().outstanding(), 0, "its slot was freed");
+    assert!(circuit.call(|| Err::<(), _>("server error")).is_err());
+    assert!(circuit.is_open());
 }
 
 #[test]
-fn opens_once_failure_threshold_is_reached() {
-    let mut circuit = CircuitBreaker::builder("test").failure_threshold(3).build();
-
-    fail(&mut circuit, 2);
+fn a_panicking_probe_frees_its_slot() {
+    let clock = ManualClock::default();
+    let (mut circuit, _) = traced(&clock, policy(1, 1, 1, None));
+    assert!(fail(&mut circuit).is_err());
+    clock.advance(Duration::from_secs(30));
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        circuit.call(|| -> Result<(), &str> { panic!("probe panicked") })
+    }));
+    assert!(unwound.is_err());
+    assert_eq!(circuit.state(), State::HalfOpen);
+    assert_eq!(circuit.breaker().half_open_attempts(), 0);
+    assert_eq!(circuit.call(|| Ok::<_, &str>(())), Ok(()));
     assert!(circuit.is_closed());
-
-    fail(&mut circuit, 1);
-    assert!(circuit.is_open());
-    assert_eq!(circuit.state(), CircuitState::Open);
 }
 
 #[test]
-fn call_accepts_closures_that_borrow_locals() {
-    let mut circuit = CircuitBreaker::builder("test").build();
-    let payload = String::from("borrowed");
-
-    // Neither operation is `'static`: both borrow `payload`.
-    assert_matches!(circuit.call(|| Ok::<_, &str>(payload.len())), Ok(8));
+fn two_phase_admission_settles_tickets() {
+    let clock = ManualClock::default();
+    let (mut circuit, _) = traced(&clock, policy(1, 1, 1, Some(1)));
+    let mut ticket = circuit.admit().expect("admitted");
     assert_matches!(
-        circuit.call((|| Ok::<_, &str>(payload.as_str()), CallOptions::new())),
-        Ok("borrowed")
+        circuit.admit(),
+        Err(CircuitError::Refused {
+            refusal: Refusal::Full,
+            ..
+        })
     );
-}
+    clock.advance(Duration::from_secs(2));
+    assert_eq!(circuit.complete(&mut ticket, Ok::<_, &str>(3)), Ok(3));
+    assert_eq!(circuit.events(5)[0].took, Duration::from_secs(2));
 
-#[test]
-fn reset_closes_and_clears_events() {
-    let mut circuit = CircuitBreaker::builder("test").failure_threshold(2).build();
-    fail(&mut circuit, 2);
-    assert!(circuit.is_open());
-
-    circuit.reset();
-
-    assert!(circuit.is_closed());
-    assert_eq!(circuit.context.storage.failure_count("test", 60.0), 0);
-}
-
-#[test]
-fn force_open_opens_whatever_the_failure_count() {
-    let transitions = Transitions::default();
-    let mut circuit = transitions
-        .attach(CircuitBreaker::builder("test"))
-        .failure_threshold(5)
-        .build();
-
-    circuit.force_open();
-
-    assert!(circuit.is_open());
-    assert_eq!(circuit.failure_count(), 0);
-    assert_matches!(circuit.opened_at(), Some(_));
-    assert_eq!(transitions.counts(), (1, 0, 0));
-}
-
-#[test]
-fn force_open_restarts_the_cooldown_of_an_open_circuit() {
-    let clock = ManualClock::starting_at(100);
-    let mut circuit = CircuitBreaker::builder("test")
-        .failure_threshold(1)
-        .half_open_timeout_secs(10.0)
-        .storage(clock.storage())
-        .build();
-    fail(&mut circuit, 1);
-    clock.advance(Duration::from_secs(9));
-
-    circuit.force_open();
-
-    clock.advance(Duration::from_secs(9));
+    let mut dropped = circuit.admit().expect("slot freed");
+    assert_eq!(circuit.abandon(&mut dropped), Ok(()));
     assert_matches!(
-        circuit.call(|| Ok::<_, &str>(())),
-        Err(CircuitError::Open { .. })
-    );
-
-    clock.advance(Duration::from_secs(1));
-    assert_matches!(circuit.call(|| Ok::<_, &str>(())), Ok(()));
-}
-
-#[test]
-fn force_close_closes_without_clearing_the_window() {
-    let transitions = Transitions::default();
-    let mut circuit = transitions
-        .attach(CircuitBreaker::builder("test"))
-        .failure_threshold(2)
-        .build();
-    fail(&mut circuit, 2);
-    assert!(circuit.is_open());
-
-    circuit.force_close();
-
-    assert!(circuit.is_closed());
-    assert_eq!(circuit.failure_count(), 2);
-    assert_eq!(circuit.opened_at(), None);
-    assert_eq!(transitions.counts(), (1, 0, 1));
-}
-
-#[test]
-fn counts_and_probes_report_the_current_visit() {
-    let clock = ManualClock::starting_at(100);
-    let mut circuit = CircuitBreaker::builder("test")
-        .failure_threshold(1)
-        .half_open_timeout_secs(1.0)
-        .success_threshold(2)
-        .storage(clock.storage())
-        .build();
-
-    assert_matches!(circuit.call(|| Ok::<_, &str>(())), Ok(()));
-    fail(&mut circuit, 1);
-
-    assert_eq!((circuit.success_count(), circuit.failure_count()), (1, 1));
-    assert_eq!(
-        (circuit.half_open_attempts(), circuit.half_open_successes()),
-        (0, 0)
-    );
-    assert_eq!(circuit.event_log(10).len(), 2);
-
-    clock.advance(Duration::from_secs(1));
-    assert_matches!(circuit.call(|| Ok::<_, &str>(())), Ok(()));
-
-    assert_eq!(circuit.state(), CircuitState::HalfOpen);
-    assert_eq!(
-        (circuit.half_open_attempts(), circuit.half_open_successes()),
-        (1, 1)
-    );
-}
-
-#[test]
-fn machine_trip_guard_waits_for_failure_threshold() {
-    let storage = Arc::new(MemoryStorage::new());
-    let config = Config {
-        failure_threshold: Some(3),
-        ..Config::default()
-    };
-    let mut machine = DynamicCircuit::new(context(config, storage.clone()));
-
-    assert_matches!(
-        machine.handle(CircuitEvent::Trip),
-        Err(DynamicError::GuardFailed {
-            guard: "should_open",
+        circuit.complete(&mut dropped, Ok::<_, &str>(())),
+        Err(CircuitError::Refused {
+            refusal: Refusal::Mismatch,
             ..
         })
     );
 
+    let mut other = CircuitBreaker::builder("other", policy(1, 1, 1, None))
+        .scope(9)
+        .build();
+    let mut foreign = other.admit().expect("admitted");
+    assert_matches!(
+        circuit.complete(&mut foreign, Ok::<_, &str>(())),
+        Err(CircuitError::Refused {
+            refusal: Refusal::Unknown,
+            ..
+        })
+    );
+}
+
+#[test]
+fn observe_force_and_reset_drive_the_machine() {
+    let clock = ManualClock::default();
+    let (mut circuit, seen) = traced(&clock, policy(1, 1, 1, None));
+    assert_eq!(
+        circuit.observe(&Err::<(), _>("down"), Duration::from_millis(5)),
+        State::Open
+    );
+    clock.advance(Duration::from_secs(30));
+    assert_eq!(
+        circuit.observe(&Ok::<(), &str>(()), Duration::from_millis(5)),
+        State::Closed
+    );
+    circuit.force_close().expect("an epoch is left");
+    circuit.force_open().expect("an epoch is left");
+    circuit.force_open().expect("an epoch is left");
+    circuit.reset().expect("an epoch is left");
+    assert!(circuit.is_closed());
+    assert_eq!(circuit.failures(), 0);
+    assert_eq!(
+        *seen.lock().expect("unpoisoned"),
+        ["open", "half_open", "close", "open", "open"].map(ToString::to_string),
+        "force_close on a closed circuit and reset fire nothing"
+    );
+}
+
+#[derive(Debug)]
+struct Backwards(Mutex<u64>);
+
+impl Clock for Backwards {
+    fn now(&self) -> Duration {
+        let mut secs = self.0.lock().expect("unpoisoned");
+        *secs = secs.saturating_sub(1);
+        Duration::from_secs(*secs)
+    }
+}
+
+#[test]
+fn a_clock_that_steps_back_reads_as_standing_still() {
+    let mut circuit = CircuitBreaker::builder("skewed", policy(3, 1, 1, None))
+        .clock(Backwards(Mutex::new(100)))
+        .build();
     for _ in 0..3 {
-        storage.record_failure("test", 0.1);
+        assert!(circuit.call(|| Ok::<_, &str>(())).is_ok());
     }
-
-    assert_matches!(machine.handle(CircuitEvent::Trip), Ok(()));
-    assert_eq!(machine.current_state(), CircuitState::Open);
+    assert_eq!(circuit.now(), Duration::from_secs(99));
+    assert_eq!(circuit.successes(), 3);
 }
 
+/// Model check: over random runs of every operation, the lifecycle machine
+/// and the core never disagree, and every hook fired matches a transition
+/// the machine made.
 #[test]
-fn machine_half_opens_exactly_at_timeout_without_jitter() {
-    let clock = ManualClock::starting_at(100);
-    let storage = clock.storage();
-    let config = Config {
-        failure_threshold: Some(2),
-        half_open_timeout_secs: 1.0,
-        ..Config::default()
-    };
-    storage.record_failure("test", 0.1);
-    storage.record_failure("test", 0.1);
-    let mut machine = DynamicCircuit::new(context(config, storage));
-    trip(&mut machine);
-    assert_matches!(
-        machine.open_data(),
-        Some(OpenData {
-            opened_at: 100.0,
-            retry_at: 101.0,
-        })
-    );
-
-    clock.advance(Duration::from_millis(999));
-    assert_matches!(
-        machine.handle(CircuitEvent::AttemptReset),
-        Err(DynamicError::GuardFailed {
-            guard: "timeout_elapsed",
-            ..
-        })
-    );
-
-    clock.advance(Duration::from_millis(1));
-    assert_matches!(machine.handle(CircuitEvent::AttemptReset), Ok(()));
-    assert_eq!(machine.current_state(), CircuitState::HalfOpen);
-    assert_matches!(
-        machine.half_open_data(),
-        Some(HalfOpenData {
-            consecutive_successes: 0,
-            in_flight: 0,
-        })
-    );
-}
-
-#[test]
-fn machine_close_guard_requires_success_threshold() {
-    let clock = ManualClock::starting_at(100);
-    let storage = clock.storage();
-    let config = Config {
-        failure_threshold: Some(1),
-        half_open_timeout_secs: 1.0,
-        success_threshold: 2,
-        ..Config::default()
-    };
-    storage.record_failure("test", 0.1);
-    let mut machine = DynamicCircuit::new(context(config, storage));
-    trip(&mut machine);
-    clock.advance(Duration::from_secs(1));
-    machine
-        .handle(CircuitEvent::AttemptReset)
-        .expect("timeout elapsed");
-
-    assert_matches!(
-        machine.handle(CircuitEvent::Close),
-        Err(DynamicError::GuardFailed {
-            guard: "should_close",
-            ..
-        })
-    );
-
-    machine
-        .half_open_data_mut()
-        .expect("HalfOpen carries HalfOpenData")
-        .consecutive_successes = 2;
-    assert_matches!(machine.handle(CircuitEvent::Close), Ok(()));
-    assert_eq!(machine.current_state(), CircuitState::Closed);
-}
-
-#[test]
-fn jitter_is_drawn_once_per_open_cycle() {
-    let clock = ManualClock::starting_at(100);
-    let storage = clock.storage();
-    let config = Config {
-        failure_threshold: Some(1),
-        half_open_timeout_secs: 1.0,
-        jitter_factor: 0.5,
-        ..Config::default()
-    };
-    storage.record_failure("test", 0.1);
-    let mut machine = DynamicCircuit::new(context(config, storage));
-    trip(&mut machine);
-
-    let Some(&OpenData {
-        opened_at,
-        retry_at,
-    }) = machine.open_data()
-    else {
-        panic!("Open carries OpenData");
-    };
-    assert_eq!(opened_at, 100.0);
-    assert_matches!(retry_at - opened_at, 0.5..=1.0);
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "the jittered cooldown is a positive whole number of ms below 1s"
-    )]
-    let cooldown_ms = ((retry_at - opened_at) * 1000.0).round() as u64;
-    let cooldown = Duration::from_millis(cooldown_ms);
-
-    // Just short of retry_at, every check agrees: the delay is not redrawn.
-    clock.advance(
-        cooldown
-            .checked_sub(Duration::from_millis(1))
-            .expect("the cooldown is at least 500ms"),
-    );
-    for _ in 0..64 {
-        assert_matches!(
-            machine.handle(CircuitEvent::AttemptReset),
-            Err(DynamicError::GuardFailed { .. })
-        );
-    }
-
-    clock.advance(Duration::from_millis(1));
-    assert_matches!(machine.handle(CircuitEvent::AttemptReset), Ok(()));
-}
-
-#[test]
-fn jittered_delay_stays_within_bounds() {
-    let config = Config {
-        half_open_timeout_secs: 1.0,
-        jitter_factor: 0.25,
-        ..Config::default()
-    };
-
-    for _ in 0..50 {
-        assert_matches!(config.half_open_delay_secs(), 0.75..=1.0);
-    }
-}
-
-#[test]
-#[cfg(feature = "std")]
-fn jitter_varies_the_delay() {
-    let config = Config {
-        half_open_timeout_secs: 1.0,
-        jitter_factor: 0.5,
-        ..Config::default()
-    };
-
-    let first = config.half_open_delay_secs();
-    assert!(
-        (0..20).any(|_| config.half_open_delay_secs().total_cmp(&first).is_ne()),
-        "50% jitter produced a constant delay of {first}s"
-    );
-}
-
-#[test]
-#[cfg(not(feature = "std"))]
-fn jitter_is_ignored_without_std() {
-    let config = Config {
-        half_open_timeout_secs: 1.0,
-        jitter_factor: 0.5,
-        ..Config::default()
-    };
-
-    // No randomness source without `std`: the base timeout, in whole ms.
-    assert_eq!(config.half_open_delay_secs(), 1.0);
-}
-
-#[test]
-fn zero_jitter_uses_the_exact_timeout() {
-    let config = Config {
-        half_open_timeout_secs: 1.0,
-        jitter_factor: 0.0,
-        ..Config::default()
-    };
-
-    for _ in 0..10 {
-        assert_eq!(config.half_open_delay_secs(), 1.0);
-    }
-}
-
-#[test]
-fn builder_sets_jitter_factor() {
-    let circuit = CircuitBreaker::builder("test").jitter_factor(0.5).build();
-
-    assert_eq!(circuit.context.config.jitter_factor, 0.5);
-}
-
-#[test]
-fn fallback_runs_when_open() {
-    let mut circuit = CircuitBreaker::builder("test").failure_threshold(2).build();
-    fail(&mut circuit, 2);
-    assert!(circuit.is_open());
-
-    let result = circuit.call((
-        || Err::<String, _>("should not execute"),
-        CallOptions::new().with_fallback(|ctx| {
-            assert_matches!(
-                ctx,
-                FallbackContext { circuit_name, state: "Open", .. } if &**circuit_name == "test"
-            );
-            Ok("fallback response".to_string())
-        }),
-    ));
-
-    assert_matches!(result.as_deref(), Ok("fallback response"));
-}
-
-#[test]
-fn fallback_errors_propagate_as_execution() {
-    let mut circuit = CircuitBreaker::builder("test").failure_threshold(1).build();
-    fail(&mut circuit, 1);
-    assert!(circuit.is_open());
-
-    let result = circuit.call((
-        || Ok::<String, _>("should not execute".to_string()),
-        CallOptions::new().with_fallback(|_ctx| Err::<String, _>("fallback error")),
-    ));
-
-    assert_matches!(result, Err(CircuitError::Execution("fallback error")));
-}
-
-#[test]
-fn rate_threshold_waits_for_minimum_calls() {
-    let mut circuit = CircuitBreaker::builder("test")
-        .disable_failure_threshold()
-        .failure_rate(0.5)
-        .minimum_calls(10)
-        .build();
-
-    // Alternate success/failure: 4 of the first 9 calls fail.
-    for call in 0..9 {
-        let _ = if call % 2 == 0 {
-            circuit.call(|| Ok::<(), &str>(()))
-        } else {
-            circuit.call(|| Err::<(), &str>("error"))
-        };
+fn the_lifecycle_machine_never_diverges_from_the_core() {
+    use matryona_machines::testing::XorShift64;
+    for seed in 1..=24_u64 {
+        let mut rng = XorShift64::new(seed);
+        let clock = ManualClock::default();
+        let limit = (rng.below(3) > 0).then(|| u32::try_from(rng.below(3) + 1).unwrap_or(1));
+        let failures = u32::try_from(rng.below(4) + 1).unwrap_or(1);
+        let successes = u32::try_from(rng.below(3) + 1).unwrap_or(1);
+        let probes = u32::try_from(rng.below(3) + 1).unwrap_or(1);
+        let (mut circuit, seen) = traced(&clock, policy(failures, successes, probes, limit));
+        let mut held: Vec<Ticket> = Vec::new();
+        for _ in 0..2_000 {
+            match rng.below(11) {
+                0 => drop(circuit.call(|| Ok::<_, &str>(()))),
+                1 => drop(fail(&mut circuit)),
+                2 => {
+                    if let Ok(ticket) = circuit.admit() {
+                        held.push(ticket);
+                    }
+                }
+                3 | 4 if !held.is_empty() => {
+                    let index = usize::try_from(rng.below(held.len() as u64)).unwrap_or(0);
+                    let mut ticket = held.swap_remove(index);
+                    let result = if rng.below(2) == 0 {
+                        Ok(())
+                    } else {
+                        Err("boom")
+                    };
+                    drop(circuit.complete(&mut ticket, result));
+                }
+                5 if !held.is_empty() => {
+                    let mut ticket = held.swap_remove(0);
+                    drop(circuit.abandon(&mut ticket));
+                }
+                6 => {
+                    let outcome = if rng.below(2) == 0 {
+                        Ok(())
+                    } else {
+                        Err("down")
+                    };
+                    circuit.observe(&outcome, Duration::from_millis(rng.below(50)));
+                }
+                7 => circuit.force_open().expect("an epoch is left"),
+                8 => circuit.force_close().expect("an epoch is left"),
+                9 if rng.below(8) == 0 => circuit.reset().expect("an epoch is left"),
+                _ => clock.advance(Duration::from_secs(rng.below(12))),
+            }
+            assert_eq!(circuit.state(), circuit.breaker().state(), "seed {seed}");
+        }
         assert!(
-            circuit.is_closed(),
-            "opened after {} calls, below minimum_calls",
-            call + 1
+            !seen.lock().expect("unpoisoned").is_empty(),
+            "seed {seed} fired nothing"
         );
     }
-
-    // 10th call: 5 failures out of 10 reaches the 50% rate.
-    fail(&mut circuit, 1);
-    assert!(circuit.is_open(), "did not open at the rate threshold");
-}
-
-#[test]
-fn absolute_threshold_trips_before_rate_is_evaluated() {
-    let mut circuit = CircuitBreaker::builder("test")
-        .failure_threshold(3)
-        .failure_rate(0.8)
-        .minimum_calls(10)
-        .build();
-
-    fail(&mut circuit, 2);
-    assert!(circuit.is_closed());
-
-    fail(&mut circuit, 1);
-    assert!(circuit.is_open(), "did not open at the absolute threshold");
-}
-
-#[test]
-fn minimum_calls_prevents_premature_trip() {
-    let mut circuit = CircuitBreaker::builder("test")
-        .disable_failure_threshold()
-        .failure_rate(0.5)
-        .minimum_calls(20)
-        .build();
-
-    // 100% failure rate, but only half of minimum_calls.
-    fail(&mut circuit, 10);
-
-    assert!(circuit.is_closed(), "opened before reaching minimum_calls");
-}
-
-#[test]
-fn classifier_filters_which_errors_trip() {
-    // Trip on "server" errors only; unknown error types still trip.
-    let classifier = Arc::new(PredicateClassifier::new(|ctx| {
-        ctx.error
-            .downcast_ref::<&str>()
-            .is_none_or(|error| error.contains("server"))
-    }));
-    let mut circuit = CircuitBreaker::builder("test")
-        .failure_threshold(2)
-        .failure_classifier(classifier)
-        .build();
-
-    for _ in 0..5 {
-        let _ = circuit.call(|| Err::<(), _>("client_error"));
-    }
-    assert!(circuit.is_closed(), "tripped on filtered errors");
-    assert_eq!(circuit.context.storage.failure_count("test", 60.0), 0);
-
-    let _ = circuit.call(|| Err::<(), _>("server_error_1"));
-    let _ = circuit.call(|| Err::<(), _>("server_error_2"));
-    assert!(circuit.is_open(), "did not trip on server errors");
-}
-
-#[test]
-fn classifier_sees_call_duration() {
-    let classifier = Arc::new(PredicateClassifier::new(|ctx| ctx.duration > 0.5));
-    let mut circuit = CircuitBreaker::builder("test")
-        .failure_threshold(2)
-        .failure_classifier(classifier)
-        .build();
-
-    // Test calls finish in well under 0.5s.
-    fail(&mut circuit, 10);
-
-    assert!(circuit.is_closed(), "tripped on fast errors");
-}
-
-#[test]
-fn classifier_downcasts_custom_error_types() {
-    #[derive(Debug)]
-    enum ApiError {
-        Client(u16),
-        Server(u16),
-    }
-
-    let classifier = Arc::new(PredicateClassifier::new(|ctx| {
-        ctx.error
-            .downcast_ref::<ApiError>()
-            .is_none_or(|error| match error {
-                ApiError::Client(status) | ApiError::Server(status) => *status >= 500,
-            })
-    }));
-    let mut circuit = CircuitBreaker::builder("test")
-        .failure_threshold(2)
-        .failure_classifier(classifier)
-        .build();
-
-    for _ in 0..10 {
-        let _ = circuit.call(|| Err::<(), _>(ApiError::Client(404)));
-    }
-    assert!(circuit.is_closed(), "4xx tripped the circuit");
-
-    let _ = circuit.call(|| Err::<(), _>(ApiError::Server(500)));
-    let _ = circuit.call(|| Err::<(), _>(ApiError::Server(503)));
-    assert!(circuit.is_open(), "5xx did not trip the circuit");
-}
-
-#[test]
-fn classifier_downcasts_through_a_boxed_error() {
-    use alloc::boxed::Box;
-    use core::error::Error;
-
-    #[derive(Debug)]
-    struct Transient;
-
-    impl core::fmt::Display for Transient {
-        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-            f.write_str("transient")
-        }
-    }
-
-    impl Error for Transient {}
-
-    type Boxed = Box<dyn Error + Send + Sync>;
-
-    // The circuit sees only `&dyn Any`; the caller's closure unwraps its own
-    // error wrapper (a boxed error here, `anyhow::Error` in practice) and
-    // then the type inside.
-    let classifier = Arc::new(PredicateClassifier::new(|ctx| {
-        ctx.error
-            .downcast_ref::<Boxed>()
-            .is_some_and(|boxed| boxed.downcast_ref::<Transient>().is_some())
-    }));
-    let mut circuit = CircuitBreaker::builder("test")
-        .failure_threshold(1)
-        .failure_classifier(classifier)
-        .build();
-
-    let _ = circuit.call(|| Err::<(), Boxed>("permanent".into()));
-    assert!(circuit.is_closed(), "an unwrapped &str tripped the circuit");
-
-    let _ = circuit.call(|| Err::<(), Boxed>(Box::new(Transient)));
-    assert!(
-        circuit.is_open(),
-        "the boxed Transient did not trip the circuit"
-    );
-}
-
-#[test]
-fn bulkhead_permit_is_released_after_each_call() {
-    let mut circuit = CircuitBreaker::builder("test")
-        .max_concurrency(1)
-        .failure_threshold(10)
-        .build();
-    let bulkhead = circuit
-        .context
-        .bulkhead
-        .clone()
-        .expect("max_concurrency installs a bulkhead");
-
-    assert_matches!(circuit.call(|| Ok::<_, &str>("first")), Ok("first"));
-    assert_eq!(bulkhead.acquired(), 0);
-
-    assert_matches!(
-        circuit.call(|| Err::<(), _>("failed")),
-        Err(CircuitError::Execution("failed"))
-    );
-    assert_eq!(bulkhead.acquired(), 0);
-
-    assert_matches!(circuit.call(|| Ok::<_, &str>("second")), Ok("second"));
-}
-
-#[test]
-fn unbounded_without_bulkhead() {
-    let mut circuit = CircuitBreaker::builder("test").build();
-    assert_matches!(circuit.context.bulkhead, None);
-
-    for _ in 0..100 {
-        assert_matches!(circuit.call(|| Ok::<_, &str>(())), Ok(()));
-    }
-}
-
-#[test]
-fn bulkhead_full_reports_circuit_and_limit() {
-    let bulkhead = Arc::new(BulkheadSemaphore::new(2));
-    let mut circuit = CircuitBreaker::builder("test").build();
-    circuit.context.bulkhead = Some(bulkhead.clone());
-
-    let held = [bulkhead.try_acquire(), bulkhead.try_acquire()];
-    assert_matches!(held, [Some(_), Some(_)]);
-
-    assert_matches!(
-        circuit.call(|| Ok::<_, &str>("rejected")),
-        Err(CircuitError::BulkheadFull { circuit: name, limit: 2 }) if &*name == "test"
-    );
-
-    drop(held);
-    assert_matches!(circuit.call(|| Ok::<_, &str>("admitted")), Ok("admitted"));
-}
-
-#[test]
-fn open_circuit_rejects_despite_bulkhead_capacity() {
-    let mut circuit = CircuitBreaker::builder("test")
-        .max_concurrency(5)
-        .failure_threshold(3)
-        .build();
-    assert_matches!(circuit.call(|| Ok::<_, &str>(())), Ok(()));
-
-    fail(&mut circuit, 3);
-    assert!(circuit.is_open());
-
-    assert_matches!(
-        circuit.call(|| Ok::<_, &str>("rejected")),
-        Err(CircuitError::Open { .. })
-    );
-}
-
-#[test]
-fn open_fallback_releases_bulkhead_permit() {
-    let bulkhead = Arc::new(BulkheadSemaphore::new(1));
-    let mut circuit = CircuitBreaker::builder("test").failure_threshold(1).build();
-    circuit.context.bulkhead = Some(bulkhead.clone());
-    fail(&mut circuit, 1);
-    assert!(circuit.is_open());
-
-    // The permit must be released before the fallback runs so the fallback
-    // body can acquire it itself.
-    let result = circuit.call((
-        || Ok::<bool, &str>(false),
-        CallOptions::new().with_fallback(move |_ctx| Ok(bulkhead.try_acquire().is_some())),
-    ));
-
-    assert_matches!(result, Ok(true), "fallback could not acquire the permit");
-}
-
-#[test]
-fn check_and_trip_stamps_opened_at_and_fires_on_open() {
-    let clock = ManualClock::starting_at(100);
-    let opened = Arc::new(AtomicBool::new(false));
-    let on_open = Arc::clone(&opened);
-    let mut circuit = CircuitBreaker::builder("test")
-        .failure_threshold(1)
-        .storage(clock.storage())
-        .on_open(move |_name| on_open.store(true, Ordering::SeqCst))
-        .build();
-
-    circuit.record_failure(0.1);
-
-    assert!(circuit.check_and_trip(), "trip should succeed");
-    assert!(circuit.is_open());
-    assert_matches!(
-        circuit.machine.open_data(),
-        Some(OpenData {
-            opened_at: 100.0,
-            retry_at: 130.0,
-        })
-    );
-    assert!(opened.load(Ordering::SeqCst), "on_open did not fire");
-    assert!(
-        !circuit.check_and_trip(),
-        "an open circuit cannot trip again"
-    );
-}
-
-#[test]
-fn half_open_failure_reopens_below_the_failure_threshold() {
-    let clock = ManualClock::starting_at(100);
-    let mut circuit = CircuitBreaker::builder("test")
-        .failure_threshold(2)
-        .failure_window_secs(1.0)
-        .half_open_timeout_secs(5.0)
-        .success_threshold(2)
-        .storage(clock.storage())
-        .build();
-    fail(&mut circuit, 2);
-    assert!(circuit.is_open());
-
-    // Cooldown elapses and the opening failures age out of the window.
-    clock.advance(Duration::from_secs(5));
-
-    assert_matches!(circuit.call(|| Ok::<_, &str>("ok")), Ok("ok"));
-    assert_eq!(circuit.state(), CircuitState::HalfOpen);
-    assert_eq!(circuit.state_name(), "HalfOpen");
-    assert_eq!(consecutive_successes(&circuit), Some(1));
-
-    // One failure ends the recovery attempt, whatever the window still holds.
-    fail(&mut circuit, 1);
-    assert_eq!(circuit.state_name(), "Open");
-    assert_eq!(consecutive_successes(&circuit), None);
-    assert_eq!(circuit.opened_at(), Some(105.0));
-
-    // The cooldown restarts from the failed probe.
-    clock.advance(Duration::from_secs(5));
-    assert_matches!(circuit.call(|| Ok::<_, &str>("ok")), Ok("ok"));
-    assert_eq!(consecutive_successes(&circuit), Some(1));
-}
-
-#[test]
-fn panicking_probe_releases_half_open_slot() {
-    let clock = ManualClock::starting_at(100);
-    let mut circuit = CircuitBreaker::builder("test")
-        .failure_threshold(1)
-        .half_open_timeout_secs(1.0)
-        .success_threshold(1)
-        .storage(clock.storage())
-        .build();
-    fail(&mut circuit, 1);
-    clock.advance(Duration::from_secs(1));
-
-    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        circuit.call(|| -> Result<(), &'static str> { panic!("boom") })
-    }));
-    assert_matches!(panicked, Err(_), "probe should have panicked");
-    assert_matches!(
-        circuit.machine.half_open_data(),
-        Some(HalfOpenData { in_flight: 0, .. })
-    );
-
-    assert_matches!(
-        circuit.call(|| Ok::<_, &str>("ok")),
-        Ok("ok"),
-        "probe slot leaked after panic"
-    );
-    assert!(circuit.is_closed(), "circuit should recover and close");
-}
-
-#[test]
-fn callbacks_fire_once_per_transition() {
-    let clock = ManualClock::starting_at(100);
-    let transitions = Transitions::default();
-    let mut circuit = transitions
-        .attach(CircuitBreaker::builder("test"))
-        .failure_threshold(1)
-        .half_open_timeout_secs(1.0)
-        .success_threshold(1)
-        .storage(clock.storage())
-        .build();
-
-    fail(&mut circuit, 1);
-    assert_eq!(transitions.counts(), (1, 0, 0));
-
-    // Rejected calls do not re-fire on_open.
-    assert_matches!(
-        circuit.call(|| Ok::<_, &str>(())),
-        Err(CircuitError::Open { .. })
-    );
-    assert_eq!(transitions.counts(), (1, 0, 0));
-
-    clock.advance(Duration::from_secs(1));
-    assert_matches!(circuit.call(|| Ok::<_, &str>(())), Ok(()));
-    assert_eq!(transitions.counts(), (1, 1, 1));
-
-    // reset is a transition, but not a recovery: no callbacks.
-    fail(&mut circuit, 1);
-    circuit.reset();
-    assert!(circuit.is_closed());
-    assert_eq!(transitions.counts(), (2, 1, 1));
-}
-
-#[test]
-fn failed_probe_reopens_with_a_fresh_cooldown() {
-    let clock = ManualClock::starting_at(100);
-    let transitions = Transitions::default();
-    let mut circuit = transitions
-        .attach(CircuitBreaker::builder("test"))
-        .failure_threshold(1)
-        .half_open_timeout_secs(10.0)
-        .success_threshold(1)
-        .storage(clock.storage())
-        .build();
-    fail(&mut circuit, 1);
-
-    clock.advance(Duration::from_secs(10));
-    fail(&mut circuit, 1);
-
-    assert!(circuit.is_open());
-    assert_matches!(
-        circuit.machine.open_data(),
-        Some(OpenData {
-            opened_at: 110.0,
-            retry_at: 120.0,
-        })
-    );
-    assert_eq!(transitions.counts(), (2, 1, 0));
-}
-
-#[test]
-fn reset_advances_the_state_epoch() {
-    let mut circuit = CircuitBreaker::builder("test").build();
-    let before = circuit.state_epoch();
-
-    circuit.reset();
-
-    assert_eq!(circuit.state_epoch(), before + 1);
-    assert!(circuit.is_closed());
-}
-
-#[test]
-fn recovers_from_a_dispatch_poisoned_in_closed() {
-    let clock = ManualClock::starting_at(100);
-    let storage = Arc::new(FlakyStorage::new(&clock));
-    let mut circuit = CircuitBreaker::builder("test")
-        .failure_threshold(2)
-        .storage(storage.clone())
-        .build();
-    let epoch = circuit.state_epoch();
-
-    // The trip guard panics mid-dispatch and poisons the machine.
-    storage.panic_counting.store(true, Ordering::SeqCst);
-    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        circuit.call(|| Err::<(), _>("boom"))
-    }));
-    assert_matches!(panicked, Err(_));
-    assert!(circuit.machine.is_poisoned());
-    storage.panic_counting.store(false, Ordering::SeqCst);
-
-    // The next call rebuilds from the last committed state, Closed.
-    assert_matches!(circuit.call(|| Ok::<_, &str>("ok")), Ok("ok"));
-    assert!(!circuit.machine.is_poisoned());
-    assert!(circuit.is_closed());
-    assert!(
-        circuit.state_epoch() > epoch,
-        "rebuild must fence old permits"
-    );
-
-    // ...and the rebuilt machine still trips.
-    fail(&mut circuit, 1);
-    assert!(circuit.is_open());
-}
-
-#[test]
-fn recovers_from_a_dispatch_poisoned_in_open_by_restarting_cooldown() {
-    let clock = ManualClock::starting_at(100);
-    let storage = Arc::new(FlakyStorage::new(&clock));
-    let mut circuit = CircuitBreaker::builder("test")
-        .failure_threshold(1)
-        .half_open_timeout_secs(10.0)
-        .storage(storage.clone())
-        .build();
-    fail(&mut circuit, 1);
-    clock.advance(Duration::from_secs(10));
-
-    // The cooldown guard panics while deciding Open -> HalfOpen.
-    storage.panic_clock.store(true, Ordering::SeqCst);
-    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        circuit.call(|| Ok::<_, &str>("probe"))
-    }));
-    assert_matches!(panicked, Err(_));
-    assert!(circuit.machine.is_poisoned());
-    storage.panic_clock.store(false, Ordering::SeqCst);
-
-    // Rebuilt as Open with a cooldown restarted from now, not half-opened.
-    assert_matches!(
-        circuit.call(|| Ok::<_, &str>("probe")),
-        Err(CircuitError::Open {
-            opened_at: 110.0,
-            ..
-        })
-    );
-    assert_matches!(
-        circuit.machine.open_data(),
-        Some(OpenData {
-            retry_at: 120.0,
-            ..
-        })
-    );
-}
-
-#[test]
-#[cfg(any(feature = "std", feature = "inspect"))]
-fn state_graph_validates() {
-    assert_matches!(Circuit::<Closed>::schema().validate().as_slice(), []);
-}
-
-/// A circuit on `clock` that opens on one failure and probes after one second.
-fn ticketed_circuit(clock: &ManualClock, success_threshold: usize) -> CircuitBreaker {
-    CircuitBreaker::builder("test")
-        .failure_threshold(1)
-        .half_open_timeout_secs(1.0)
-        .success_threshold(success_threshold)
-        .storage(clock.storage())
-        .build()
-}
-
-/// Trip a closed circuit through the two-phase API.
-fn trip_with_ticket(circuit: &mut CircuitBreaker) {
-    let ticket = circuit.try_acquire().expect("a closed circuit admits");
-    assert_matches!(
-        circuit.complete(ticket, Err::<(), _>("boom")),
-        Err(CircuitError::Execution("boom"))
-    );
-    assert_eq!(circuit.state(), CircuitState::Open);
-}
-
-#[test]
-fn try_acquire_admits_while_closed_and_rejects_while_open() {
-    let clock = ManualClock::starting_at(100);
-    let mut circuit = ticketed_circuit(&clock, 2);
-
-    let ticket = circuit.try_acquire().expect("a closed circuit admits");
-    assert_matches!(circuit.complete(ticket, Ok::<_, &str>("ok")), Ok("ok"));
-    assert_eq!(circuit.context.storage.success_count("test", 60.0), 1);
-
-    trip_with_ticket(&mut circuit);
-    // The rejection `call` returns without a fallback.
-    assert_matches!(
-        circuit.try_acquire(),
-        Err(CircuitError::Open { circuit: ref name, opened_at: 100.0 }) if &**name == "test"
-    );
-    assert_matches!(
-        circuit.call(|| Ok::<_, &str>(())),
-        Err(CircuitError::Open {
-            opened_at: 100.0,
-            ..
-        })
-    );
-    assert_eq!(circuit.monotonic_time(), 100.0);
-}
-
-#[test]
-fn try_acquire_half_opens_after_cooldown_and_limits_probes() {
-    let clock = ManualClock::starting_at(100);
-    let mut circuit = CircuitBreaker::builder("test")
-        .failure_threshold(1)
-        .half_open_timeout_secs(1.0)
-        .success_threshold(2)
-        .half_open_calls(2)
-        .storage(clock.storage())
-        .build();
-    trip_with_ticket(&mut circuit);
-
-    clock.advance(Duration::from_millis(999));
-    assert_matches!(circuit.try_acquire(), Err(CircuitError::Open { .. }));
-
-    clock.advance(Duration::from_millis(1));
-    let first = circuit.try_acquire().expect("the cooldown has elapsed");
-    assert_eq!(circuit.state(), CircuitState::HalfOpen);
-    let second = circuit.try_acquire().expect("a second probe slot");
-    assert_matches!(
-        circuit.try_acquire(),
-        Err(CircuitError::HalfOpenLimitReached { .. })
-    );
-
-    assert_matches!(circuit.complete(first, Ok::<_, &str>(1)), Ok(1));
-    assert_eq!(circuit.state(), CircuitState::HalfOpen);
-    assert_matches!(circuit.complete(second, Ok::<_, &str>(2)), Ok(2));
-    assert_eq!(circuit.state(), CircuitState::Closed);
-}
-
-#[test]
-fn half_open_calls_caps_probes_whatever_the_success_threshold() {
-    let clock = ManualClock::starting_at(100);
-    let mut circuit = CircuitBreaker::builder("test")
-        .failure_threshold(1)
-        .half_open_timeout_secs(1.0)
-        .success_threshold(3)
-        .half_open_calls(1)
-        .storage(clock.storage())
-        .build();
-    trip_with_ticket(&mut circuit);
-    clock.advance(Duration::from_secs(1));
-
-    let probe = circuit.try_acquire().expect("the cooldown has elapsed");
-    assert_matches!(
-        circuit.try_acquire(),
-        Err(CircuitError::HalfOpenLimitReached { .. })
-    );
-
-    // The slot frees on completion, and one success is short of closing.
-    assert_matches!(circuit.complete(probe, Ok::<_, &str>(())), Ok(()));
-    assert_eq!(circuit.state(), CircuitState::HalfOpen);
-    assert_eq!(consecutive_successes(&circuit), Some(1));
-    assert_matches!(circuit.try_acquire(), Ok(_));
-}
-
-#[test]
-fn half_open_failure_through_a_ticket_reopens() {
-    let clock = ManualClock::starting_at(100);
-    let mut circuit = ticketed_circuit(&clock, 2);
-    trip_with_ticket(&mut circuit);
-    clock.advance(Duration::from_secs(1));
-
-    let probe = circuit.try_acquire().expect("the cooldown has elapsed");
-    assert_matches!(
-        circuit.complete(probe, Err::<(), _>("still down")),
-        Err(CircuitError::Execution("still down"))
-    );
-
-    assert_eq!(circuit.state(), CircuitState::Open);
-    assert_matches!(
-        circuit.try_acquire(),
-        Err(CircuitError::Open {
-            opened_at: 101.0,
-            ..
-        })
-    );
-}
-
-#[test]
-fn abandon_frees_the_probe_slot_without_recording() {
-    let clock = ManualClock::starting_at(100);
-    let mut circuit = ticketed_circuit(&clock, 1);
-    trip_with_ticket(&mut circuit);
-    clock.advance(Duration::from_secs(1));
-
-    let probe = circuit.try_acquire().expect("the cooldown has elapsed");
-    assert_matches!(
-        circuit.try_acquire(),
-        Err(CircuitError::HalfOpenLimitReached { .. })
-    );
-
-    circuit.abandon(probe);
-
-    let storage = &circuit.context.storage;
-    assert_eq!(
-        (
-            storage.success_count("test", 60.0),
-            storage.failure_count("test", 60.0)
-        ),
-        (0, 1),
-        "abandon recorded an outcome"
-    );
-    assert_eq!(circuit.state(), CircuitState::HalfOpen);
-    let retry = circuit
-        .try_acquire()
-        .expect("the abandoned slot is free again");
-    assert_matches!(circuit.complete(retry, Ok::<_, &str>(())), Ok(()));
-    assert_eq!(circuit.state(), CircuitState::Closed);
-}
-
-#[test]
-fn retry_after_counts_down_the_drawn_cooldown() {
-    let clock = ManualClock::starting_at(100);
-    let mut circuit = CircuitBreaker::builder("test")
-        .failure_threshold(1)
-        .half_open_timeout_secs(1.0)
-        .jitter_factor(0.5)
-        .storage(clock.storage())
-        .build();
-    assert_eq!(circuit.retry_after(), None);
-    trip_with_ticket(&mut circuit);
-
-    let cooldown = circuit
-        .retry_after()
-        .expect("an open circuit has a cooldown");
-    assert_matches!(cooldown, 0.5..=1.0);
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "the jittered cooldown is a positive whole number of ms below 1s"
-    )]
-    let cooldown_ms = (cooldown * 1000.0).round() as u64;
-
-    // The same reading the guard will use, so it shrinks with the clock and
-    // never admits before the drawn delay.
-    clock.advance(Duration::from_millis(cooldown_ms - 1));
-    assert_matches!(circuit.retry_after(), Some(remaining) if remaining > 0.0 && remaining <= 0.0011);
-    assert_matches!(circuit.try_acquire(), Err(CircuitError::Open { .. }));
-
-    clock.advance(Duration::from_millis(1));
-    assert_eq!(circuit.retry_after(), Some(0.0));
-    let probe = circuit.try_acquire().expect("the cooldown has elapsed");
-    assert_eq!(circuit.state(), CircuitState::HalfOpen);
-    assert_eq!(circuit.retry_after(), None);
-    circuit.abandon(probe);
-}
-
-#[test]
-fn retry_after_saturates_once_the_cooldown_is_overdue() {
-    let clock = ManualClock::starting_at(100);
-    let mut circuit = ticketed_circuit(&clock, 1);
-    trip_with_ticket(&mut circuit);
-
-    clock.advance(Duration::from_secs(5));
-    assert_eq!(circuit.retry_after(), Some(0.0));
-    assert_eq!(circuit.opened_at(), Some(100.0));
-}
-
-#[test]
-fn stale_ticket_cannot_drive_transitions() {
-    let clock = ManualClock::starting_at(100);
-    let mut circuit = ticketed_circuit(&clock, 1);
-    trip_with_ticket(&mut circuit);
-    clock.advance(Duration::from_secs(1));
-    let probe = circuit.try_acquire().expect("the cooldown has elapsed");
-
-    circuit.reset();
-    assert_matches!(
-        circuit.complete(probe, Err::<(), _>("late")),
-        Err(CircuitError::Execution("late"))
-    );
-
-    // Counted in the metrics, but it belonged to the HalfOpen visit the reset
-    // ended, so it cannot trip the circuit that replaced it.
-    assert_eq!(circuit.context.storage.failure_count("test", 60.0), 1);
-    assert_eq!(circuit.state(), CircuitState::Closed);
-}
-
-#[test]
-fn tickets_hold_the_bulkhead_permit_until_returned() {
-    let mut circuit = CircuitBreaker::builder("test").max_concurrency(1).build();
-
-    let completed = circuit.try_acquire().expect("a permit is free");
-    assert_matches!(
-        circuit.try_acquire(),
-        Err(CircuitError::BulkheadFull { limit: 1, .. })
-    );
-    assert_matches!(circuit.complete(completed, Ok::<_, &str>(())), Ok(()));
-
-    let abandoned = circuit.try_acquire().expect("complete released the permit");
-    circuit.abandon(abandoned);
-    let ticket = circuit.try_acquire().expect("abandon released the permit");
-    circuit.abandon(ticket);
-}
-
-/// Milliseconds to advance, whether the observed outcome succeeded, state after.
-type ObserveStep = (u64, bool, CircuitState);
-
-#[test]
-fn observe_runs_the_machine_without_admission() {
-    use CircuitState::{Closed, HalfOpen, Open};
-    // Failure threshold 1, cooldown 1 s, success threshold 2.
-    let cases: &[(&str, &[ObserveStep])] = &[
-        ("a success keeps it closed", &[(0, true, Closed)]),
-        ("a failure trips it", &[(0, false, Open)]),
-        (
-            "a success inside the cooldown leaves it open",
-            &[(0, false, Open), (999, true, Open)],
-        ),
-        (
-            "after the cooldown successes half-open then close it",
-            &[(0, false, Open), (1000, true, HalfOpen), (0, true, Closed)],
-        ),
-        (
-            "a half-open failure reopens it",
-            &[(0, false, Open), (1000, true, HalfOpen), (0, false, Open)],
-        ),
-        (
-            "a failure after the cooldown reopens it",
-            &[(0, false, Open), (1000, false, Open)],
-        ),
-    ];
-    for (label, steps) in cases {
-        let clock = ManualClock::starting_at(100);
-        let mut circuit = ticketed_circuit(&clock, 2);
-        for (step, &(advance, ok, expected)) in steps.iter().enumerate() {
-            clock.advance(Duration::from_millis(advance));
-            let outcome = if ok { Ok(()) } else { Err("boom") };
-            assert_eq!(
-                circuit.observe(outcome, 0.01),
-                expected,
-                "{label}, step {step}"
-            );
-            assert_eq!(circuit.state(), expected, "{label}, step {step}");
-        }
-    }
-}
-
-#[test]
-fn observe_inside_the_cooldown_still_records_metrics() {
-    let clock = ManualClock::starting_at(100);
-    let mut circuit = ticketed_circuit(&clock, 2);
-    assert_eq!(circuit.observe(Err("boom"), 0.01), CircuitState::Open);
-
-    assert_eq!(
-        circuit.observe(Ok::<(), &str>(()), 0.01),
-        CircuitState::Open
-    );
-    assert_eq!(circuit.observe(Err("boom"), 0.01), CircuitState::Open);
-    assert_eq!(circuit.context.storage.success_count("test", 60.0), 1);
-    assert_eq!(circuit.context.storage.failure_count("test", 60.0), 2);
-}
-
-#[test]
-fn observe_takes_no_probe_slot() {
-    let clock = ManualClock::starting_at(100);
-    let mut circuit = ticketed_circuit(&clock, 2);
-    trip_with_ticket(&mut circuit);
-    clock.advance(Duration::from_secs(1));
-    let probe = circuit.try_acquire().expect("the cooldown has elapsed");
-    let in_flight =
-        |circuit: &CircuitBreaker| circuit.machine.half_open_data().map(|d| d.in_flight);
-
-    assert_eq!(
-        circuit.observe(Ok::<(), &str>(()), 0.01),
-        CircuitState::HalfOpen
-    );
-    assert_eq!(
-        in_flight(&circuit),
-        Some(1),
-        "observe reserved or released a slot"
-    );
-    // The observed success counts toward closing, beside the admitted probe.
-    assert_matches!(circuit.complete(probe, Ok::<_, &str>(())), Ok(()));
-    assert_eq!(circuit.state(), CircuitState::Closed);
-}
-
-#[test]
-fn observe_applies_the_failure_classifier() {
-    let classifier = Arc::new(PredicateClassifier::new(|ctx| ctx.duration > 0.5));
-    let mut circuit = CircuitBreaker::builder("test")
-        .failure_threshold(1)
-        .failure_classifier(classifier)
-        .build();
-
-    assert_eq!(circuit.observe(Err("fast"), 0.1), CircuitState::Closed);
-    assert_eq!(circuit.context.storage.failure_count("test", 60.0), 0);
-    assert_eq!(circuit.observe(Err("slow"), 1.0), CircuitState::Open);
 }

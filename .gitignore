@@ -27,6 +27,4 @@ lib/**/*.bundle
 # Tooling
 /.dictator/
 
-# Cargo locks (library, not application)
-Cargo.lock
 ext/**/Cargo.lock

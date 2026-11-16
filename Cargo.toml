@@ -1,14 +1,27 @@
 [workspace]
 members = ["ext/breaker_machines_native/core", "ext/breaker_machines_native/ffi"]
+default-members = ["ext/breaker_machines_native/core"]
 resolver = "3"
 
 [workspace.package]
 edition = "2024"
 rust-version = "1.99"
+license = "MIT"
+
+[workspace.dependencies]
+breaker-machines = { path = "ext/breaker_machines_native/core" }
+matryona-machines = { version = ">=0.6", default-features = false }
+magnus = { version = "0.9.3", default-features = false }
+# Nothing here calls rb-sys directly: this is the compiled fallback that
+# implements the stable API for a Ruby rb-sys ships no pre-generated bindings
+# for, such as a preview. magnus asks for "stable-api" without it, and its
+# default-features = false drops the default that would have supplied it.
+rb-sys = { version = "0.9.130", default-features = false, features = ["stable-api-compiled-fallback"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
 unused_must_use = "warn"
+missing_docs = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

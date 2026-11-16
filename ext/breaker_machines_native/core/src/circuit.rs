@@ -1,1036 +1,524 @@
-//! Circuit breaker implementation using state machines
-//!
-//! This module provides a complete circuit breaker with state management.
+//! The std runtime: a named circuit that guards closures and reads a clock.
 
+use crate::callbacks::{Callbacks, Transition};
+use crate::clock::{Clock, Draws};
+use crate::lifecycle::{DynamicLifecycle, LifecycleEvent, settled_event, state_of};
 use crate::{
-    StorageBackend, bulkhead::BulkheadSemaphore, callbacks::Callbacks,
-    classifier::FailureClassifier, errors::CircuitError,
+    Abandoned, Admitted, Breaker, CircuitError, Completed, Event, FailureClassifier,
+    FailureContext, FallbackContext, ForceClosed, Observed, Outcome, Policy, Refusal, Settled,
+    State, Ticket,
 };
-use alloc::boxed::Box;
-use alloc::string::String;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::convert::Infallible;
-use state_machines::state_machine;
+use core::time::Duration;
+use std::boxed::Box;
+use std::sync::Arc;
+use std::vec::Vec;
 
-/// Circuit breaker configuration
-#[derive(Debug, Clone, Copy)]
-pub struct Config {
-    /// Number of failures required to open the circuit (absolute count)
-    /// If None, only rate-based threshold is used
-    pub failure_threshold: Option<usize>,
+/// Outcomes a runtime circuit keeps in its window.
+pub const WINDOW: usize = 1000;
 
-    /// Failure rate threshold (0.0-1.0) - percentage of failures to open circuit
-    /// If None, only absolute count threshold is used
-    pub failure_rate_threshold: Option<f64>,
-
-    /// Minimum number of calls before rate-based threshold is evaluated
-    pub minimum_calls: usize,
-
-    /// Time window in seconds for counting failures
-    pub failure_window_secs: f64,
-
-    /// Timeout in seconds before transitioning from Open to `HalfOpen`
-    pub half_open_timeout_secs: f64,
-
-    /// Number of successes required in `HalfOpen` to close the circuit
-    pub success_threshold: usize,
-
-    /// Number of probes admitted at a time while `HalfOpen`
-    pub half_open_calls: usize,
-
-    /// Maximum lifetime of a distributed half-open probe lease. A different
-    /// node may take over after this duration if the elected caller crashes or
-    /// its call future is cancelled.
-    pub probe_timeout_secs: f64,
-
-    /// Jitter factor for `half_open_timeout` (0.0 = no jitter, 1.0 = full jitter)
-    /// Uses chrono-machines formula: timeout * (1 - jitter + rand * jitter)
-    pub jitter_factor: f64,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            failure_threshold: Some(5),
-            failure_rate_threshold: None,
-            minimum_calls: 20,
-            failure_window_secs: 60.0,
-            half_open_timeout_secs: 30.0,
-            success_threshold: 2,
-            half_open_calls: 1,
-            probe_timeout_secs: 30.0,
-            jitter_factor: 0.0,
-        }
-    }
-}
-
-impl Config {
-    pub(crate) fn half_open_delay_secs(&self) -> f64 {
-        if self.jitter_factor > 0.0 {
-            let timeout_ms = secs_to_millis(self.half_open_timeout_secs);
-            let policy = chrono_machines::Policy {
-                max_attempts: 1,
-                base_delay_ms: timeout_ms,
-                multiplier: 1.0,
-                max_delay_ms: timeout_ms,
-            };
-            #[cfg(feature = "std")]
-            let timeout_ms = policy.calculate_delay(1, self.jitter_factor);
-            #[cfg(not(feature = "std"))]
-            let timeout_ms = policy.base_delay_ms;
-            millis_to_secs(timeout_ms)
-        } else {
-            self.half_open_timeout_secs
-        }
-    }
-}
-
-/// Whole milliseconds in `secs`, the unit chrono-machines works in.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "float-to-int `as` saturates: NaN and negative cooldowns clamp to 0, \
-              sub-millisecond precision is dropped on purpose"
-)]
-fn secs_to_millis(secs: f64) -> u64 {
-    (secs * 1000.0) as u64
-}
-
-/// Seconds in `millis`; a cooldown never approaches the 2^53 ms where `f64`
-/// stops being exact.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "exact for every delay below 2^53 ms (~285,000 years)"
-)]
-fn millis_to_secs(millis: u64) -> f64 {
-    millis as f64 / 1000.0
-}
-
-/// Context provided to fallback closures when circuit is open
-#[derive(Debug, Clone)]
-pub struct FallbackContext {
-    /// Circuit name
-    pub circuit_name: Arc<str>,
-    /// Timestamp when circuit opened
-    pub opened_at: f64,
-    /// Current circuit state
-    pub state: &'static str,
-}
-
-impl FallbackContext {
-    /// Convert this context into the rejection error for an open circuit.
-    pub(crate) fn into_open_error<E>(self) -> CircuitError<E> {
-        CircuitError::Open {
-            circuit: self.circuit_name,
-            opened_at: self.opened_at,
-        }
-    }
-}
-
-/// Type alias for fallback function
-pub type FallbackFn<T, E> = Box<dyn FnOnce(&FallbackContext) -> Result<T, E> + Send>;
-
-/// Options for circuit breaker calls
-#[must_use = "call options do nothing unless passed to `CircuitBreaker::call`"]
-pub struct CallOptions<T, E> {
-    /// Optional fallback function called when circuit is open
-    pub fallback: Option<FallbackFn<T, E>>,
-}
-
-impl<T, E> Default for CallOptions<T, E> {
-    fn default() -> Self {
-        Self { fallback: None }
-    }
-}
-
-impl<T, E> CallOptions<T, E> {
-    /// Create new call options with no fallback
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set a fallback function
-    pub fn with_fallback<F>(mut self, f: F) -> Self
-    where
-        F: FnOnce(&FallbackContext) -> Result<T, E> + Send + 'static,
-    {
-        self.fallback = Some(Box::new(f));
-        self
-    }
-
-    /// Resolve an open-circuit gate: run the fallback if present, otherwise
-    /// return the rejection error.
-    pub(crate) fn resolve_open(self, context: FallbackContext) -> Result<T, CircuitError<E>> {
-        match self.fallback {
-            Some(fallback) => fallback(&context).map_err(CircuitError::Execution),
-            None => Err(context.into_open_error()),
-        }
-    }
-}
-
-/// Type alias for callable function
-pub type CallableFn<T, E> = Box<dyn FnOnce() -> Result<T, E>>;
-
-/// Trait for converting into `CallOptions` - allows flexible `call()` API
-pub trait IntoCallOptions<T, E> {
-    /// The protected operation, kept as its concrete type so `call` neither
-    /// boxes it nor requires it to be `'static`.
-    type Operation: FnOnce() -> Result<T, E>;
-
-    /// Split into the protected operation and its call options.
-    fn into_call_options(self) -> (Self::Operation, CallOptions<T, E>);
-}
-
-/// Implement for plain closures (backward compatibility)
-impl<T, E, F> IntoCallOptions<T, E> for F
-where
-    F: FnOnce() -> Result<T, E>,
-{
-    type Operation = F;
-
-    fn into_call_options(self) -> (F, CallOptions<T, E>) {
-        (self, CallOptions::default())
-    }
-}
-
-/// Implement for `(closure, CallOptions)` tuple
-impl<T, E, F> IntoCallOptions<T, E> for (F, CallOptions<T, E>)
-where
-    F: FnOnce() -> Result<T, E>,
-{
-    type Operation = F;
-
-    fn into_call_options(self) -> (F, CallOptions<T, E>) {
-        self
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct CallPermit {
-    _bulkhead: Option<crate::BulkheadGuard>,
-    half_open_probe: bool,
-    state_epoch: u64,
-}
-
-/// Admission for one protected operation, from [`CircuitBreaker::try_acquire`].
-///
-/// The two-phase API lets a caller run the operation without borrowing the
-/// circuit, e.g. across an FFI boundary or user code that may re-enter it.
-///
-/// A ticket must be handed back to [`CircuitBreaker::complete`] (the outcome
-/// counts) or [`CircuitBreaker::abandon`] (it does not). It holds the bulkhead
-/// permit, which dropping releases, but it has no reference back to the
-/// circuit: dropping a half-open probe ticket leaks its probe slot for the
-/// rest of that `HalfOpen` visit. Once every slot has leaked no probe can
-/// run, and only [`CircuitBreaker::reset`] recovers the circuit.
-///
-/// A ticket held across an `.await` is dropped whenever that future is
-/// cancelled, so async callers should take their admission from
-/// `AsyncCircuitBreaker::try_acquire` (feature `async`) instead, whose guard
-/// gives the slot back on drop.
-#[derive(Debug)]
-#[must_use = "pass the ticket to `complete` or `abandon`; dropping it leaks a half-open probe slot"]
-pub struct CallTicket {
-    permit: CallPermit,
-    /// Storage-clock time the operation was admitted, for its duration.
-    start: f64,
-}
-
-impl CallTicket {
-    pub(crate) const fn half_open_probe(&self) -> bool {
-        self.permit.half_open_probe
-    }
-
-    pub(crate) const fn state_epoch(&self) -> u64 {
-        self.permit.state_epoch
-    }
-}
-
-pub(crate) enum CallGate {
-    Execute(CallPermit),
-    Open {
-        _permit: CallPermit,
-        context: FallbackContext,
-    },
-}
-
-/// RAII guard that releases a reserved half-open probe slot if the protected
-/// operation panics. On the normal path `complete_call` performs the release,
-/// so the guard is disarmed before it runs. Without this, a panicking probe
-/// would leak `in_flight` and wedge the circuit in `HalfOpen` forever.
-struct HalfOpenProbeGuard<'a> {
-    circuit: &'a mut CircuitBreaker,
-    armed: bool,
-    state_epoch: u64,
-}
-
-impl HalfOpenProbeGuard<'_> {
-    const fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for HalfOpenProbeGuard<'_> {
-    fn drop(&mut self) {
-        if self.armed {
-            self.circuit.release_half_open_probe(self.state_epoch);
-        }
-    }
-}
-
-/// Circuit breaker context - shared data across all states
+/// What every runtime flavour reads outside its decision state.
 #[derive(Clone)]
-pub struct CircuitContext {
+pub struct Shared {
     pub name: Arc<str>,
-    pub config: Config,
-    pub storage: Arc<dyn StorageBackend>,
-    pub failure_classifier: Option<Arc<dyn FailureClassifier>>,
-    pub bulkhead: Option<Arc<BulkheadSemaphore>>,
-    /// Fired by the state machine's `after` hooks on each transition.
+    pub clock: Arc<dyn Clock>,
+    pub classifier: Option<Arc<dyn FailureClassifier>>,
     pub callbacks: Callbacks,
 }
 
-impl Default for CircuitContext {
-    fn default() -> Self {
-        Self {
-            name: Arc::from(""),
-            config: Config::default(),
-            storage: Arc::new(crate::MemoryStorage::new()),
-            failure_classifier: None,
-            bulkhead: None,
-            callbacks: Callbacks::new(),
+impl Shared {
+    /// The outcome a result counts as, or `None` when the classifier says
+    /// the failure must not count.
+    pub fn classify<T, E: 'static>(
+        &self,
+        result: &Result<T, E>,
+        took: Duration,
+    ) -> Option<Outcome> {
+        match result {
+            Ok(_) => Some(Outcome::Success),
+            Err(error) => self
+                .classifier
+                .as_ref()
+                .is_none_or(|classifier| {
+                    classifier.should_trip(&FailureContext {
+                        circuit_name: &self.name,
+                        error,
+                        took,
+                    })
+                })
+                .then_some(Outcome::Failure),
+        }
+    }
+
+    pub fn notify(&self, transitions: impl IntoIterator<Item = Transition>) {
+        for transition in transitions {
+            self.callbacks.fire(transition, &self.name);
+        }
+    }
+
+    pub fn refused<E>(&self, refusal: Refusal) -> CircuitError<E> {
+        CircuitError::Refused {
+            circuit: Arc::clone(&self.name),
+            refusal,
+        }
+    }
+
+    pub fn fallback_context(
+        &self,
+        refusal: Refusal,
+        retry_after: Option<Duration>,
+    ) -> FallbackContext {
+        FallbackContext {
+            circuit: Arc::clone(&self.name),
+            refusal,
+            retry_after,
         }
     }
 }
 
-impl core::fmt::Debug for CircuitContext {
+impl core::fmt::Debug for Shared {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("CircuitContext")
+        f.debug_struct("Shared")
             .field("name", &self.name)
-            .field("config", &self.config)
-            .field("storage", &"<dyn StorageBackend>")
-            .field(
-                "failure_classifier",
-                &self
-                    .failure_classifier
-                    .as_ref()
-                    .map(|_| "<dyn FailureClassifier>"),
-            )
-            .field("bulkhead", &self.bulkhead)
+            .field("clock", &self.clock)
+            .field("classifier", &self.classifier)
             .field("callbacks", &self.callbacks)
             .finish()
     }
 }
 
-/// Data specific to the Open state
-#[derive(Debug, Clone, Default)]
-pub struct OpenData {
-    /// Storage-clock time at which the circuit opened.
-    pub opened_at: f64,
-    /// Storage-clock time from which a half-open probe may run.
-    pub retry_at: f64,
+/// The decision state: the breaker, the lifecycle machine replaying its
+/// transitions, and the draws that jitter it.
+#[derive(Debug)]
+pub struct Core {
+    pub breaker: Box<Breaker<WINDOW>>,
+    lifecycle: DynamicLifecycle<()>,
+    draws: Draws,
 }
 
-impl OpenData {
-    /// Begin an open cycle now. The (possibly jittered) cooldown is drawn
-    /// once here, so every later check agrees on when to probe.
-    fn starting_now(ctx: &CircuitContext) -> Self {
-        let opened_at = ctx.storage.monotonic_time();
+impl Core {
+    fn new(policy: Policy, scope: u16) -> Self {
         Self {
-            opened_at,
-            retry_at: opened_at + ctx.config.half_open_delay_secs(),
-        }
-    }
-}
-
-/// Data specific to the `HalfOpen` state
-#[derive(Debug, Clone, Default)]
-pub struct HalfOpenData {
-    pub consecutive_successes: usize,
-    pub in_flight: usize,
-}
-
-// Define the circuit breaker state machine with dynamic mode
-state_machine! {
-    name: Circuit,
-    context: CircuitContext,
-    dynamic: true,  // Enable dynamic mode for runtime state transitions
-
-    initial: Closed,
-    states: [
-        Closed,
-        Open(OpenData),
-        HalfOpen(HalfOpenData),
-    ],
-    events {
-        trip {
-            guards: [should_open],
-            after: [notify_open],
-            transition: { from: Closed, to: Open, data: enter_open }
-        }
-        reopen {
-            after: [notify_open],
-            transition: { from: HalfOpen, to: Open, data: enter_open }
-        }
-        attempt_reset {
-            guards: [timeout_elapsed],
-            after: [notify_half_open],
-            transition: { from: Open, to: HalfOpen }
-        }
-        close {
-            guards: [should_close],
-            after: [notify_close],
-            transition: { from: HalfOpen, to: Closed }
-        }
-        reset {
-            transition: { from: [Closed, Open, HalfOpen], to: Closed }
-        }
-        force_open {
-            after: [notify_open],
-            transition: { from: [Closed, Open, HalfOpen], to: Open, data: enter_open }
-        }
-        force_close {
-            after: [notify_close],
-            transition: { from: [Closed, Open, HalfOpen], to: Closed }
-        }
-    }
-}
-
-/// Check thresholds against observed counts (absolute count or rate-based).
-///
-/// The success count is queried lazily because it is only needed when a rate
-/// threshold is configured. Shared by the local circuit guards and the
-/// in-memory distributed store.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "a failure ratio only loses precision past 2^53 calls in one window"
-)]
-pub(crate) fn thresholds_exceeded(
-    failures: usize,
-    successes: impl FnOnce() -> usize,
-    failure_threshold: Option<usize>,
-    failure_rate_threshold: Option<f64>,
-    minimum_calls: usize,
-) -> bool {
-    if let Some(threshold) = failure_threshold
-        && failures >= threshold
-    {
-        return true;
-    }
-
-    if let Some(rate_threshold) = failure_rate_threshold {
-        let total = failures + successes();
-
-        // Only evaluate rate if we have minimum calls
-        if total >= minimum_calls && total > 0 {
-            return failures as f64 / total as f64 >= rate_threshold;
+            breaker: Box::new(Breaker::with_scope(policy, scope)),
+            lifecycle: DynamicLifecycle::new(()),
+            draws: Draws::new(),
         }
     }
 
-    false
-}
-
-// Guards for dynamic mode - implemented on typestate machines
-impl<S> Circuit<S> {
-    /// Check if failure threshold is exceeded (absolute count or rate-based).
-    ///
-    /// Used by the `trip` guard for both the Closed and `HalfOpen` typestates;
-    /// the decision depends only on the context (storage counters + config),
-    /// not on the current state data.
-    #[expect(
-        clippy::unused_self,
-        reason = "state_machine! invokes guards as methods: `self.should_open(&self.ctx)`"
-    )]
-    fn should_open(&self, ctx: &CircuitContext) -> bool {
-        let window = ctx.config.failure_window_secs;
-        thresholds_exceeded(
-            ctx.storage.failure_count(&ctx.name, window),
-            || ctx.storage.success_count(&ctx.name, window),
-            ctx.config.failure_threshold,
-            ctx.config.failure_rate_threshold,
-            ctx.config.minimum_calls,
-        )
+    /// The clock's reading, never behind the latest honoured instant: a
+    /// clock that steps back reads as standing still.
+    pub fn now(&self, clock: &dyn Clock) -> Duration {
+        clock.now().max(self.breaker.latest())
     }
 
-    /// Entry data for every transition into Open.
-    fn enter_open(&self) -> OpenData {
-        OpenData::starting_now(&self.ctx)
+    /// The lifecycle machine's state.
+    pub fn lifecycle(&self) -> State {
+        state_of(self.lifecycle.current_state())
     }
-}
 
-impl Circuit<HalfOpen> {
-    /// Check if enough successes to close circuit
-    fn should_close(&self, ctx: &CircuitContext) -> bool {
-        let Some(data) = self.state_data_half_open() else {
-            unreachable!("HalfOpen typestate always carries HalfOpenData");
+    /// Replay a transition the core answered on the lifecycle machine and
+    /// name the hook it fires. The machine has no guards, so a transition
+    /// the core made is always one it accepts.
+    fn replay(&mut self, event: LifecycleEvent) -> Option<Transition> {
+        let transition = match event {
+            LifecycleEvent::Trip | LifecycleEvent::Reopen | LifecycleEvent::ForceOpen => {
+                Some(Transition::Opened)
+            }
+            LifecycleEvent::Close | LifecycleEvent::ForceClose => Some(Transition::Closed),
+            LifecycleEvent::AttemptRecovery => Some(Transition::HalfOpened),
+            LifecycleEvent::Reset => None,
         };
-        data.consecutive_successes >= ctx.config.success_threshold
+        let replayed = self.lifecycle.handle(event);
+        debug_assert!(
+            replayed.is_ok(),
+            "the machine refused a core transition: {replayed:?}"
+        );
+        transition
     }
 
-    fn notify_half_open(&self) {
-        self.ctx.callbacks.trigger_half_open(&self.ctx.name);
-    }
-}
-
-impl Circuit<Open> {
-    /// Check if the cooldown drawn on entry has elapsed
-    fn timeout_elapsed(&self, ctx: &CircuitContext) -> bool {
-        let Some(data) = self.state_data_open() else {
-            unreachable!("Open typestate always carries OpenData");
-        };
-        ctx.storage.monotonic_time() >= data.retry_at
+    fn replay_settled(&mut self, before: State, settled: Settled) -> Option<Transition> {
+        settled_event(before, settled).and_then(|event| self.replay(event))
     }
 
-    fn notify_open(&self) {
-        self.ctx.callbacks.trigger_open(&self.ctx.name);
-    }
-}
-
-impl Circuit<Closed> {
-    fn notify_close(&self) {
-        self.ctx.callbacks.trigger_close(&self.ctx.name);
-    }
-}
-
-/// Circuit breaker public API
-pub struct CircuitBreaker {
-    machine: DynamicCircuit,
-    context: CircuitContext,
-    /// Epochs consumed by machines discarded after a poisoned dispatch, so the
-    /// state epoch stays monotonic across rebuilds.
-    retired_epochs: u64,
-}
-
-impl CircuitBreaker {
-    /// Create a new circuit breaker (use `builder()` for more options).
-    ///
-    /// `name` accepts `&str`, `String`, or an existing `Arc<str>`; the latter
-    /// is shared without copying the bytes.
-    #[must_use]
-    pub fn new(name: impl Into<Arc<str>>, config: Config) -> Self {
-        // Spelled out rather than `..CircuitContext::default()`, which would
-        // allocate a default `Arc<str>` name only to drop it.
-        Self::from_context(CircuitContext {
-            name: name.into(),
-            config,
-            storage: Arc::new(crate::MemoryStorage::new()),
-            failure_classifier: None,
-            bulkhead: None,
-            callbacks: Callbacks::new(),
+    pub fn admit(&mut self, now: Duration) -> Result<(Ticket, Option<Transition>), Refusal> {
+        Ok(match self.breaker.admit(now)? {
+            Admitted::Call(ticket) | Admitted::Probe(ticket) => (ticket, None),
+            Admitted::HalfOpened(ticket) => (ticket, self.replay(LifecycleEvent::AttemptRecovery)),
         })
     }
 
-    /// Create a circuit breaker from a fully built context (used by builder)
-    pub(crate) fn from_context(context: CircuitContext) -> Self {
-        Self {
-            machine: DynamicCircuit::new(context.clone()),
-            context,
-            retired_epochs: 0,
-        }
-    }
-
-    /// Create a new circuit breaker builder
-    pub fn builder(name: impl Into<String>) -> crate::builder::CircuitBuilder {
-        crate::builder::CircuitBuilder::new(name)
-    }
-
-    /// Execute a fallible operation with circuit breaker protection
-    ///
-    /// Accepts either:
-    /// - A plain closure: `circuit.call(|| api_request())`
-    /// - A closure with options: `circuit.call((|| api_request(), CallOptions::new().with_fallback(...)))`
-    ///
-    /// # Errors
-    ///
-    /// - [`CircuitError::BulkheadFull`] when the concurrency limit is reached.
-    /// - [`CircuitError::HalfOpenLimitReached`] when every half-open probe slot
-    ///   is taken.
-    /// - [`CircuitError::Open`] when the circuit is open and no fallback is set.
-    /// - [`CircuitError::Execution`] wrapping the operation's (or fallback's)
-    ///   own error.
-    pub fn call<I, T, E: 'static>(&mut self, input: I) -> Result<T, CircuitError<E>>
-    where
-        I: IntoCallOptions<T, E>,
-    {
-        let (operation, options) = input.into_call_options();
-
-        match self.prepare_call()? {
-            CallGate::Execute(permit) => self.execute_call(permit, operation),
-            CallGate::Open {
-                _permit: permit,
-                context,
-            } => {
-                // Release the bulkhead permit before the fallback runs so a slow
-                // fallback doesn't occupy a concurrency slot (matches async path).
-                drop(permit);
-                options.resolve_open(context)
-            }
-        }
-    }
-
-    pub(crate) fn prepare_call<E>(&mut self) -> Result<CallGate, CircuitError<E>> {
-        // Try to acquire bulkhead permit if configured
-        let permit = if let Some(bulkhead) = &self.context.bulkhead {
-            match bulkhead.try_acquire() {
-                Some(guard) => Some(guard),
-                None => {
-                    return Err(CircuitError::BulkheadFull {
-                        circuit: self.context.name.clone(),
-                        limit: bulkhead.limit(),
-                    });
-                }
-            }
-        } else {
-            None
-        };
-        self.recover_if_poisoned();
-        self.half_open_if_due();
-
-        let mut permit = CallPermit {
-            _bulkhead: permit,
-            half_open_probe: false,
-            state_epoch: self.state_epoch(),
-        };
-
-        // Handle based on current state
-        match self.machine.current_state() {
-            CircuitState::Open => {
-                let Some(data) = self.machine.open_data() else {
-                    unreachable!("Open state always carries OpenData");
-                };
-                let opened_at = data.opened_at;
-
-                Ok(CallGate::Open {
-                    _permit: permit,
-                    context: FallbackContext {
-                        circuit_name: self.context.name.clone(),
-                        opened_at,
-                        state: "Open",
-                    },
-                })
-            }
-            CircuitState::HalfOpen => {
-                let probe_limit = self.context.config.half_open_calls;
-                let Some(data) = self.machine.half_open_data_mut() else {
-                    unreachable!("HalfOpen state always carries HalfOpenData");
-                };
-                if data.in_flight >= probe_limit {
-                    return Err(CircuitError::HalfOpenLimitReached {
-                        circuit: self.context.name.clone(),
-                    });
-                }
-
-                data.in_flight += 1;
-                permit.half_open_probe = true;
-                Ok(CallGate::Execute(permit))
-            }
-            CircuitState::Closed => Ok(CallGate::Execute(permit)),
-        }
-    }
-
-    fn execute_call<T, E: 'static>(
+    /// Complete `ticket` with `outcome`, or abandon it when `None`.
+    pub fn settle(
         &mut self,
-        permit: CallPermit,
-        f: impl FnOnce() -> Result<T, E>,
-    ) -> Result<T, CircuitError<E>> {
-        let ticket = self.ticket(permit);
-
-        // Guard the reserved probe slot across `f()`: if it panics, the guard's
-        // Drop releases it; on success we disarm and let `complete` release.
-        let result = {
-            let mut probe_guard = HalfOpenProbeGuard {
-                circuit: self,
-                armed: ticket.half_open_probe(),
-                state_epoch: ticket.state_epoch(),
+        ticket: &mut Ticket,
+        outcome: Option<Outcome>,
+        now: Duration,
+    ) -> Result<Option<Transition>, Refusal> {
+        let Some(outcome) = outcome else {
+            return match self.breaker.abandon(ticket)? {
+                Abandoned::Released | Abandoned::Duplicate => Ok(None),
             };
-            let result = f();
-            probe_guard.disarm();
-            result
         };
-
-        self.complete(ticket, result)
+        let draw = self.draws.next();
+        let before = self.breaker.state();
+        Ok(match self.breaker.complete(ticket, outcome, now, draw)? {
+            Completed::Settled(settled) => self.replay_settled(before, settled),
+            Completed::Duplicate(_) => None,
+        })
     }
 
-    /// Stamp an admitted permit with its start time.
-    pub(crate) fn ticket(&self, permit: CallPermit) -> CallTicket {
-        CallTicket {
-            permit,
-            start: self.monotonic_time(),
+    pub fn observe(
+        &mut self,
+        outcome: Option<Outcome>,
+        took: Duration,
+        now: Duration,
+    ) -> [Option<Transition>; 2] {
+        let Some(outcome) = outcome else {
+            return [None, None];
+        };
+        let draw = self.draws.next();
+        let before = self.breaker.state();
+        match self.breaker.observe(outcome, took, now, draw) {
+            Ok(Observed::Settled(settled)) => [self.replay_settled(before, settled), None],
+            Ok(Observed::HalfOpened(settled)) => {
+                // The core already settled; the machine catches up in order.
+                let half_opened = self.replay(LifecycleEvent::AttemptRecovery);
+                [half_opened, self.replay_settled(State::HalfOpen, settled)]
+            }
+            // `now` is clamped to the latest honoured instant, so a regressed
+            // instant is never refused. With no epoch left the outcome is not
+            // recorded and nothing transitions: the circuit's state, which
+            // the caller reads next, is the whole answer.
+            Err(Refusal::TimeRegression | Refusal::Exhausted) => [None, None],
+            Err(
+                Refusal::Open
+                | Refusal::Busy
+                | Refusal::Full
+                | Refusal::Unknown
+                | Refusal::Mismatch,
+            ) => {
+                debug_assert!(
+                    false,
+                    "observe refuses only a regressed instant or no epoch"
+                );
+                [None, None]
+            }
         }
     }
 
-    /// Admit one operation without running it, for callers that cannot keep
-    /// the circuit borrowed while it runs. Like [`call`](Self::call), an Open
-    /// circuit whose cooldown has elapsed moves to `HalfOpen` here, and a
-    /// `HalfOpen` admission reserves one probe slot.
-    ///
-    /// # Errors
-    ///
-    /// The same rejections [`call`](Self::call) returns without a fallback:
-    /// - [`CircuitError::BulkheadFull`] when the concurrency limit is reached.
-    /// - [`CircuitError::Open`] while the cooldown has not elapsed.
-    /// - [`CircuitError::HalfOpenLimitReached`] when every probe slot is taken.
-    ///
-    /// `Infallible` rules out [`CircuitError::Execution`]: nothing has run yet.
-    pub fn try_acquire(&mut self) -> Result<CallTicket, CircuitError<Infallible>> {
-        match self.prepare_call()? {
-            CallGate::Execute(permit) => Ok(self.ticket(permit)),
-            CallGate::Open { context, .. } => Err(context.into_open_error()),
-        }
+    pub fn force_open(&mut self, now: Duration) -> Result<Option<Transition>, Refusal> {
+        let draw = self.draws.next();
+        self.breaker.force_open(now, draw)?;
+        Ok(self.replay(LifecycleEvent::ForceOpen))
     }
 
-    /// Record the outcome of an operation admitted by
-    /// [`try_acquire`](Self::try_acquire), exactly as [`call`](Self::call)
-    /// does: the failure classifier applies, and an outcome admitted before
-    /// the circuit last changed state still counts in the metrics but cannot
-    /// drive a transition.
+    pub fn force_close(&mut self) -> Result<Option<Transition>, Refusal> {
+        Ok(match self.breaker.force_close()? {
+            ForceClosed::Closed => self.replay(LifecycleEvent::ForceClose),
+            ForceClosed::AlreadyClosed => None,
+        })
+    }
+
+    pub fn reset(&mut self) -> Result<(), Refusal> {
+        self.breaker.reset()?;
+        // Reset fires no hook.
+        let hook = self.replay(LifecycleEvent::Reset);
+        debug_assert_eq!(hook, None);
+        Ok(())
+    }
+
+    pub fn events(&self, limit: usize) -> Vec<Event> {
+        let mut out = std::vec![Event::default(); limit.min(WINDOW)];
+        let n = self.breaker.events(&mut out);
+        out.truncate(n);
+        out
+    }
+}
+
+/// Abandons the ticket on drop unless it was settled, so an operation that
+/// panics frees its slots instead of wedging a half-open circuit.
+struct Pending<'a> {
+    core: &'a mut Core,
+    ticket: Ticket,
+}
+
+impl Drop for Pending<'_> {
+    fn drop(&mut self) {
+        if self.ticket.settled().is_none() {
+            // The circuit issued this ticket and it is unsettled, so the
+            // abandon is honoured; nothing is left to report from a drop.
+            let abandoned = self.core.breaker.abandon(&mut self.ticket);
+            debug_assert!(
+                abandoned.is_ok(),
+                "an unsettled ticket abandons: {abandoned:?}"
+            );
+        }
+    }
+}
+
+/// Record `result` against `ticket` and hand it back.
+pub fn finish<T, E: 'static>(
+    shared: &Shared,
+    core: &mut Core,
+    ticket: &mut Ticket,
+    result: Result<T, E>,
+) -> Result<T, CircuitError<E>> {
+    let now = core.now(&*shared.clock);
+    let took = now.saturating_sub(ticket.admitted_at());
+    let outcome = shared.classify(&result, took);
+    let transition = core
+        .settle(ticket, outcome, now)
+        .map_err(|refusal| shared.refused(refusal))?;
+    shared.notify(transition);
+    result.map_err(CircuitError::Execution)
+}
+
+/// A named circuit breaker that guards closures, reading a [`Clock`] and
+/// firing [`Callbacks`] on its transitions.
+#[derive(Debug)]
+pub struct CircuitBreaker {
+    shared: Shared,
+    core: Core,
+}
+
+impl CircuitBreaker {
+    /// A circuit named `name` deciding by `policy`, on the system clock.
+    #[must_use]
+    pub fn new(name: impl Into<Arc<str>>, policy: Policy) -> Self {
+        Self::builder(name, policy).build()
+    }
+
+    /// A builder for a circuit named `name` deciding by `policy`.
+    pub fn builder(name: impl Into<Arc<str>>, policy: Policy) -> CircuitBuilder {
+        CircuitBuilder::new(name, policy)
+    }
+
+    /// The circuit's name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.shared.name
+    }
+
+    /// Run `operation` if the circuit admits it and record its outcome.
     ///
     /// # Errors
     ///
-    /// Returns the operation's own error as [`CircuitError::Execution`].
+    /// [`CircuitError::Refused`] when the circuit refuses the call,
+    /// [`CircuitError::Execution`] with the operation's own error.
+    pub fn call<T, E: 'static>(
+        &mut self,
+        operation: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, CircuitError<E>> {
+        self.call_with_fallback(operation, |context| {
+            Err(CircuitError::Refused {
+                circuit: Arc::clone(&context.circuit),
+                refusal: context.refusal,
+            })
+        })
+    }
+
+    /// Run `operation` if the circuit admits it, `fallback` if it refuses.
+    ///
+    /// # Errors
+    ///
+    /// [`CircuitError::Execution`] with the operation's own error; whatever
+    /// `fallback` answers when the call is refused.
+    pub fn call_with_fallback<T, E: 'static>(
+        &mut self,
+        operation: impl FnOnce() -> Result<T, E>,
+        fallback: impl FnOnce(&FallbackContext) -> Result<T, CircuitError<E>>,
+    ) -> Result<T, CircuitError<E>> {
+        let now = self.core.now(&*self.shared.clock);
+        let (ticket, transition) = match self.core.admit(now) {
+            Ok(admitted) => admitted,
+            Err(refusal) => {
+                let retry_after = self.core.breaker.retry_after(now);
+                return fallback(&self.shared.fallback_context(refusal, retry_after));
+            }
+        };
+        self.shared.notify(transition);
+        let mut pending = Pending {
+            core: &mut self.core,
+            ticket,
+        };
+        let result = operation();
+        finish(&self.shared, pending.core, &mut pending.ticket, result)
+    }
+
+    /// Admit one operation without running it, for a caller that cannot
+    /// keep the circuit borrowed while it runs. Settle the ticket with
+    /// [`complete`](Self::complete) or [`abandon`](Self::abandon).
+    ///
+    /// # Errors
+    ///
+    /// [`CircuitError::Refused`] when the circuit refuses the call.
+    pub fn admit(&mut self) -> Result<Ticket, CircuitError<Infallible>> {
+        let now = self.core.now(&*self.shared.clock);
+        let (ticket, transition) = self
+            .core
+            .admit(now)
+            .map_err(|refusal| self.shared.refused(refusal))?;
+        self.shared.notify(transition);
+        Ok(ticket)
+    }
+
+    /// Record the result of an operation admitted by [`admit`](Self::admit)
+    /// and hand it back. The failure classifier applies.
+    ///
+    /// # Errors
+    ///
+    /// [`CircuitError::Execution`] with the operation's own error;
+    /// [`CircuitError::Refused`] for a ticket this circuit did not issue or
+    /// that was already settled the other way (the result is dropped).
     pub fn complete<T, E: 'static>(
         &mut self,
-        ticket: CallTicket,
+        ticket: &mut Ticket,
         result: Result<T, E>,
     ) -> Result<T, CircuitError<E>> {
-        let output = self.complete_call(
-            ticket.start,
-            result,
-            ticket.half_open_probe(),
-            ticket.state_epoch(),
-        );
-        // The bulkhead permit is held until the outcome is recorded.
-        drop(ticket);
-        output
+        finish(&self.shared, &mut self.core, ticket, result)
     }
 
-    /// Give back an admission without recording an outcome, for operations
-    /// that ended in a way that must not count (cancelled, or unwound by a
-    /// non-error control transfer). Frees its half-open probe slot and
-    /// bulkhead permit.
-    pub fn abandon(&mut self, ticket: CallTicket) {
-        if ticket.half_open_probe() {
-            self.release_half_open_probe(ticket.state_epoch());
-        }
-        // Consumed here so its bulkhead permit is released now.
-        drop(ticket);
-    }
-
-    /// Current reading of this circuit's storage clock, the time base of
-    /// [`CircuitError::Open`]'s and [`FallbackContext`]'s `opened_at`.
-    #[must_use]
-    pub fn monotonic_time(&self) -> f64 {
-        self.context.storage.monotonic_time()
-    }
-
-    pub(crate) fn complete_call<T, E: 'static>(
-        &mut self,
-        start: f64,
-        result: Result<T, E>,
-        half_open_probe: bool,
-        state_epoch: u64,
-    ) -> Result<T, CircuitError<E>> {
-        self.recover_if_poisoned();
-        if half_open_probe {
-            self.release_half_open_probe(state_epoch);
-        }
-
-        // Async calls may finish after the circuit has moved through one or
-        // more states. Their outcomes still belong in the rolling metrics, but
-        // they must not drive transitions for a newer state generation.
-        let may_transition = state_epoch == self.state_epoch();
-        let duration = self.context.storage.monotonic_time() - start;
-        self.settle(result, duration, may_transition)
-    }
-
-    /// Record an outcome that took `duration` seconds and, when
-    /// `may_transition`, drive the transition it warrants.
-    fn settle<T, E: 'static>(
-        &mut self,
-        result: Result<T, E>,
-        duration: f64,
-        may_transition: bool,
-    ) -> Result<T, CircuitError<E>> {
-        match result {
-            Ok(val) => {
-                self.record_success(duration);
-                if may_transition {
-                    self.maybe_close_after_success();
-                }
-                Ok(val)
-            }
-            Err(e) => {
-                // Check if this error should trip the circuit using failure classifier
-                let should_trip = if let Some(classifier) = &self.context.failure_classifier {
-                    let ctx = crate::classifier::FailureContext {
-                        circuit_name: &self.context.name,
-                        error: &e as &dyn core::any::Any,
-                        duration,
-                    };
-                    classifier.should_trip(&ctx)
-                } else {
-                    // No classifier - default behavior is to trip on all errors
-                    true
-                };
-
-                // Only record failure and try to trip if the classifier says we should
-                if should_trip {
-                    self.record_failure(duration);
-                    if may_transition {
-                        self.trip_after_failure();
-                    }
-                }
-
-                Err(CircuitError::Execution(e))
-            }
-        }
-    }
-
-    /// Record an operation that ran outside this circuit's admission, for a
-    /// circuit that watches work instead of gating it, and return the state
-    /// the outcome left it in.
+    /// Give back an admission without recording an outcome.
     ///
-    /// The outcome runs the same machine as [`call`](Self::call): an `Open`
-    /// circuit whose cooldown has elapsed moves to `HalfOpen` first, the
-    /// failure classifier applies, and the outcome drives the transition it
-    /// warrants. Nothing was admitted, so no probe slot or bulkhead permit is
-    /// taken. While the cooldown is still running the outcome is recorded in
-    /// the metrics, where it counts toward the failure window, but drives no
-    /// transition.
-    pub fn observe<E: 'static>(&mut self, outcome: Result<(), E>, duration: f64) -> CircuitState {
-        self.recover_if_poisoned();
-        self.half_open_if_due();
-        // The outcome is the caller's own; only the state it left is news.
-        let _ = self.settle(outcome, duration, true);
+    /// # Errors
+    ///
+    /// [`CircuitError::Refused`] for a ticket this circuit did not issue or
+    /// that was already completed.
+    pub fn abandon(&mut self, ticket: &mut Ticket) -> Result<(), CircuitError<Infallible>> {
+        let now = self.core.now(&*self.shared.clock);
+        self.core
+            .settle(ticket, None, now)
+            .map(drop)
+            .map_err(|refusal| self.shared.refused(refusal))
+    }
+
+    /// Record an operation that ran outside this circuit's admission and
+    /// answer the state it left the circuit in. See [`Breaker::observe`].
+    pub fn observe<E: 'static>(&mut self, outcome: &Result<(), E>, took: Duration) -> State {
+        let outcome = self.shared.classify(outcome, took);
+        let now = self.core.now(&*self.shared.clock);
+        let transitions = self.core.observe(outcome, took, now);
+        self.shared.notify(transitions.into_iter().flatten());
         self.state()
     }
 
-    /// Open -> `HalfOpen` once the cooldown drawn on entry has elapsed; the
-    /// guard rejecting simply keeps the circuit Open.
-    fn half_open_if_due(&mut self) {
-        if self.machine.current_state() == CircuitState::Open {
-            // Guarded by the cooldown; a rejected transition leaves it Open.
-            let _ = self.machine.handle(CircuitEvent::AttemptReset);
-        }
+    /// Open the circuit whatever its threshold says, restarting the
+    /// cooldown.
+    ///
+    /// # Errors
+    ///
+    /// [`CircuitError::Refused`] with [`Refusal::Exhausted`] when no
+    /// transition epoch is left; nothing changed.
+    pub fn force_open(&mut self) -> Result<(), CircuitError<Infallible>> {
+        let now = self.core.now(&*self.shared.clock);
+        let transition = self
+            .core
+            .force_open(now)
+            .map_err(|refusal| self.shared.refused(refusal))?;
+        self.shared.notify(transition);
+        Ok(())
     }
 
-    /// Release a reserved probe slot. Stale epochs are ignored: the slot
-    /// belonged to a `HalfOpen` visit that has already ended. A poisoned
-    /// machine has no data left to release from.
-    pub(crate) fn release_half_open_probe(&mut self, state_epoch: u64) {
-        if state_epoch == self.state_epoch()
-            && let Some(data) = self.machine.half_open_data_mut()
-        {
-            data.in_flight -= 1;
-        }
+    /// Close the circuit whatever its threshold says, keeping its window.
+    ///
+    /// # Errors
+    ///
+    /// [`CircuitError::Refused`] with [`Refusal::Exhausted`] when the
+    /// circuit is not closed and no transition epoch is left; nothing
+    /// changed.
+    pub fn force_close(&mut self) -> Result<(), CircuitError<Infallible>> {
+        let transition = self
+            .core
+            .force_close()
+            .map_err(|refusal| self.shared.refused(refusal))?;
+        self.shared.notify(transition);
+        Ok(())
     }
 
-    /// Record a successful operation and drive `HalfOpen` -> Closed transitions
-    pub fn record_success_and_maybe_close(&mut self, duration: f64) {
-        self.record_success(duration);
-        self.recover_if_poisoned();
-        self.maybe_close_after_success();
+    /// Close the circuit and clear its window; fires no hook.
+    ///
+    /// # Errors
+    ///
+    /// [`CircuitError::Refused`] with [`Refusal::Exhausted`] when no
+    /// transition epoch is left; nothing changed.
+    pub fn reset(&mut self) -> Result<(), CircuitError<Infallible>> {
+        self.core
+            .reset()
+            .map_err(|refusal| self.shared.refused(refusal))
     }
 
-    fn maybe_close_after_success(&mut self) {
-        if self.machine.current_state() == CircuitState::HalfOpen {
-            let Some(data) = self.machine.half_open_data_mut() else {
-                unreachable!("HalfOpen state always carries HalfOpenData");
-            };
-            data.consecutive_successes += 1;
-
-            // Guarded by should_close; on_close fires from the `after` hook.
-            let _ = self.machine.handle(CircuitEvent::Close);
-        }
+    /// The circuit's state, as its lifecycle machine holds it (always the
+    /// core's).
+    #[must_use]
+    pub fn state(&self) -> State {
+        self.core.lifecycle()
     }
 
-    /// Record a failed operation and attempt to trip the circuit
-    pub fn record_failure_and_maybe_trip(&mut self, duration: f64) {
-        self.record_failure(duration);
-        self.recover_if_poisoned();
-        self.trip_after_failure();
-    }
-
-    /// Drive the transition a recorded failure warrants: a failed probe ends
-    /// the `HalfOpen` visit and restarts the cooldown, while a Closed circuit
-    /// opens only once its failure threshold is met.
-    fn trip_after_failure(&mut self) -> bool {
-        let event = if self.machine.current_state() == CircuitState::HalfOpen {
-            CircuitEvent::Reopen
-        } else {
-            CircuitEvent::Trip
-        };
-        self.machine.handle(event).is_ok()
-    }
-
-    /// Record a successful operation (for manual tracking)
-    pub fn record_success(&self, duration: f64) {
-        self.context
-            .storage
-            .record_success(&self.context.name, duration);
-    }
-
-    /// Record a failed operation (for manual tracking)
-    pub fn record_failure(&self, duration: f64) {
-        self.context
-            .storage
-            .record_failure(&self.context.name, duration);
-    }
-
-    /// Check failure threshold and attempt to trip the circuit
-    /// This should be called after `record_failure()` when not using `call()`
-    pub fn check_and_trip(&mut self) -> bool {
-        self.recover_if_poisoned();
-        self.trip_after_failure()
-    }
-
-    /// Check if circuit is open
+    /// Whether the circuit is open.
     #[must_use]
     pub fn is_open(&self) -> bool {
-        self.machine.current_state() == CircuitState::Open
+        self.state() == State::Open
     }
 
-    /// Check if circuit is closed
+    /// Whether the circuit is closed.
     #[must_use]
     pub fn is_closed(&self) -> bool {
-        self.machine.current_state() == CircuitState::Closed
+        self.state() == State::Closed
     }
 
-    /// Get the current state.
+    /// The circuit's clock reading, the time base of every instant it
+    /// reports.
     #[must_use]
-    pub fn state(&self) -> CircuitState {
-        self.machine.current_state()
+    pub fn now(&self) -> Duration {
+        self.core.now(&*self.shared.clock)
     }
 
-    /// Get current state name
+    /// Failures in the window ending now.
     #[must_use]
-    pub fn state_name(&self) -> &'static str {
-        self.state().name()
+    pub fn failures(&self) -> u32 {
+        self.core.breaker.failures(self.now())
     }
 
-    /// Failures recorded in the configured failure window.
+    /// Successes in the window ending now.
     #[must_use]
-    pub fn failure_count(&self) -> usize {
-        self.context
-            .storage
-            .failure_count(&self.context.name, self.context.config.failure_window_secs)
+    pub fn successes(&self) -> u32 {
+        self.core.breaker.successes(self.now())
     }
 
-    /// Successes recorded in the configured failure window.
+    /// The instant the circuit opened, while it is open.
     #[must_use]
-    pub fn success_count(&self) -> usize {
-        self.context
-            .storage
-            .success_count(&self.context.name, self.context.config.failure_window_secs)
+    pub fn opened_at(&self) -> Option<Duration> {
+        self.core.breaker.opened_at()
     }
 
-    /// Storage-clock time this circuit opened, while it is Open.
+    /// How long until a probe may run, while the circuit is open.
     #[must_use]
-    pub fn opened_at(&self) -> Option<f64> {
-        self.machine.open_data().map(|data| data.opened_at)
+    pub fn retry_after(&self) -> Option<Duration> {
+        self.core.breaker.retry_after(self.now())
     }
 
-    /// Seconds until a half-open probe may run, while the circuit is Open.
-    /// Measures the cooldown drawn on entry, jitter included, against the
-    /// storage clock, so it is zero exactly when the next admission would
-    /// move the circuit to `HalfOpen`.
+    /// The newest `limit` outcomes kept, oldest first.
     #[must_use]
-    pub fn retry_after(&self) -> Option<f64> {
-        self.machine
-            .open_data()
-            .map(|data| (data.retry_at - self.monotonic_time()).max(0.0))
+    pub fn events(&self, limit: usize) -> Vec<Event> {
+        self.core.events(limit)
     }
 
-    /// Probe slots taken in the current `HalfOpen` visit: the probes that have
-    /// succeeded plus those still running. Zero in every other state.
+    /// The decision core, for every other query.
     #[must_use]
-    pub fn half_open_attempts(&self) -> usize {
-        self.machine
-            .half_open_data()
-            .map_or(0, |data| data.consecutive_successes + data.in_flight)
+    pub fn breaker(&self) -> &Breaker<WINDOW> {
+        &self.core.breaker
     }
 
-    /// Probes that have succeeded in the current `HalfOpen` visit. Zero in
-    /// every other state.
+    #[cfg(feature = "async")]
     #[must_use]
-    pub fn half_open_successes(&self) -> usize {
-        self.machine
-            .half_open_data()
-            .map_or(0, |data| data.consecutive_successes)
-    }
-
-    /// The last `limit` outcomes recorded for this circuit, oldest first.
-    #[must_use]
-    pub fn event_log(&self, limit: usize) -> Vec<crate::Event> {
-        self.context.storage.event_log(&self.context.name, limit)
-    }
-
-    /// Open the circuit whatever its thresholds say, restarting the cooldown.
-    pub fn force_open(&mut self) {
-        self.recover_if_poisoned();
-        let forced = self.machine.handle(CircuitEvent::ForceOpen);
-        debug_assert!(
-            forced.is_ok(),
-            "force_open is unguarded from every state: {forced:?}"
-        );
-    }
-
-    /// Close the circuit whatever its thresholds say, keeping the events in
-    /// its window. [`reset`](Self::reset) clears them too.
-    pub fn force_close(&mut self) {
-        self.recover_if_poisoned();
-        let forced = self.machine.handle(CircuitEvent::ForceClose);
-        debug_assert!(
-            forced.is_ok(),
-            "force_close is unguarded from every state: {forced:?}"
-        );
-    }
-
-    /// Clear all events and reset circuit to Closed state
-    pub fn reset(&mut self) {
-        self.context.storage.clear(&self.context.name);
-        self.recover_if_poisoned();
-        // A transition rather than a rebuild: the epoch keeps advancing, so
-        // permits issued before the reset stay fenced.
-        let reset = self.machine.handle(CircuitEvent::Reset);
-        debug_assert!(
-            reset.is_ok(),
-            "reset is unguarded from every state: {reset:?}"
-        );
-    }
-
-    /// State generation fencing in-flight permits. Advances on every
-    /// external transition, and across poisoned-machine rebuilds.
-    fn state_epoch(&self) -> u64 {
-        self.retired_epochs
-            .wrapping_add(self.machine.transition_epoch())
-    }
-
-    /// Replace a machine poisoned by a panic during an earlier dispatch (a
-    /// storage backend or unwinding callback). The replacement resumes the
-    /// last committed state with fresh data: Open restarts its cooldown and
-    /// `HalfOpen` forgets probes, whose permits the epoch bump fences off.
-    fn recover_if_poisoned(&mut self) {
-        if !self.machine.is_poisoned() {
-            return;
-        }
-        let state = self.machine.current_state();
-        self.retired_epochs = self.state_epoch().wrapping_add(1);
-        self.machine = DynamicCircuit::new_init_state(self.context.clone(), state);
-        let restored = match state {
-            CircuitState::Closed => Ok(()),
-            CircuitState::Open => self
-                .machine
-                .set_open_data(OpenData::starting_now(&self.context)),
-            CircuitState::HalfOpen => self.machine.set_half_open_data(HalfOpenData::default()),
-        };
-        debug_assert!(
-            restored.is_ok(),
-            "fresh {state:?} machine rejected its data"
-        );
+    pub(crate) fn into_parts(self) -> (Shared, Core) {
+        (self.shared, self.core)
     }
 }
+
+mod builder;
+
+pub use builder::CircuitBuilder;
 
 #[cfg(test)]
 mod tests;

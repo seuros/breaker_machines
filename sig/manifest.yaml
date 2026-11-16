@@ -1,0 +1,6 @@
+# Standard libraries whose signatures sig/breaker_machines.rbs refers to.
+# `rake rbs` loads exactly these; rbs collection reads them for dependents.
+dependencies:
+  - name: logger
+  - name: stringio
+  - name: delegate

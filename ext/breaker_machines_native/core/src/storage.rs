@@ -1,489 +1,327 @@
-//! Storage backends for local metrics and distributed circuit state.
+//! The async storage contract behind [`DistributedCircuitBreaker`], and an
+//! in-memory backend for it.
 //!
-//! This module provides different storage implementations:
-//! - [`StorageBackend`]: the legacy synchronous event store used by
-//!   [`CircuitBreaker`](crate::CircuitBreaker)
-//! - `AsyncStorageBackend`: an asynchronous, state-level contract for
-//!   distributed circuit breakers
-//! - [`MemoryStorage`]: an atomic in-memory implementation of both contracts
-//! - [`NullStorage`]: no-op event storage for testing and benchmarking
+//! [`MemoryStorage`] saturates retry deadlines and half-open probe lease
+//! expiries at `Duration::MAX`. Its generations and probe tokens are fencing
+//! identities and never wrap: once `u64::MAX` is taken, an operation that
+//! needs another answers a [`StorageError`] with nothing changed, and
+//! operations that need none are still honoured.
+//!
+//! [`DistributedCircuitBreaker`]: crate::DistributedCircuitBreaker
 
-use crate::time::Clock;
-#[cfg(feature = "std")]
-use crate::time::SystemClock;
-#[cfg(not(feature = "std"))]
-use crate::time::ZeroClock;
-use crate::{Event, EventKind};
-use alloc::boxed::Box;
-use alloc::collections::VecDeque;
-use alloc::string::String;
-use alloc::vec::Vec;
-use core::fmt;
-#[cfg(feature = "async")]
+use crate::clock::{Clock, SystemClock};
+use crate::{Event, Outcome, State, StorageError, Threshold};
 use core::future::Future;
-#[cfg(feature = "async")]
+use core::num::NonZeroU32;
 use core::pin::Pin;
-use hashbrown::HashMap;
-use spin::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-#[cfg(feature = "std")]
-use std::time::Instant;
+use core::time::Duration;
+use std::boxed::Box;
+use std::collections::{HashMap, VecDeque};
+use std::string::String;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-fn default_clock() -> Box<dyn Clock> {
-    #[cfg(feature = "std")]
-    {
-        Box::new(SystemClock::new())
-    }
-    #[cfg(not(feature = "std"))]
-    {
-        Box::new(ZeroClock)
-    }
+/// Authoritative state a storage backend reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CircuitSnapshot {
+    /// The shared state.
+    pub state: State,
+    /// Fencing generation; it changes on every transition and reset.
+    pub generation: u64,
+    /// Storage-clock instant the current open cycle began.
+    pub opened_at: Option<Duration>,
+    /// Storage-clock instant from which an open circuit may elect a probe.
+    pub retry_at: Option<Duration>,
+    /// Successful probes in the current half-open generation.
+    pub consecutive_successes: u32,
+    /// Expiry of the currently elected probe's lease.
+    pub probe_expires_at: Option<Duration>,
 }
 
-/// State shared by every gateway using a distributed circuit store.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SharedCircuitState {
-    /// Calls are admitted normally.
-    #[default]
-    Closed,
-    /// Calls are rejected until the storage-owned retry timestamp is reached.
-    Open,
-    /// A recovery probe may be elected by the store.
-    HalfOpen,
-}
-
-impl SharedCircuitState {
-    /// Stable state name for diagnostics and fallbacks.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Closed => "Closed",
-            Self::Open => "Open",
-            Self::HalfOpen => "HalfOpen",
+impl Default for CircuitSnapshot {
+    /// Closed, generation zero: what a never-seen key reports.
+    fn default() -> Self {
+        Self {
+            state: State::Closed,
+            generation: 0,
+            opened_at: None,
+            retry_at: None,
+            consecutive_successes: 0,
+            probe_expires_at: None,
         }
     }
 }
 
-/// Authoritative state returned by a distributed storage backend.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct CircuitSnapshot {
-    /// Current shared FSM state.
-    pub state: SharedCircuitState,
-    /// Fencing generation. It changes on every state transition or reset.
-    pub generation: u64,
-    /// Storage-clock timestamp at which the current open cycle began.
-    pub opened_at: Option<f64>,
-    /// Storage-clock timestamp at which an open circuit may elect a probe.
-    pub retry_at: Option<f64>,
-    /// Successful probes accumulated in the current half-open generation.
-    pub consecutive_successes: usize,
-    /// Expiry of the currently elected probe, if one exists.
-    pub probe_expires_at: Option<f64>,
-}
-
-/// Fenced lease granting one node permission to execute a half-open probe.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// A fenced lease granting one node the right to run a half-open probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProbeLease {
-    /// Half-open generation for which this lease is valid.
+    /// The half-open generation the lease is valid for.
     pub generation: u64,
-    /// Store-issued fencing token.
+    /// The store-issued fencing token.
     pub token: u64,
-    /// Storage-clock timestamp after which another node may take the lease.
-    pub expires_at: f64,
+    /// Storage-clock instant after which another node may take the lease.
+    pub expires_at: Duration,
 }
 
-/// Result of the atomic [`AsyncStorageBackend::try_begin_probe`] operation.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// What [`AsyncStorageBackend::try_begin_probe`] decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeDecision {
-    /// The circuit became closed while admission was in progress.
+    /// The circuit closed while admission was in progress.
     Closed(CircuitSnapshot),
-    /// Cooldown has not elapsed yet.
+    /// The cooldown has not elapsed.
     Open(CircuitSnapshot),
-    /// Another node currently owns the half-open probe lease.
+    /// Another node holds the unexpired probe lease.
     Busy(CircuitSnapshot),
-    /// This caller won the probe election.
+    /// This caller won the election.
     Acquired {
-        /// Fenced lease required to complete the probe.
+        /// The lease the probe completes with.
         lease: ProbeLease,
-        /// State after the lease was acquired.
+        /// The state after the lease was taken.
         snapshot: CircuitSnapshot,
-        /// Whether this operation performed the Open -> `HalfOpen` transition.
-        transitioned: bool,
+        /// Whether this election performed the open to half-open transition.
+        transition: Option<StateTransition>,
     },
 }
 
-/// Outcome recorded by a state-level storage operation.
+/// The outcome a storage operation records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoredOutcome {
-    /// The protected operation succeeded.
+    /// The operation succeeded.
     Success,
-    /// The protected operation failed and counts toward opening the circuit.
+    /// The operation failed and counts toward opening.
     Failure,
     /// The failure classifier ignored the operation.
     Ignored,
 }
 
-/// Thresholds required for an atomic event record and possible open transition.
+/// What opening judges: the threshold over the window, and the cooldown to
+/// persist against the store's own clock when it opens.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FailurePolicy {
-    /// Absolute number of failures required to open.
-    pub failure_threshold: Option<usize>,
-    /// Failure ratio required to open.
-    pub failure_rate_threshold: Option<f64>,
-    /// Minimum number of calls before evaluating the failure ratio.
-    pub minimum_calls: usize,
-    /// Width of the rolling outcome window.
-    pub failure_window_secs: f64,
-    /// Delay between opening and probe eligibility. The winning store operation
-    /// persists this duration against its own authoritative clock.
-    pub open_timeout_secs: f64,
+    /// When a closed circuit opens.
+    pub threshold: Threshold,
+    /// The span of the outcome window.
+    pub window: Duration,
+    /// The cooldown (already jittered by the caller) if this opens it.
+    pub cooldown: Duration,
 }
 
-/// Policy applied when a fenced half-open probe completes.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// What completing a probe judges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProbePolicy {
-    /// Successful probes required before closing the circuit.
-    pub success_threshold: usize,
-    /// Delay before another probe after a failed probe reopens the circuit.
-    pub open_timeout_secs: f64,
+    /// Successful probes that close the circuit.
+    pub success_threshold: NonZeroU32,
+    /// The cooldown (already jittered) if a failed probe reopens it.
+    pub cooldown: Duration,
 }
 
-/// Shared transition won by a storage operation.
+/// A shared transition a storage operation performed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateTransition {
-    /// Closed or `HalfOpen` -> Open.
+    /// Closed or half-open to open.
     Opened,
-    /// `HalfOpen` -> Closed.
+    /// Half-open to closed.
     Closed,
+    /// Open to half-open.
+    HalfOpened,
 }
 
-/// Result of atomically recording an outcome or completing a probe.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// What recording an outcome or completing a probe did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StorageUpdate {
-    /// State after the operation.
+    /// The state after the operation.
     pub snapshot: CircuitSnapshot,
-    /// Transition performed by this operation, if any.
+    /// The transition the operation performed, if any.
     pub transition: Option<StateTransition>,
-    /// Whether the supplied generation or probe lease was still current.
-    pub applied: bool,
+    /// Whether the generation or lease supplied was still current.
+    pub applied: Applied,
 }
 
-/// Error returned by a distributed storage backend.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StorageError {
-    message: String,
+/// Whether a fenced storage operation applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Applied {
+    /// The generation or lease was current; the outcome was recorded.
+    Current,
+    /// The generation or lease was stale; nothing changed.
+    Stale,
 }
 
-impl StorageError {
-    /// Create a storage error from a backend-specific message.
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-
-    /// Return the backend-provided message.
-    #[must_use]
-    pub fn message(&self) -> &str {
-        &self.message
-    }
-}
-
-impl fmt::Display for StorageError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl core::error::Error for StorageError {}
-
-/// Object-safe future returned by distributed storage operations.
-#[cfg(feature = "async")]
+/// The future every storage operation returns.
 pub type StorageFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, StorageError>> + Send + 'a>>;
 
-/// Async, state-level storage contract for distributed circuit breakers.
+/// The async, state-level storage contract for distributed circuits.
 ///
-/// Implementations must make each method atomic for a circuit key. In
-/// particular, `record_outcome` must record the event and perform any open
-/// transition in one transaction, while `try_begin_probe` must elect at most
-/// one unexpired probe lease. All timestamps must come from the backend's
-/// authoritative clock; callers never supply `opened_at` or `retry_at`.
-#[cfg(feature = "async")]
-pub trait AsyncStorageBackend: Send + Sync + fmt::Debug {
-    /// Load the authoritative FSM state, returning Closed generation zero for a
-    /// key that has not been seen before.
+/// Each method must be atomic for one circuit key: `record_outcome` records
+/// and opens in one transaction, `try_begin_probe` elects at most one
+/// unexpired lease. Every instant comes from the backend's own clock.
+pub trait AsyncStorageBackend: Send + Sync + core::fmt::Debug {
+    /// The authoritative state; Closed generation zero for an unseen key.
     fn load_state<'a>(&'a self, circuit_name: &'a str) -> StorageFuture<'a, CircuitSnapshot>;
 
-    /// Record a normal-call outcome and atomically open the circuit if the
-    /// supplied generation is current and a threshold is crossed.
+    /// Record a call's outcome and open the circuit if `generation` is
+    /// current and the policy's threshold is crossed.
     fn record_outcome<'a>(
         &'a self,
         circuit_name: &'a str,
         generation: u64,
         outcome: StoredOutcome,
-        duration: f64,
+        took: Duration,
         policy: FailurePolicy,
     ) -> StorageFuture<'a, StorageUpdate>;
 
-    /// Atomically check the storage-owned cooldown and elect one half-open
-    /// probe. Leases must be fenced and expire according to the backend clock.
+    /// Check the stored cooldown and elect one half-open probe, whose lease
+    /// lasts `lease`.
     fn try_begin_probe<'a>(
         &'a self,
         circuit_name: &'a str,
-        lease_ttl_secs: f64,
+        lease: Duration,
     ) -> StorageFuture<'a, ProbeDecision>;
 
-    /// Complete a probe only if its generation and fencing token are current.
-    /// Stale completions must not modify the control-plane rolling window,
-    /// transition the FSM, or release a newer lease. Backends may emit them to
-    /// a separate observability stream.
+    /// Complete a probe only if its generation and token are current; a
+    /// stale completion changes nothing.
     fn complete_probe<'a>(
         &'a self,
         circuit_name: &'a str,
         lease: ProbeLease,
         outcome: StoredOutcome,
-        duration: f64,
+        took: Duration,
         policy: ProbePolicy,
     ) -> StorageFuture<'a, StorageUpdate>;
 
-    /// Reset metrics and shared state while advancing the fencing generation.
+    /// Clear metrics and state, advancing the generation.
     fn reset<'a>(&'a self, circuit_name: &'a str) -> StorageFuture<'a, CircuitSnapshot>;
 }
 
-/// Synchronous event backend for the process-local [`CircuitBreaker`](crate::CircuitBreaker).
-///
-/// This trait is intentionally not a distributed coordination API: it has no
-/// shared FSM or atomic probe election. Use `AsyncStorageBackend` with
-/// `DistributedCircuitBreaker` for that.
-pub trait StorageBackend: Send + Sync + core::fmt::Debug {
-    /// Record a successful operation
-    fn record_success(&self, circuit_name: &str, duration: f64);
-
-    /// Record a failed operation
-    fn record_failure(&self, circuit_name: &str, duration: f64);
-
-    /// Count successful operations within a time window
-    fn success_count(&self, circuit_name: &str, window_seconds: f64) -> usize;
-
-    /// Count failed operations within a time window
-    fn failure_count(&self, circuit_name: &str, window_seconds: f64) -> usize;
-
-    /// Clear all events for a circuit
-    fn clear(&self, circuit_name: &str);
-
-    /// Clear all events for all circuits
-    fn clear_all(&self);
-
-    /// Get event log for a circuit (limited to last N events)
-    fn event_log(&self, circuit_name: &str, limit: usize) -> Vec<Event>;
-
-    /// Get monotonic time in seconds (relative to storage creation)
-    fn monotonic_time(&self) -> f64;
-}
-
-#[derive(Debug)]
-#[cfg_attr(not(feature = "async"), allow(dead_code))]
+#[derive(Debug, Default)]
 struct MemoryCircuit {
-    /// Oldest first; trimmed from the front once over the cap.
     events: VecDeque<Event>,
-    state: SharedCircuitState,
-    generation: u64,
-    opened_at: Option<f64>,
-    retry_at: Option<f64>,
-    consecutive_successes: usize,
+    snapshot: CircuitSnapshot,
     probe: Option<ProbeLease>,
-    next_probe_token: u64,
-}
-
-impl Default for MemoryCircuit {
-    fn default() -> Self {
-        Self {
-            events: VecDeque::new(),
-            state: SharedCircuitState::Closed,
-            generation: 0,
-            opened_at: None,
-            retry_at: None,
-            consecutive_successes: 0,
-            probe: None,
-            next_probe_token: 0,
-        }
-    }
+    next_token: u64,
 }
 
 impl MemoryCircuit {
-    #[cfg(feature = "async")]
-    fn snapshot(&self) -> CircuitSnapshot {
-        CircuitSnapshot {
-            state: self.state,
-            generation: self.generation,
-            opened_at: self.opened_at,
-            retry_at: self.retry_at,
-            consecutive_successes: self.consecutive_successes,
-            probe_expires_at: self.probe.map(|lease| lease.expires_at),
-        }
+    /// `outcome`s among `events` at or after `since`.
+    fn tally<'a>(
+        events: impl Iterator<Item = &'a Event>,
+        outcome: Outcome,
+        since: Duration,
+    ) -> u32 {
+        let count = events
+            .filter(|event| event.outcome == outcome && event.at >= since)
+            .count();
+        u32::try_from(count).unwrap_or(u32::MAX)
     }
 
-    #[cfg(feature = "async")]
-    fn reset(&mut self) {
-        let generation = self.generation.wrapping_add(1);
-        let next_probe_token = self.next_probe_token;
-        *self = Self {
-            generation,
-            next_probe_token,
-            ..Self::default()
+    /// The event `outcome` keeps; an ignored one keeps none.
+    const fn event(outcome: StoredOutcome, at: Duration, took: Duration) -> Option<Event> {
+        let outcome = match outcome {
+            StoredOutcome::Success => Outcome::Success,
+            StoredOutcome::Failure => Outcome::Failure,
+            StoredOutcome::Ignored => return None,
         };
-    }
-}
-
-/// Thread-safe in-memory storage for events and authoritative circuit state.
-#[derive(Debug)]
-pub struct MemoryStorage {
-    /// Metrics and shared state keyed by circuit name. One write lock makes
-    /// event recording, threshold checks, transitions, and probe election
-    /// atomic for the in-memory backend.
-    circuits: RwLock<HashMap<String, MemoryCircuit>>,
-    /// Maximum events to keep per circuit
-    max_events: usize,
-    /// Monotonic time source
-    clock: Box<dyn Clock>,
-}
-
-impl MemoryStorage {
-    /// Create a new storage instance
-    #[must_use]
-    pub fn new() -> Self {
-        Self::with_max_events(1000)
+        Some(Event { at, outcome, took })
     }
 
-    /// Create storage with custom max events per circuit
-    #[must_use]
-    pub fn with_max_events(max_events: usize) -> Self {
-        Self::with_max_events_and_clock(max_events, default_clock())
-    }
-
-    /// Create storage with a custom [`Clock`].
-    #[must_use]
-    pub fn with_clock(clock: Box<dyn Clock>) -> Self {
-        Self::with_max_events_and_clock(1000, clock)
-    }
-
-    /// Create storage with both a custom event cap and time source.
-    #[must_use]
-    pub fn with_max_events_and_clock(max_events: usize, clock: Box<dyn Clock>) -> Self {
-        Self {
-            circuits: RwLock::new(HashMap::new()),
-            max_events,
-            clock,
-        }
-    }
-
-    // Private helper methods
-
-    fn circuits_read(&self) -> RwLockReadGuard<'_, HashMap<String, MemoryCircuit>> {
-        self.circuits.read()
-    }
-
-    fn circuits_write(&self) -> RwLockWriteGuard<'_, HashMap<String, MemoryCircuit>> {
-        self.circuits.write()
-    }
-
-    fn record_event(&self, circuit_name: &str, kind: EventKind, duration: f64) {
-        let now = self.monotonic_time();
-        let mut circuits = self.circuits_write();
-        let circuit = circuits.entry_ref(circuit_name).or_default();
-        Self::push_event(circuit, self.max_events, kind, now, duration);
-    }
-
-    fn count_events(&self, circuit_name: &str, kind: EventKind, window_seconds: f64) -> usize {
-        let circuits = self.circuits_read();
-        let cutoff = self.monotonic_time() - window_seconds;
-
-        circuits
-            .get(circuit_name)
-            .map_or(0, |circuit| Self::count_kind(circuit, kind, cutoff))
-    }
-
-    fn push_event(
-        circuit: &mut MemoryCircuit,
-        max_events: usize,
-        kind: EventKind,
-        timestamp: f64,
-        duration: f64,
-    ) {
-        circuit.events.push_back(Event {
-            kind,
-            timestamp,
-            duration,
-        });
-
-        if circuit.events.len() > max_events {
-            let remove_count = (max_events / 10).max(1);
-            circuit.events.drain(..remove_count);
-        }
-    }
-
-    /// The newest `limit` events, oldest first, copied straight from the
-    /// ring's two halves into an exactly sized `Vec`.
-    fn newest_events(events: &VecDeque<Event>, limit: usize) -> Vec<Event> {
-        let skip = events.len().saturating_sub(limit);
-        let (front, back) = events.as_slices();
-        let mut newest = Vec::with_capacity(events.len() - skip);
-        if let Some(front) = front.get(skip..) {
-            newest.extend_from_slice(front);
-            newest.extend_from_slice(back);
-        } else {
-            newest.extend_from_slice(&back[skip - front.len()..]);
-        }
-        newest
-    }
-
-    fn count_kind(circuit: &MemoryCircuit, kind: EventKind, cutoff: f64) -> usize {
-        circuit
-            .events
-            .iter()
-            .filter(|event| event.kind == kind && event.timestamp >= cutoff)
-            .count()
-    }
-
-    #[cfg(feature = "async")]
-    fn failure_threshold_exceeded(
-        circuit: &MemoryCircuit,
-        now: f64,
-        policy: FailurePolicy,
-    ) -> bool {
-        let cutoff = now - policy.failure_window_secs;
-        crate::circuit::thresholds_exceeded(
-            Self::count_kind(circuit, EventKind::Failure, cutoff),
-            || Self::count_kind(circuit, EventKind::Success, cutoff),
-            policy.failure_threshold,
-            policy.failure_rate_threshold,
-            policy.minimum_calls,
+    /// Whether `threshold` is exceeded since `since` once `event` is kept:
+    /// the oldest outcome goes when `cap` are kept.
+    fn crosses(&self, event: &Event, cap: usize, threshold: Threshold, since: Duration) -> bool {
+        let evicted = usize::from(self.events.len() >= cap);
+        let kept = || {
+            self.events
+                .iter()
+                .skip(evicted)
+                .chain(core::iter::once(event))
+        };
+        threshold.exceeded(
+            Self::tally(kept(), Outcome::Failure, since),
+            Self::tally(kept(), Outcome::Success, since),
         )
     }
 
-    #[cfg(feature = "async")]
-    fn push_outcome_event(
-        &self,
-        circuit: &mut MemoryCircuit,
-        outcome: StoredOutcome,
-        now: f64,
-        duration: f64,
-    ) {
-        let kind = match outcome {
-            StoredOutcome::Success => EventKind::Success,
-            StoredOutcome::Failure => EventKind::Failure,
-            StoredOutcome::Ignored => return,
-        };
-        Self::push_event(circuit, self.max_events, kind, now, duration);
+    fn push(&mut self, event: Option<Event>, cap: usize) {
+        let Some(event) = event else { return };
+        if self.events.len() >= cap {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
     }
 
-    #[cfg(feature = "async")]
-    fn open(circuit: &mut MemoryCircuit, now: f64, timeout_secs: f64) {
-        circuit.state = SharedCircuitState::Open;
-        circuit.generation = circuit.generation.wrapping_add(1);
-        circuit.opened_at = Some(now);
-        circuit.retry_at = Some(now + timeout_secs);
-        circuit.consecutive_successes = 0;
-        circuit.probe = None;
+    /// The generation a transition takes. Generations fence in-flight
+    /// calls and leases, so one is never reused.
+    fn next_generation(&self) -> Result<u64, StorageError> {
+        self.snapshot
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| StorageError::new("every circuit generation has been used"))
+    }
+
+    /// The token the next lease takes; never reused.
+    fn next_token(&self) -> Result<u64, StorageError> {
+        self.next_token
+            .checked_add(1)
+            .ok_or_else(|| StorageError::new("every probe token has been used"))
+    }
+
+    const fn transition(&mut self, state: State, generation: u64) {
+        self.snapshot.state = state;
+        self.snapshot.generation = generation;
+        self.snapshot.consecutive_successes = 0;
+        self.probe = None;
+        self.snapshot.probe_expires_at = None;
+    }
+
+    const fn open(&mut self, now: Duration, cooldown: Duration, generation: u64) {
+        self.transition(State::Open, generation);
+        self.snapshot.opened_at = Some(now);
+        self.snapshot.retry_at = Some(now.saturating_add(cooldown));
+    }
+
+    fn close(&mut self, generation: u64) {
+        self.transition(State::Closed, generation);
+        self.snapshot.opened_at = None;
+        self.snapshot.retry_at = None;
+        self.events.clear();
+    }
+}
+
+/// An in-memory [`AsyncStorageBackend`] for one process, for tests and
+/// single-node deployments. Keeps the newest `cap` outcomes per circuit.
+#[derive(Debug)]
+pub struct MemoryStorage {
+    circuits: Mutex<HashMap<String, MemoryCircuit>>,
+    cap: usize,
+    clock: Arc<dyn Clock>,
+}
+
+impl MemoryStorage {
+    /// A store keeping 1000 outcomes per circuit, on the system clock.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_clock(SystemClock::new())
+    }
+
+    /// A store keeping 1000 outcomes per circuit, on `clock`.
+    #[must_use]
+    pub fn with_clock(clock: impl Clock + 'static) -> Self {
+        Self {
+            circuits: Mutex::new(HashMap::new()),
+            cap: crate::WINDOW,
+            clock: Arc::new(clock),
+        }
+    }
+
+    fn circuits(&self) -> MutexGuard<'_, HashMap<String, MemoryCircuit>> {
+        // Only plain data is mutated under the lock.
+        self.circuits.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn with_circuit<T>(
+        &self,
+        name: &str,
+        act: impl FnOnce(&mut MemoryCircuit, Duration) -> T,
+    ) -> T {
+        let now = self.clock.now();
+        act(self.circuits().entry(String::from(name)).or_default(), now)
     }
 }
 
@@ -493,54 +331,13 @@ impl Default for MemoryStorage {
     }
 }
 
-impl StorageBackend for MemoryStorage {
-    fn record_success(&self, circuit_name: &str, duration: f64) {
-        self.record_event(circuit_name, EventKind::Success, duration);
-    }
-
-    fn record_failure(&self, circuit_name: &str, duration: f64) {
-        self.record_event(circuit_name, EventKind::Failure, duration);
-    }
-
-    fn success_count(&self, circuit_name: &str, window_seconds: f64) -> usize {
-        self.count_events(circuit_name, EventKind::Success, window_seconds)
-    }
-
-    fn failure_count(&self, circuit_name: &str, window_seconds: f64) -> usize {
-        self.count_events(circuit_name, EventKind::Failure, window_seconds)
-    }
-
-    fn clear(&self, circuit_name: &str) {
-        let mut circuits = self.circuits_write();
-        circuits.remove(circuit_name);
-    }
-
-    fn clear_all(&self) {
-        let mut circuits = self.circuits_write();
-        circuits.clear();
-    }
-
-    fn event_log(&self, circuit_name: &str, limit: usize) -> Vec<Event> {
-        let circuits = self.circuits_read();
-        circuits
-            .get(circuit_name)
-            .map(|circuit| Self::newest_events(&circuit.events, limit))
-            .unwrap_or_default()
-    }
-
-    fn monotonic_time(&self) -> f64 {
-        self.clock.now_secs()
-    }
-}
-
-#[cfg(feature = "async")]
 impl AsyncStorageBackend for MemoryStorage {
     fn load_state<'a>(&'a self, circuit_name: &'a str) -> StorageFuture<'a, CircuitSnapshot> {
         Box::pin(async move {
-            let circuits = self.circuits_read();
-            Ok(circuits
+            Ok(self
+                .circuits()
                 .get(circuit_name)
-                .map(MemoryCircuit::snapshot)
+                .map(|circuit| circuit.snapshot)
                 .unwrap_or_default())
         })
     }
@@ -550,31 +347,35 @@ impl AsyncStorageBackend for MemoryStorage {
         circuit_name: &'a str,
         generation: u64,
         outcome: StoredOutcome,
-        duration: f64,
+        took: Duration,
         policy: FailurePolicy,
     ) -> StorageFuture<'a, StorageUpdate> {
         Box::pin(async move {
-            let now = self.monotonic_time();
-            let mut circuits = self.circuits_write();
-            let circuit = circuits.entry_ref(circuit_name).or_default();
-            let applied = circuit.generation == generation;
-
-            if applied {
-                self.push_outcome_event(circuit, outcome, now, duration);
-            }
-
-            let opened = applied
-                && circuit.state == SharedCircuitState::Closed
-                && outcome == StoredOutcome::Failure
-                && Self::failure_threshold_exceeded(circuit, now, policy);
-            if opened {
-                Self::open(circuit, now, policy.open_timeout_secs);
-            }
-
-            Ok(StorageUpdate {
-                snapshot: circuit.snapshot(),
-                transition: opened.then_some(StateTransition::Opened),
-                applied,
+            self.with_circuit(circuit_name, |circuit, now| {
+                if circuit.snapshot.generation != generation {
+                    return Ok(StorageUpdate {
+                        snapshot: circuit.snapshot,
+                        transition: None,
+                        applied: Applied::Stale,
+                    });
+                }
+                let event = MemoryCircuit::event(outcome, now, took);
+                let since = now.saturating_sub(policy.window);
+                let opens = circuit.snapshot.state == State::Closed
+                    && outcome == StoredOutcome::Failure
+                    && event.is_some_and(|event| {
+                        circuit.crosses(&event, self.cap, policy.threshold, since)
+                    });
+                let opening = opens.then(|| circuit.next_generation()).transpose()?;
+                circuit.push(event, self.cap);
+                if let Some(generation) = opening {
+                    circuit.open(now, policy.cooldown, generation);
+                }
+                Ok(StorageUpdate {
+                    snapshot: circuit.snapshot,
+                    transition: opens.then_some(StateTransition::Opened),
+                    applied: Applied::Current,
+                })
             })
         })
     }
@@ -582,49 +383,39 @@ impl AsyncStorageBackend for MemoryStorage {
     fn try_begin_probe<'a>(
         &'a self,
         circuit_name: &'a str,
-        lease_ttl_secs: f64,
+        lease: Duration,
     ) -> StorageFuture<'a, ProbeDecision> {
         Box::pin(async move {
-            let now = self.monotonic_time();
-            let mut circuits = self.circuits_write();
-            let circuit = circuits.entry_ref(circuit_name).or_default();
-            let mut transitioned = false;
-
-            match circuit.state {
-                SharedCircuitState::Closed => {
-                    return Ok(ProbeDecision::Closed(circuit.snapshot()));
-                }
-                SharedCircuitState::Open => {
-                    if circuit.retry_at.is_some_and(|retry_at| now < retry_at) {
-                        return Ok(ProbeDecision::Open(circuit.snapshot()));
+            self.with_circuit(circuit_name, |circuit, now| {
+                let half_opening = match circuit.snapshot.state {
+                    State::Closed => return Ok(ProbeDecision::Closed(circuit.snapshot)),
+                    State::Open if circuit.snapshot.retry_at.is_some_and(|at| now < at) => {
+                        return Ok(ProbeDecision::Open(circuit.snapshot));
                     }
-
-                    circuit.state = SharedCircuitState::HalfOpen;
-                    circuit.generation = circuit.generation.wrapping_add(1);
-                    circuit.retry_at = None;
-                    circuit.consecutive_successes = 0;
-                    circuit.probe = None;
-                    transitioned = true;
+                    State::Open => Some(circuit.next_generation()?),
+                    State::HalfOpen if circuit.probe.is_some_and(|held| held.expires_at > now) => {
+                        return Ok(ProbeDecision::Busy(circuit.snapshot));
+                    }
+                    State::HalfOpen => None,
+                };
+                let token = circuit.next_token()?;
+                if let Some(generation) = half_opening {
+                    circuit.transition(State::HalfOpen, generation);
+                    circuit.snapshot.retry_at = None;
                 }
-                SharedCircuitState::HalfOpen => {}
-            }
-
-            if circuit.probe.is_some_and(|lease| lease.expires_at > now) {
-                return Ok(ProbeDecision::Busy(circuit.snapshot()));
-            }
-
-            circuit.next_probe_token = circuit.next_probe_token.wrapping_add(1);
-            let lease = ProbeLease {
-                generation: circuit.generation,
-                token: circuit.next_probe_token,
-                expires_at: now + lease_ttl_secs,
-            };
-            circuit.probe = Some(lease);
-
-            Ok(ProbeDecision::Acquired {
-                lease,
-                snapshot: circuit.snapshot(),
-                transitioned,
+                circuit.next_token = token;
+                let granted = ProbeLease {
+                    generation: circuit.snapshot.generation,
+                    token,
+                    expires_at: now.saturating_add(lease),
+                };
+                circuit.probe = Some(granted);
+                circuit.snapshot.probe_expires_at = Some(granted.expires_at);
+                Ok(ProbeDecision::Acquired {
+                    lease: granted,
+                    snapshot: circuit.snapshot,
+                    transition: half_opening.map(|_| StateTransition::HalfOpened),
+                })
             })
         })
     }
@@ -634,151 +425,64 @@ impl AsyncStorageBackend for MemoryStorage {
         circuit_name: &'a str,
         lease: ProbeLease,
         outcome: StoredOutcome,
-        duration: f64,
+        took: Duration,
         policy: ProbePolicy,
     ) -> StorageFuture<'a, StorageUpdate> {
         Box::pin(async move {
-            let now = self.monotonic_time();
-            let mut circuits = self.circuits_write();
-            let circuit = circuits.entry_ref(circuit_name).or_default();
-
-            let applied = circuit.state == SharedCircuitState::HalfOpen
-                && circuit.generation == lease.generation
-                && circuit.probe.is_some_and(|current| {
-                    current.token == lease.token && current.expires_at > now
-                });
-            let mut transition = None;
-
-            if applied {
-                self.push_outcome_event(circuit, outcome, now, duration);
-
-                circuit.probe = None;
-                match outcome {
-                    StoredOutcome::Success => {
-                        circuit.consecutive_successes += 1;
-                        if circuit.consecutive_successes >= policy.success_threshold {
-                            circuit.state = SharedCircuitState::Closed;
-                            circuit.generation = circuit.generation.wrapping_add(1);
-                            circuit.opened_at = None;
-                            circuit.retry_at = None;
-                            circuit.consecutive_successes = 0;
-                            circuit.events.clear();
-                            transition = Some(StateTransition::Closed);
-                        }
-                    }
-                    StoredOutcome::Failure => {
-                        Self::open(circuit, now, policy.open_timeout_secs);
-                        transition = Some(StateTransition::Opened);
-                    }
-                    StoredOutcome::Ignored => {}
+            self.with_circuit(circuit_name, |circuit, now| {
+                let current = circuit.snapshot.state == State::HalfOpen
+                    && circuit.snapshot.generation == lease.generation
+                    && circuit
+                        .probe
+                        .is_some_and(|held| held.token == lease.token && held.expires_at > now);
+                if !current {
+                    return Ok(StorageUpdate {
+                        snapshot: circuit.snapshot,
+                        transition: None,
+                        applied: Applied::Stale,
+                    });
                 }
-            }
-
-            Ok(StorageUpdate {
-                snapshot: circuit.snapshot(),
-                transition,
-                applied,
+                let successes = circuit.snapshot.consecutive_successes.saturating_add(1);
+                let transition = match outcome {
+                    StoredOutcome::Success if successes >= policy.success_threshold.get() => {
+                        Some(StateTransition::Closed)
+                    }
+                    StoredOutcome::Failure => Some(StateTransition::Opened),
+                    StoredOutcome::Success | StoredOutcome::Ignored => None,
+                };
+                let generation = transition.map(|_| circuit.next_generation()).transpose()?;
+                circuit.push(MemoryCircuit::event(outcome, now, took), self.cap);
+                circuit.probe = None;
+                circuit.snapshot.probe_expires_at = None;
+                match (outcome, generation) {
+                    (StoredOutcome::Success, Some(generation)) => circuit.close(generation),
+                    (StoredOutcome::Success, None) => {
+                        circuit.snapshot.consecutive_successes = successes;
+                    }
+                    (StoredOutcome::Failure, Some(generation)) => {
+                        circuit.open(now, policy.cooldown, generation);
+                    }
+                    (StoredOutcome::Failure, None) => {
+                        debug_assert!(false, "a failed probe always takes a generation");
+                    }
+                    (StoredOutcome::Ignored, _) => {}
+                }
+                Ok(StorageUpdate {
+                    snapshot: circuit.snapshot,
+                    transition,
+                    applied: Applied::Current,
+                })
             })
         })
     }
 
     fn reset<'a>(&'a self, circuit_name: &'a str) -> StorageFuture<'a, CircuitSnapshot> {
         Box::pin(async move {
-            let mut circuits = self.circuits_write();
-            let circuit = circuits.entry_ref(circuit_name).or_default();
-            circuit.reset();
-            Ok(circuit.snapshot())
+            self.with_circuit(circuit_name, |circuit, _| {
+                circuit.close(circuit.next_generation()?);
+                Ok(circuit.snapshot)
+            })
         })
-    }
-}
-
-/// No-op storage backend for testing and benchmarking
-///
-/// This storage implementation discards all events and always returns zero counts.
-/// Useful for:
-/// - Testing circuit breaker logic without storage overhead
-/// - Benchmarking pure state machine performance
-/// - Scenarios where external systems track metrics
-///
-/// # Example
-///
-/// ```rust
-/// use breaker_machines::{CircuitBreaker, NullStorage};
-/// use std::sync::Arc;
-///
-/// let storage = Arc::new(NullStorage::new());
-/// let mut circuit = CircuitBreaker::builder("test")
-///     .storage(storage)
-///     .build();
-/// ```
-#[derive(Debug, Clone, Copy)]
-pub struct NullStorage {
-    #[cfg(feature = "std")]
-    start_time: Instant,
-}
-
-impl NullStorage {
-    /// Create a new null storage instance
-    #[must_use]
-    #[cfg_attr(
-        not(feature = "std"),
-        expect(
-            clippy::missing_const_for_fn,
-            reason = "`Instant::now()` makes this non-const whenever `std` is on"
-        )
-    )]
-    pub fn new() -> Self {
-        Self {
-            #[cfg(feature = "std")]
-            start_time: Instant::now(),
-        }
-    }
-}
-
-impl Default for NullStorage {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl StorageBackend for NullStorage {
-    fn record_success(&self, _circuit_name: &str, _duration: f64) {
-        // No-op
-    }
-
-    fn record_failure(&self, _circuit_name: &str, _duration: f64) {
-        // No-op
-    }
-
-    fn success_count(&self, _circuit_name: &str, _window_seconds: f64) -> usize {
-        0
-    }
-
-    fn failure_count(&self, _circuit_name: &str, _window_seconds: f64) -> usize {
-        0
-    }
-
-    fn clear(&self, _circuit_name: &str) {
-        // No-op
-    }
-
-    fn clear_all(&self) {
-        // No-op
-    }
-
-    fn event_log(&self, _circuit_name: &str, _limit: usize) -> Vec<Event> {
-        Vec::new()
-    }
-
-    fn monotonic_time(&self) -> f64 {
-        #[cfg(feature = "std")]
-        {
-            self.start_time.elapsed().as_secs_f64()
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            0.0
-        }
     }
 }
 

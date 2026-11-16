@@ -1,53 +1,62 @@
 use super::*;
-use crate::test_support::{ManualClock, poll_once};
-use crate::{MemoryStorage, StorageBackend};
+use crate::test_support::{ManualClock, policy, poll_once};
+use crate::{CircuitBreaker, MemoryStorage};
 use core::assert_matches;
 use core::future::pending;
-use core::time::Duration;
+use core::task::Poll;
+use std::boxed::Box;
 
-fn test_breaker(store: Arc<MemoryStorage>, name: &str) -> DistributedCircuitBreaker {
-    crate::CircuitBreaker::builder(name)
-        .failure_threshold(1)
-        .half_open_timeout_secs(10.0)
-        .probe_timeout_secs(2.0)
-        .success_threshold(1)
-        .build_distributed(store)
-}
-
-fn acquired(decision: ProbeDecision) -> ProbeLease {
-    match decision {
-        ProbeDecision::Acquired { lease, .. } => lease,
-        decision => panic!("expected an acquired probe, got {decision:?}"),
-    }
+fn gateway(store: &Arc<MemoryStorage>, limit: Option<u32>) -> DistributedCircuitBreaker {
+    CircuitBreaker::builder("payments", policy(1, 1, 1, limit)).build_distributed(
+        Arc::clone(store) as Arc<dyn AsyncStorageBackend>,
+        Duration::from_secs(2),
+    )
 }
 
 #[test]
-fn gateways_share_state_and_opened_at() {
+fn gateways_share_one_state_machine() {
     pollster::block_on(async {
-        let store = ManualClock::starting_at(100).storage();
-        let gateway_a = test_breaker(store.clone(), "payments");
-        let gateway_b = test_breaker(store, "payments");
-
-        let result = gateway_a
-            .call(|| async { Err::<(), _>("service unavailable") })
-            .await;
-        assert_matches!(result, Err(CircuitError::Execution("service unavailable")));
-
+        let clock = ManualClock::default();
+        let store = Arc::new(MemoryStorage::with_clock(clock.clone()));
+        let a = gateway(&store, None);
+        let b = gateway(&store, None);
         assert_matches!(
-            gateway_b.state().await,
-            Ok(CircuitSnapshot {
-                state: SharedCircuitState::Open,
-                opened_at: Some(100.0),
-                retry_at: Some(110.0),
+            a.call(|| async { Err::<(), _>("down") }).await,
+            Err(CircuitError::Execution("down"))
+        );
+        assert_eq!(b.state().await, Ok(State::Open));
+        assert_matches!(
+            b.call(|| async { Ok::<_, &str>(()) }).await,
+            Err(CircuitError::Refused {
+                refusal: Refusal::Open,
                 ..
             })
         );
+        clock.advance(Duration::from_secs(30));
+        assert_matches!(b.call(|| async { Ok::<_, &str>(()) }).await, Ok(()));
+        assert_eq!(a.state().await, Ok(State::Closed));
+        assert_eq!(a.snapshot().await.map(|s| s.generation), Ok(3));
+        let reset = a.reset().await.expect("reset");
+        assert_eq!(reset.generation, 4);
+        assert_eq!(a.name(), "payments");
+    });
+}
 
-        let rejected = gateway_b.call(|| async { Ok::<_, &str>(()) }).await;
+#[test]
+fn another_node_holding_the_lease_is_busy() {
+    pollster::block_on(async {
+        let clock = ManualClock::default();
+        let store = Arc::new(MemoryStorage::with_clock(clock.clone()));
+        let a = gateway(&store, None);
+        let b = gateway(&store, None);
+        assert!(a.call(|| async { Err::<(), _>("down") }).await.is_err());
+        clock.advance(Duration::from_secs(30));
+        let mut parked = Box::pin(a.call(pending::<Result<(), &str>>));
+        assert_matches!(poll_once(parked.as_mut()), Poll::Pending);
         assert_matches!(
-            rejected,
-            Err(CircuitError::Open {
-                opened_at: 100.0,
+            b.call(|| async { Ok::<_, &str>(()) }).await,
+            Err(CircuitError::Refused {
+                refusal: Refusal::Busy,
                 ..
             })
         );
@@ -55,167 +64,48 @@ fn gateways_share_state_and_opened_at() {
 }
 
 #[test]
-fn gateways_share_the_failure_rate_window() {
+fn the_node_concurrency_limit_is_full() {
     pollster::block_on(async {
         let store = Arc::new(MemoryStorage::new());
-        let gateway = |store| {
-            crate::CircuitBreaker::builder("search")
-                .disable_failure_threshold()
-                .failure_rate(0.5)
-                .minimum_calls(4)
-                .build_distributed(store)
-        };
-        let gateway_a = gateway(store.clone());
-        let gateway_b = gateway(store);
+        let a = gateway(&store, Some(1));
+        let mut parked = Box::pin(a.call(pending::<Result<(), &str>>));
+        assert_matches!(poll_once(parked.as_mut()), Poll::Pending);
+        assert_matches!(
+            a.call(|| async { Ok::<_, &str>(()) }).await,
+            Err(CircuitError::Refused {
+                refusal: Refusal::Full,
+                ..
+            })
+        );
+        drop(parked);
+        assert_matches!(a.call(|| async { Ok::<_, &str>(()) }).await, Ok(()));
+    });
+}
 
-        for _ in 0..2 {
-            assert_matches!(gateway_a.call(|| async { Ok::<_, &str>(()) }).await, Ok(()));
-            let _ = gateway_b.call(|| async { Err::<(), _>("failure") }).await;
+#[test]
+fn a_full_node_never_admits_even_at_the_counter_limit() {
+    // At `u32::MAX` in flight, incrementing first would wrap the counter to
+    // zero for an instant, and a racing call would be admitted past the
+    // limit. Admission checks and increments in one step instead.
+    let store = Arc::new(MemoryStorage::new());
+    let node = gateway(&store, Some(u32::MAX));
+    node.in_flight.store(u32::MAX, Ordering::SeqCst);
+    let admitted = core::sync::atomic::AtomicU32::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                for _ in 0..200_000 {
+                    if node.take_slot().is_ok() {
+                        admitted.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            });
         }
-
-        assert_matches!(
-            gateway_a.state().await,
-            Ok(CircuitSnapshot {
-                state: SharedCircuitState::Open,
-                generation: 1,
-                ..
-            })
-        );
     });
-}
-
-#[test]
-fn only_one_gateway_owns_probe_and_expired_lease_recovers() {
-    pollster::block_on(async {
-        let clock = ManualClock::starting_at(100);
-        let store = clock.storage();
-        let gateway_a = test_breaker(store.clone(), "payments");
-        let gateway_b = test_breaker(store, "payments");
-
-        let _ = gateway_a
-            .call(|| async { Err::<(), _>("service unavailable") })
-            .await;
-        clock.advance(Duration::from_secs(10));
-
-        let mut first_probe = Box::pin(gateway_a.call(pending::<Result<(), &str>>));
-        assert!(poll_once(first_probe.as_mut()).is_pending());
-
-        let competing = gateway_b.call(|| async { Ok::<_, &str>(()) }).await;
-        assert_matches!(competing, Err(CircuitError::HalfOpenLimitReached { .. }));
-
-        // The elected gateway goes away; its lease expires after probe_timeout.
-        drop(first_probe);
-        clock.advance(Duration::from_secs(2));
-
-        assert_matches!(gateway_b.call(|| async { Ok::<_, &str>(()) }).await, Ok(()));
-        assert_matches!(gateway_a.is_closed().await, Ok(true));
-    });
-}
-
-#[test]
-fn stale_probe_token_cannot_transition_new_generation() {
-    pollster::block_on(async {
-        let clock = ManualClock::starting_at(10);
-        let store = clock.storage();
-        let failure_policy = FailurePolicy {
-            failure_threshold: Some(1),
-            failure_rate_threshold: None,
-            minimum_calls: 1,
-            failure_window_secs: 60.0,
-            open_timeout_secs: 1.0,
-        };
-        let probe_policy = ProbePolicy {
-            success_threshold: 1,
-            open_timeout_secs: 1.0,
-        };
-
-        store
-            .record_outcome("api", 0, StoredOutcome::Failure, 0.1, failure_policy)
-            .await
-            .unwrap();
-        clock.advance(Duration::from_secs(1));
-
-        let first = acquired(store.try_begin_probe("api", 1.0).await.unwrap());
-        clock.advance(Duration::from_secs(1));
-        let second = acquired(store.try_begin_probe("api", 1.0).await.unwrap());
-
-        let stale = store
-            .complete_probe("api", first, StoredOutcome::Failure, 0.1, probe_policy)
-            .await;
-        assert_matches!(
-            stale,
-            Ok(StorageUpdate {
-                applied: false,
-                transition: None,
-                snapshot: CircuitSnapshot {
-                    state: SharedCircuitState::HalfOpen,
-                    ..
-                },
-            })
-        );
-        assert_eq!(store.event_log("api", 10).len(), 1);
-
-        let current = store
-            .complete_probe("api", second, StoredOutcome::Success, 0.1, probe_policy)
-            .await;
-        assert_matches!(
-            current,
-            Ok(StorageUpdate {
-                applied: true,
-                transition: Some(StateTransition::Closed),
-                snapshot: CircuitSnapshot {
-                    state: SharedCircuitState::Closed,
-                    ..
-                },
-            })
-        );
-    });
-}
-
-#[test]
-fn reset_fences_normal_calls_from_the_previous_generation() {
-    pollster::block_on(async {
-        let store = MemoryStorage::new();
-        let admitted = store.load_state("api").await.unwrap();
-        let reset = AsyncStorageBackend::reset(&store, "api").await.unwrap();
-
-        assert_eq!(reset.generation, admitted.generation + 1);
-
-        let stale = store
-            .record_outcome(
-                "api",
-                admitted.generation,
-                StoredOutcome::Failure,
-                0.1,
-                FailurePolicy {
-                    failure_threshold: Some(1),
-                    failure_rate_threshold: None,
-                    minimum_calls: 1,
-                    failure_window_secs: 60.0,
-                    open_timeout_secs: 10.0,
-                },
-            )
-            .await;
-
-        assert_matches!(
-            stale,
-            Ok(StorageUpdate {
-                applied: false,
-                snapshot: CircuitSnapshot {
-                    state: SharedCircuitState::Closed,
-                    ..
-                },
-                ..
-            })
-        );
-        assert!(store.event_log("api", 10).is_empty());
-    });
-}
-
-#[test]
-fn distributed_call_future_is_send_when_operation_is_send() {
-    fn assert_send<T: Send>(_: T) {}
-
-    let gateway = test_breaker(Arc::new(MemoryStorage::new()), "payments");
-    assert_send(gateway.call(|| async { Ok::<_, String>(()) }));
+    assert_eq!(
+        admitted.load(Ordering::SeqCst),
+        0,
+        "admitted past the limit"
+    );
+    assert_eq!(node.in_flight.load(Ordering::SeqCst), u32::MAX);
 }

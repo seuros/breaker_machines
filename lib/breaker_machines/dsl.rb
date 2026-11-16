@@ -1,283 +1,174 @@
 # frozen_string_literal: true
 
+require 'weakref'
+
 module BreakerMachines
-  # DSL module for adding circuit breakers to classes
+  # Circuit definitions on a class, built per instance.
   #
-  # This module uses WeakRef to track instances that include the DSL.
-  # Why? In long-running applications (web servers, background workers),
-  # objects that include this DSL may be created and destroyed frequently.
-  # Without WeakRef, the registry would hold strong references to these
-  # objects, preventing garbage collection and causing memory leaks.
+  #   class WeatherService
+  #     include BreakerMachines::DSL
   #
-  # Example scenario: A Rails controller that includes BreakerMachines::DSL
-  # is instantiated for each request. Without WeakRef, every controller
-  # instance would be kept in memory forever.
+  #     circuit :api do
+  #       policy WEATHER_POLICY
+  #       handle Net::ReadTimeout
+  #       fallback { |error| cached_forecast }
+  #     end
+  #
+  #     def forecast = circuit(:api).call { fetch }
+  #   end
+  #
+  # A definition needs a Policy; the rest are the circuit's runtime keywords.
+  # Hooks and fallbacks run `instance_exec`'d on the instance. Definitions
+  # and templates are inherited and may be overridden.
   module DSL
-    extend ActiveSupport::Concern
-
-    # Track instances for each class that includes DSL
-    # Using WeakRef to allow garbage collection
-    @instance_registries = Concurrent::Map.new
-
-    class_methods do
-      # Get or create instance registry for this class
-      def instance_registry
-        # Access the module-level registry
-        registry = BreakerMachines::DSL.instance_variable_get(:@instance_registries)
-        registry.compute_if_absent(self) { Concurrent::Array.new }
+    # Collects one definition: a Policy, the circuit class and its runtime
+    # keywords.
+    class CircuitBuilder
+      def initialize(base = {})
+        @config = base.dup
       end
 
-      # Clean up dead references in the registry
-      def cleanup_instance_registry
-        registry = instance_registry
-        # Concurrent::Array supports delete_if
-        registry.delete_if do |weak_ref|
-          weak_ref.__getobj__
-          false
-        rescue WeakRef::RefError
-          true
-        end
+      # The definition: `{ policy:, circuit_class:, **runtime }`.
+      # ArgumentError without a policy.
+      def config
+        raise ArgumentError, 'a circuit definition needs a policy' unless @config.key?(:policy)
+
+        @config.dup.freeze
       end
 
-      def circuit(name, &)
-        @circuits ||= {}
+      def policy(policy) = @config[:policy] = policy
 
-        if block_given?
-          builder = DSL::CircuitBuilder.new
-          builder.instance_eval(&)
-          @circuits[name] = builder.config
-        end
+      # The errors that count as failures.
+      def handle(*exceptions) = @config[:exceptions] = exceptions
 
-        @circuits[name]
+      # Add a fallback; several are tried in the order added.
+      def fallback(value = nil, &block)
+        raise ArgumentError, 'fallback needs a value or a block' if value.nil? && block.nil?
+
+        @config[:fallback] = [*@config[:fallback], block || value]
       end
 
-      # Define a cascading circuit breaker that can trip dependent circuits
-      def cascade_circuit(name, &)
-        @circuits ||= {}
+      # Race these fallbacks; the first that returns wins.
+      def parallel_fallback(fallbacks) = @config[:fallback] = ParallelFallback.new(fallbacks)
 
-        if block_given?
-          builder = DSL::CascadingCircuitBuilder.new
-          builder.instance_eval(&)
-          @circuits[name] = builder.config.merge(circuit_type: :cascading)
-        end
+      def on_open(&block) = @config[:on_open] = block
+      def on_close(&block) = @config[:on_close] = block
+      def on_half_open(&block) = @config[:on_half_open] = block
+      def on_reject(&block) = @config[:on_reject] = block
 
-        @circuits[name]
+      def storage(backend) = @config[:storage] = backend
+
+      # Integer nanoseconds a call may take.
+      def timeout(nanoseconds) = @config[:timeout] = nanoseconds
+
+      def fiber_safe(enabled = true) = @config[:fiber_safe] = enabled
+
+      # Send the call again after each `delay` (Integer ns), up to
+      # `max_requests` in flight; first success wins.
+      def hedged(delay: 0, max_requests: 2) = @config[:hedged] = { delay:, max_requests: }
+
+      # Callables tried as hedges (with `hedged`) or in turn.
+      def backends(*callables) = @config[:backends] = callables.flatten
+
+      # Refuse calls while any of these circuits is open (a CoordinatedCircuit).
+      def depends_on(*circuits)
+        @config[:circuit_class] ||= CoordinatedCircuit
+        @config[:depends_on] = circuits.flatten
       end
 
-      def circuits
-        # Start with parent circuits if available
-        base_circuits = if superclass.respond_to?(:circuits)
-                          superclass.circuits.deep_dup
-                        else
-                          {}
-                        end
-
-        # Merge with our own circuits
-        if @circuits
-          base_circuits.merge(@circuits)
-        else
-          base_circuits
-        end
+      # Force these circuits open whenever this one opens (a CascadingCircuit).
+      def cascades_to(*circuits)
+        @config[:circuit_class] = CascadingCircuit
+        @config[:cascades_to] = circuits.flatten
       end
 
-      # Define reusable circuit templates
-      def circuit_template(name, &)
-        @circuit_templates ||= {}
+      def emergency_protocol(name) = @config[:emergency_protocol] = name
 
-        if block_given?
-          builder = DSL::CircuitBuilder.new
-          builder.instance_eval(&)
-          @circuit_templates[name] = builder.config
-        end
-
-        @circuit_templates[name]
-      end
-
-      # Get all circuit templates
-      def circuit_templates
-        # Start with parent templates if available
-        base_templates = if superclass.respond_to?(:circuit_templates)
-                           superclass.circuit_templates.deep_dup
-                         else
-                           {}
-                         end
-
-        # Merge with our own templates
-        if @circuit_templates
-          base_templates.merge(@circuit_templates)
-        else
-          base_templates
-        end
-      end
-
-      # Get circuit definitions without sensitive data
-      def circuit_definitions
-        circuits.transform_values { |config| config.except(:owner, :storage, :metrics) }
-      end
-
-      # Reset all circuits for all instances of this class
-      def reset_all_circuits
-        cleanup_instance_registry # Clean up dead refs first
-
-        instance_registry.each do |weak_ref|
-          instance = weak_ref.__getobj__
-          circuit_instances = instance.instance_variable_get(:@circuit_instances)
-          circuit_instances&.each_value(&:hard_reset!)
-        rescue WeakRef::RefError
-          # Instance was garbage collected, skip it
-        end
-      end
-
-      # Get aggregated stats for all circuits of this class
-      def circuit_stats
-        stats = Hash.new { |h, k| h[k] = { total: 0, by_state: {} } }
-        cleanup_instance_registry # Clean up dead refs first
-
-        instance_registry.each do |weak_ref|
-          instance = weak_ref.__getobj__
-          circuit_instances = instance.instance_variable_get(:@circuit_instances)
-          next unless circuit_instances
-
-          circuit_instances.each do |name, circuit|
-            stats[name][:total] += 1
-            state = circuit.status_name
-            stats[name][:by_state][state] ||= 0
-            stats[name][:by_state][state] += 1
-          end
-        rescue WeakRef::RefError
-          # Instance was garbage collected, skip it
-        end
-
-        stats
-      end
+      def on_cascade(&block) = @config[:on_cascade] = block
     end
 
-    # Use included callback to add instance tracking
     def self.included(base)
       super
-
-      # Hook into new to register instances
-      base.singleton_class.prepend(Module.new do
-        def new(...)
-          instance = super
-          instance_registry << WeakRef.new(instance)
-          instance
-        end
-      end)
+      base.extend(ClassMethods)
     end
 
+    # Class-level definitions.
+    module ClassMethods
+      # Define (with a block) or read the definition `name`.
+      def circuit(name, &)
+        own_circuits[name] = build(&) if block_given?
+        circuits[name]
+      end
+
+      # Define a CascadingCircuit; `cascades_to` inside the block names its
+      # dependents.
+      def cascade_circuit(name, &)
+        own_circuits[name] = build({ circuit_class: CascadingCircuit }, &)
+        circuits[name]
+      end
+
+      # Every definition, inherited ones included.
+      def circuits
+        inherited = superclass.respond_to?(:circuits) ? superclass.circuits : {}
+        inherited.merge(own_circuits)
+      end
+
+      # Define (with a block) or read the template `name`.
+      def circuit_template(name, &)
+        own_templates[name] = build(&) if block_given?
+        circuit_templates[name]
+      end
+
+      # Every template, inherited ones included.
+      def circuit_templates
+        inherited = superclass.respond_to?(:circuit_templates) ? superclass.circuit_templates : {}
+        inherited.merge(own_templates)
+      end
+
+      private
+
+      def own_circuits = (@own_circuits ||= {})
+      def own_templates = (@own_templates ||= {})
+      def build(base = {}, &) = CircuitBuilder.new(base).tap { |builder| builder.instance_eval(&) }.config
+    end
+
+    # This instance's circuit for the definition `name`. KeyError for an
+    # unknown name.
     def circuit(name)
-      self.class.circuits[name] ||= {}
-      @circuit_instances ||= {}
-
-      config = self.class.circuits[name].merge(owner: self)
-      circuit_type = config.delete(:circuit_type)
-
-      @circuit_instances[name] ||= case circuit_type
-                                   when :cascading
-                                     CascadingCircuit.new(name, config)
-                                   else
-                                     Circuit.new(name, config)
-                                   end
+      circuit_instances[name] ||= build_circuit(name, self.class.circuits.fetch(name))
     end
 
-    # Create a dynamic circuit breaker with inline configuration
-    # Options:
-    #   global: true - Store circuit globally, preventing memory leaks in long-lived objects
-    #   global: false - Store circuit locally in this instance (default, backward compatible)
-    def dynamic_circuit(name, template: nil, global: false, &config_block)
-      # Start with template config if provided
-      base_config = if template && self.class.circuit_templates[template]
-                      self.class.circuit_templates[template].deep_dup
-                    else
-                      default_circuit_config
-                    end
-
-      # Apply additional configuration if block provided
-      if config_block
-        builder = DSL::CircuitBuilder.new
-        builder.instance_variable_set(:@config, base_config.deep_dup)
-        builder.instance_eval(&config_block)
-        base_config = builder.config
-      end
-
+    # A circuit defined inline, from `template` and the block. With
+    # `global: true` it is the registry's shared circuit of that name.
+    def dynamic_circuit(name, template: nil, global: false, &block)
+      base = template ? self.class.circuit_templates.fetch(template) : {}
+      definition = block ? CircuitBuilder.new(base).tap { |b| b.instance_eval(&block) }.config : base
       if global
-        # Use global registry to prevent memory leaks
-        BreakerMachines.registry.get_or_create_dynamic_circuit(name, self, base_config)
+        policy, circuit_class, runtime = split(definition)
+        BreakerMachines.registry.get_or_create_dynamic_circuit(name, self, policy, circuit_class:, **runtime)
       else
-        # Local storage (backward compatible)
-        @circuit_instances ||= {}
-        @circuit_instances[name] ||= Circuit.new(name, base_config.merge(owner: self))
+        circuit_instances[name] ||= build_circuit(name, definition)
       end
     end
 
-    # Apply a template to an existing or new circuit
-    def apply_template(circuit_name, template_name)
-      template_config = self.class.circuit_templates[template_name]
-      raise ArgumentError, "Template '#{template_name}' not found" unless template_config
+    def circuit_instances = (@circuit_instances ||= {})
 
-      @circuit_instances ||= {}
-      @circuit_instances[circuit_name] = Circuit.new(circuit_name, template_config.merge(owner: self))
-    end
+    def reset_all_circuits = circuit_instances.each_value(&:reset)
+
+    # Each circuit's one-line summary.
+    def circuits_summary = circuit_instances.transform_values(&:summary)
 
     private
 
-    def default_circuit_config
-      {
-        failure_threshold: 5,
-        failure_window: 60,
-        success_threshold: 1,
-        timeout: nil,
-        reset_timeout: 60,
-        half_open_calls: 1,
-        exceptions: [StandardError],
-        storage: nil,
-        metrics: nil,
-        fallback: nil,
-        on_open: nil,
-        on_close: nil,
-        on_half_open: nil,
-        on_reject: nil,
-        notifications: [],
-        fiber_safe: BreakerMachines.config.fiber_safe
-      }
+    def build_circuit(name, definition)
+      policy, circuit_class, runtime = split(definition)
+      circuit_class.new(name, policy, **runtime, owner: self)
     end
 
-    public
-
-    # Get all circuit instances for this object
-    def circuit_instances
-      @circuit_instances || {}
-    end
-
-    # Get summary of all circuits for this instance
-    def circuits_summary
-      circuit_instances.transform_values(&:summary)
-    end
-
-    # Get detailed information for all circuits
-    def circuits_report
-      circuit_instances.transform_values(&:to_h)
-    end
-
-    # Reset all circuits for this instance
-    def reset_all_circuits
-      circuit_instances.each_value(&:hard_reset!)
-    end
-
-    # Remove a global dynamic circuit by name
-    def remove_dynamic_circuit(name)
-      BreakerMachines.registry.remove_dynamic_circuit(name)
-    end
-
-    # Get all dynamic circuit names from global registry
-    def dynamic_circuit_names
-      BreakerMachines.registry.dynamic_circuit_names
-    end
-
-    # Cleanup stale dynamic circuits (global)
-    def cleanup_stale_dynamic_circuits(max_age_seconds = 3600)
-      BreakerMachines.registry.cleanup_stale_dynamic_circuits(max_age_seconds)
+    def split(definition)
+      definition = definition.dup
+      policy = definition.delete(:policy) { raise ArgumentError, 'a circuit definition needs a policy' }
+      [policy, definition.delete(:circuit_class) || Circuit, definition]
     end
   end
 end

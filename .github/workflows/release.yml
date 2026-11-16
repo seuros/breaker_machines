@@ -1,0 +1,222 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild and attach gems for (skips release-please)
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  packages: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ inputs.tag && 'true' || steps.release.outputs.releases_created }}
+      tag_name: ${{ inputs.tag || steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        if: ${{ !inputs.tag }}
+
+  build-ruby-gem:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.sha }}
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
+          bundler-cache: true
+
+      - name: Build Ruby gem
+        run: bundle exec rake build
+
+      - name: Upload ruby gem artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ruby-gem
+          path: pkg/*.gem
+          if-no-files-found: error
+
+  detect-extension:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    outputs:
+      native: ${{ steps.probe.outputs.native }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.sha }}
+      - id: probe
+        run: |
+          if grep -q 'spec.extensions' ./*.gemspec; then
+            echo 'native=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'native=false' >> "$GITHUB_OUTPUT"
+          fi
+
+  build-native-gems:
+    needs:
+      - release-please
+      - detect-extension
+    if: ${{ needs.detect-extension.outputs.native == 'true' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - arm64-darwin
+          - x86_64-darwin
+          - x86_64-linux
+          - x86_64-linux-musl
+          - aarch64-linux
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.sha }}
+
+      - name: Configure gem installation directory
+        run: |
+          GEM_HOME="$HOME/.gem"
+          mkdir -p "$GEM_HOME/bin"
+          echo "GEM_HOME=$GEM_HOME" >> "$GITHUB_ENV"
+          echo "GEM_PATH=$GEM_HOME" >> "$GITHUB_ENV"
+          echo "$GEM_HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Cross-compile native gem
+        id: cross
+        uses: oxidize-rb/actions/cross-gem@v1
+        with:
+          platform: ${{ matrix.platform }}
+          ruby-versions: '4.0'
+          # The rb-sys-dock image's rustc is older than the 1.99 in mise.toml.
+          pre-script: rustup toolchain install 1.99 --profile minimal --target "$RUST_TARGET" && rustup default 1.99
+          cache-version: ${{ matrix.platform }}-v0
+
+      - name: Upload platform gem artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-gem-${{ matrix.platform }}
+          path: ${{ steps.cross.outputs.gem-path }}
+          if-no-files-found: error
+
+  publish-release-assets:
+    needs:
+      - release-please
+      - build-ruby-gem
+      - build-native-gems
+    if: ${{ always() && needs.build-ruby-gem.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: List collected artifacts
+        run: ls -R artifacts
+
+      # Upload only. softprops/action-gh-release PATCHes an existing release
+      # first, which GitHub rejects (403) for GITHUB_TOKEN when the run's ref
+      # has different workflow files than the tag.
+      - name: Attach gems and checksums to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          mkdir combined existing
+          # A release without assets yet makes a pattern download exit non-zero.
+          gh release download "$TAG" --dir existing --pattern '*.gem' --pattern SHA256SUMS || true
+          if [ -f existing/SHA256SUMS ]; then
+            (cd existing && sha256sum --check SHA256SUMS)
+          fi
+          # download-artifact flattens a lone artifact and nests several, so
+          # the depth is not fixed.
+          find artifacts -name '*.gem' -exec cp {} combined/ \;
+          find existing -name '*.gem' -exec cp -n {} combined/ \;
+          (cd combined && sha256sum -- *.gem > SHA256SUMS)
+          gh release upload "$TAG" combined/*.gem combined/SHA256SUMS --clobber
+
+  publish-to-github-packages:
+    needs:
+      - release-please
+      - build-ruby-gem
+      - build-native-gems
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
+
+      - name: Download all gem artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: List all artifacts
+        run: |
+          echo "=== All artifacts ==="
+          find artifacts -name "*.gem" -type f
+          echo ""
+          echo "=== Gem details ==="
+          find artifacts -name "*.gem" -type f -exec ls -lh {} \;
+
+      - name: Setup gem credentials
+        run: |
+          mkdir -p ~/.gem
+          cat << EOF > ~/.gem/credentials
+          ---
+          :github: Bearer ${{ secrets.GITHUB_TOKEN }}
+          EOF
+          chmod 0600 ~/.gem/credentials
+
+      - name: Publish gems to GitHub Packages
+        run: |
+          OWNER="${{ github.repository_owner }}"
+          HOST="https://rubygems.pkg.github.com/${OWNER}"
+
+          echo "Publishing to: ${HOST}"
+
+          for gem in artifacts/**/*.gem; do
+            echo ""
+            echo "Processing: $gem"
+            echo "Publishing: $gem"
+
+            # PIPESTATUS gives gem push's own status; pipefail would make
+            # bash -e end the step before the already-pushed case is read.
+            gem push --key github --host "${HOST}" "$gem" 2>&1 | tee /tmp/push.log
+            EXIT_CODE=${PIPESTATUS[0]}
+
+            if [ $EXIT_CODE -eq 0 ]; then
+              echo "✓ Successfully pushed $gem"
+            elif grep -q "already been pushed" /tmp/push.log; then
+              echo "⊘ Skipping $gem (already published)"
+            else
+              echo "✗ Failed to push $gem"
+              cat /tmp/push.log
+              exit 1
+            fi
+          done
+
+      - name: Cleanup credentials
+        if: always()
+        run: rm -f ~/.gem/credentials

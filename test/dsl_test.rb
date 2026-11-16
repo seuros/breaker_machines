@@ -1,194 +1,118 @@
 # frozen_string_literal: true
 
-require 'test_helper'
+require_relative 'test_helper'
 
-class DSLTest < ActiveSupport::TestCase
-  class SpaceStation
+class DslTest < Minitest::Test
+  include BreakerHelpers
+
+  POLICY = B::Policy.new(B::Threshold.new(1, nil, 0), 60 * SECOND, B::Recovery.new(30 * SECOND, 0.0, 1, 1), nil)
+
+  class Service
     include BreakerMachines::DSL
 
-    circuit :life_support do
-      threshold failures: 2, within: 30
-      reset_after 15
+    attr_reader :log
 
-      fallback { 'Emergency oxygen activated' }
+    def initialize = @log = []
 
-      on_open do
-        @alerts ||= []
-        @alerts << 'Life support offline!'
-      end
+    circuit_template :strict do
+      policy POLICY
+      handle IOError
     end
 
-    circuit :shields do
-      threshold failures: 1
-      timeout 5.seconds
-
-      handle StandardError, SystemCallError
+    circuit :api do
+      policy POLICY
+      handle IOError
+      fallback { |error| "cached after #{error.class}" }
+      on_open { log << :open }
     end
 
-    def activate_life_support
-      circuit(:life_support).wrap do
-        'Life support online'
-      end
-    end
+    def fetch = circuit(:api).call { raise IOError }
+  end
 
-    def raise_shields
-      circuit(:shields).wrap do
-        'Shields at 100%'
-      end
-    end
-
-    def alerts
-      @alerts ||= []
+  class Child < Service
+    circuit :db do
+      policy POLICY
     end
   end
 
-  def setup
-    BreakerMachines.reset!
-    @station = SpaceStation.new
+  def teardown = B.registry.clear
+
+  def test_definitions_build_one_circuit_per_instance_running_on_it
+    service = Service.new
+    assert_equal 'cached after IOError', service.fetch
+    assert_equal [:open], service.log
+    assert_same service.circuit(:api), service.circuit(:api)
+    refute_same service.circuit(:api), Service.new.circuit(:api)
+    assert_raises(KeyError) { service.circuit(:missing) }
+    service.reset_all_circuits
+    assert_predicate service.circuit(:api), :closed?
   end
 
-  def test_dsl_creates_circuit_configuration
-    assert SpaceStation.circuits.key?(:life_support)
-    assert SpaceStation.circuits.key?(:shields)
-
-    life_support_config = SpaceStation.circuits[:life_support]
-
-    assert_equal 2, life_support_config[:failure_threshold]
-    assert_equal 30, life_support_config[:failure_window]
-    assert_equal 15, life_support_config[:reset_timeout]
-    assert life_support_config[:fallback]
-    assert life_support_config[:on_open]
+  def test_definitions_and_templates_are_inherited
+    assert_equal %i[api db], Child.circuits.keys
+    assert_equal [:api], Service.circuits.keys
+    assert_equal [:strict], Child.circuit_templates.keys
+    assert_equal POLICY, Child.circuit(:db)[:policy]
   end
 
-  def test_circuit_instances_are_cached
-    circuit1 = @station.circuit(:life_support)
-    circuit2 = @station.circuit(:life_support)
-
-    assert_same circuit1, circuit2
+  def test_dynamic_circuits_from_templates_locally_or_globally
+    service = Service.new
+    local = service.dynamic_circuit(:inline, template: :strict) { fallback :spare }
+    assert_equal :spare, local.call { raise IOError }
+    assert_same local, service.circuit_instances[:inline]
+    shared = service.dynamic_circuit(:shared, template: :strict, global: true)
+    assert_same shared, Service.new.dynamic_circuit(:shared, template: :strict, global: true)
   end
 
-  def test_successful_operation
-    result = @station.activate_life_support
-
-    assert_equal 'Life support online', result
-
-    result = @station.raise_shields
-
-    assert_equal 'Shields at 100%', result
+  def test_a_definition_needs_a_policy
+    assert_raises(ArgumentError) { Class.new { include BreakerMachines::DSL }.circuit(:x) { handle IOError } }
+    assert_raises(ArgumentError) { B::DSL::CircuitBuilder.new.fallback }
   end
+end
 
-  def test_fallback_execution
-    # Force circuit to fail 2 times to trip it
-    life_support = @station.circuit(:life_support)
-    2.times do
-      life_support.wrap { raise 'Life support malfunction' }
-    rescue StandardError
-      nil
-    end
+class DslFeaturesTest < Minitest::Test
+  include BreakerHelpers
 
-    # Circuit should be open now and use fallback
-    result = @station.activate_life_support
+  POLICY = DslTest::POLICY
 
-    assert_equal 'Emergency oxygen activated', result
-  end
-
-  def test_callbacks_via_dsl
-    # Trigger failures
-    life_support = @station.circuit(:life_support)
-
-    2.times do
-      life_support.wrap { raise 'Life support malfunction' }
-    rescue StandardError
-      nil
-    end
-
-    assert_includes @station.alerts, 'Life support offline!'
-  end
-
-  def test_timeout_configuration_with_activesupport_duration
-    shields_config = SpaceStation.circuits[:shields]
-
-    assert_equal 5, shields_config[:timeout]
-  end
-
-  class MultiSystemShip
+  class Ship
     include BreakerMachines::DSL
 
-    circuit :hyperdrive do
-      threshold failures: 3
+    attr_reader :alerts
+
+    def initialize = @alerts = []
+
+    circuit(:shields) { policy POLICY }
+
+    cascade_circuit :reactor do
+      policy POLICY
+      cascades_to :shields
+      emergency_protocol :red_alert
     end
 
-    circuit :teleporter do
-      threshold failures: 5
+    circuit :helm do
+      policy POLICY
+      depends_on :reactor
+      storage BreakerMachines::Storage::Memory.new
+      backends -> { raise IOError }, -> { :manual }
+      timeout 1_000_000_000
     end
 
-    circuit :cloaking_device do
-      threshold failures: 1
-      reset_after 60
-    end
+    def red_alert(tripped) = alerts << tripped
   end
 
-  def test_multiple_circuits_per_class
-    assert_equal 3, MultiSystemShip.circuits.count
-    assert MultiSystemShip.circuits.key?(:hyperdrive)
-    assert MultiSystemShip.circuits.key?(:teleporter)
-    assert MultiSystemShip.circuits.key?(:cloaking_device)
-  end
+  def teardown = B.registry.clear
 
-  class RedundantSystem
-    include BreakerMachines::DSL
-
-    circuit :main_computer do
-      fallback { 'Backup computer' }
-      fallback { 'Manual override' }
-    end
-
-    def compute
-      circuit(:main_computer).wrap { 'Main computer online' }
-    end
-  end
-
-  def test_chained_fallbacks
-    config = RedundantSystem.circuits[:main_computer]
-
-    # Verify fallbacks are stored as array
-    assert_kind_of Array, config[:fallback]
-    assert_equal 2, config[:fallback].length
-  end
-
-  def test_exception_handling_configuration
-    shields_config = SpaceStation.circuits[:shields]
-
-    assert_includes shields_config[:exceptions], StandardError
-    assert_includes shields_config[:exceptions], SystemCallError
-  end
-
-  class ParallelSystem
-    include BreakerMachines::DSL
-
-    circuit :parallel_processing do
-      parallel_fallback [
-        -> { raise 'Fallback 1 failed' },
-        -> { raise 'Fallback 2 failed' },
-        -> { raise 'Fallback 3 failed' }
-      ]
-    end
-
-    def process
-      circuit(:parallel_processing).wrap { raise 'Processing failed' }
-    end
-  end
-
-  def test_parallel_fallbacks_all_fail
-    system = ParallelSystem.new
-    error = assert_raises BreakerMachines::ParallelFallbackError do
-      system.process
-    end
-
-    assert_equal 'All parallel fallbacks failed', error.message
-    assert_equal 3, error.errors.size
-    assert_equal 'Fallback 1 failed', error.errors[0].message
-    assert_equal 'Fallback 2 failed', error.errors[1].message
-    assert_equal 'Fallback 3 failed', error.errors[2].message
+  def test_definitions_build_coordinated_cascading_and_hedged_circuits
+    ship = Ship.new
+    ship.circuit(:shields)
+    assert_instance_of B::CascadingCircuit, ship.circuit(:reactor)
+    assert_instance_of B::CoordinatedCircuit, ship.circuit(:helm)
+    assert_equal :manual, ship.circuit(:helm).call
+    ship.circuit(:reactor).force_open
+    assert_predicate ship.circuit(:shields), :open?
+    assert_equal [[:shields]], ship.alerts
+    assert_raises(B::CircuitDependencyError) { ship.circuit(:helm).call }
+    assert_match(/Circuit 'helm'/, ship.circuits_summary[:helm])
   end
 end

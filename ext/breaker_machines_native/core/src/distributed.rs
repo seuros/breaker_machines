@@ -1,317 +1,278 @@
-//! Async circuit breaker backed by an authoritative distributed state store.
+//! A circuit whose state lives in a shared store.
 //!
-//! Unlike [`AsyncCircuitBreaker`](crate::AsyncCircuitBreaker), this type keeps
-//! no local FSM. Every gateway observes the same state generation, open
-//! timestamp, cooldown, and fenced half-open probe lease.
+//! Unlike [`AsyncCircuitBreaker`](crate::AsyncCircuitBreaker), this circuit
+//! keeps no local state machine: every gateway reads the same generation,
+//! open instant, cooldown and fenced half-open probe lease from the store.
 
+use crate::callbacks::Transition;
+use crate::circuit::Shared;
+use crate::clock::Draws;
 use crate::{
-    AsyncCallOptions, AsyncStorageBackend, BulkheadGuard, BulkheadSemaphore, CircuitError,
-    CircuitSnapshot, Config, FailureClassifier, FailureContext, FailurePolicy, FallbackContext,
-    ProbeDecision, ProbeLease, ProbePolicy, SharedCircuitState, StateTransition, StorageError,
-    StorageUpdate, StoredOutcome, callbacks::Callbacks,
+    AsyncStorageBackend, CircuitError, CircuitSnapshot, FailurePolicy, FallbackContext, Policy,
+    ProbeDecision, ProbeLease, ProbePolicy, Refusal, State, StateTransition, StorageError,
+    StorageUpdate, StoredOutcome,
 };
-use alloc::sync::Arc;
-use core::fmt;
 use core::future::Future;
-use std::time::Instant;
+use core::sync::atomic::{AtomicU32, Ordering};
+use core::time::Duration;
+use std::sync::{Arc, Mutex, PoisonError};
 
-enum DistributedCallGate {
+/// A runtime-agnostic async circuit whose state the store owns.
+///
+/// The store performs threshold transitions and probe elections
+/// atomically. Operations and fallbacks are awaited holding no lock and no
+/// storage connection. A cancelled probe stays fenced until its lease
+/// expires, so another node recovers even if the elected one crashed.
+#[derive(Debug)]
+pub struct DistributedCircuitBreaker {
+    shared: Shared,
+    policy: Policy,
+    storage: Arc<dyn AsyncStorageBackend>,
+    probe_lease: Duration,
+    /// Calls this node has in flight, bounded by the policy's
+    /// `max_concurrent`.
+    in_flight: AtomicU32,
+    draws: Mutex<Draws>,
+}
+
+/// Frees this node's concurrency slot when the call ends, however it ends.
+struct Slot<'a>(&'a AtomicU32);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+enum Gate<'a> {
     Execute {
-        _permit: Option<BulkheadGuard>,
+        slot: Option<Slot<'a>>,
         generation: u64,
         probe: Option<ProbeLease>,
     },
-    Open {
-        _permit: Option<BulkheadGuard>,
-        context: FallbackContext,
-    },
-}
-
-/// Runtime-agnostic async circuit breaker with storage-owned distributed state.
-///
-/// The backend performs threshold transitions and probe elections atomically.
-/// Protected operations and fallbacks are awaited without holding a mutex or
-/// storage connection. A cancelled probe remains fenced until its short lease
-/// expires, allowing another node to recover even if the elected node crashes.
-pub struct DistributedCircuitBreaker {
-    name: Arc<str>,
-    config: Config,
-    storage: Arc<dyn AsyncStorageBackend>,
-    failure_classifier: Option<Arc<dyn FailureClassifier>>,
-    bulkhead: Option<Arc<BulkheadSemaphore>>,
-    callbacks: Callbacks,
+    Refused(FallbackContext),
 }
 
 impl DistributedCircuitBreaker {
     pub(crate) fn from_parts(
-        name: Arc<str>,
-        config: Config,
+        shared: Shared,
+        policy: Policy,
         storage: Arc<dyn AsyncStorageBackend>,
-        failure_classifier: Option<Arc<dyn FailureClassifier>>,
-        bulkhead: Option<Arc<BulkheadSemaphore>>,
-        callbacks: Callbacks,
+        probe_lease: Duration,
     ) -> Self {
         Self {
-            name,
-            config,
+            shared,
+            policy,
             storage,
-            failure_classifier,
-            bulkhead,
-            callbacks,
+            probe_lease,
+            in_flight: AtomicU32::new(0),
+            draws: Mutex::new(Draws::new()),
         }
     }
 
-    /// Execute an async operation using the shared FSM.
+    /// The circuit's name, its key in the store.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.shared.name
+    }
+
+    /// Await `operation` under the shared state machine.
     ///
     /// # Errors
     ///
-    /// Same as [`call_with_options`](Self::call_with_options) without a
-    /// fallback.
+    /// [`CircuitError::Refused`] when the circuit refuses the call (open,
+    /// another node holds the probe lease, or this node is at its
+    /// concurrency limit), [`CircuitError::Storage`] when the store fails,
+    /// [`CircuitError::Execution`] with the operation's own error.
     pub async fn call<F, Fut, T, E: 'static>(&self, operation: F) -> Result<T, CircuitError<E>>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<T, E>>,
     {
-        self.call_with_options(operation, AsyncCallOptions::default())
-            .await
+        self.call_with_fallback(operation, |context| async move {
+            Err(CircuitError::Refused {
+                circuit: context.circuit,
+                refusal: context.refusal,
+            })
+        })
+        .await
     }
 
-    /// Execute an async operation with an optional async open-state fallback.
+    /// Await `operation` under the shared state machine, `fallback` if the
+    /// circuit refuses it.
     ///
     /// # Errors
     ///
-    /// - [`CircuitError::BulkheadFull`] when the concurrency limit is reached.
-    /// - [`CircuitError::HalfOpenLimitReached`] when another node holds the
-    ///   half-open probe lease.
-    /// - [`CircuitError::Open`] when the circuit is open and no fallback is set.
-    /// - [`CircuitError::Storage`] when the backend fails to load, elect, or
-    ///   record.
-    /// - [`CircuitError::Execution`] wrapping the operation's (or fallback's)
-    ///   own error.
-    pub async fn call_with_options<F, Fut, T, E: 'static>(
+    /// [`CircuitError::Storage`] when the store fails,
+    /// [`CircuitError::Execution`] with the operation's own error; whatever
+    /// `fallback` answers when the call is refused.
+    pub async fn call_with_fallback<F, Fut, G, FutG, T, E: 'static>(
         &self,
         operation: F,
-        options: AsyncCallOptions<T, E>,
+        fallback: G,
     ) -> Result<T, CircuitError<E>>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<T, E>>,
+        G: FnOnce(FallbackContext) -> FutG,
+        FutG: Future<Output = Result<T, CircuitError<E>>>,
     {
-        match self.prepare_call().await? {
-            DistributedCallGate::Execute {
-                _permit: permit,
+        let (slot, generation, probe) = match self.prepare().await.map_err(CircuitError::Storage)? {
+            Gate::Execute {
+                slot,
                 generation,
                 probe,
-            } => {
-                let start = Instant::now();
-                let result = operation().await;
-                let duration = start.elapsed().as_secs_f64();
-                drop(permit);
+            } => (slot, generation, probe),
+            Gate::Refused(context) => return fallback(context).await,
+        };
+        let start = self.shared.clock.now();
+        let result = operation().await;
+        let took = self.shared.clock.now().saturating_sub(start);
+        drop(slot);
 
-                let outcome = match &result {
-                    Ok(_) => StoredOutcome::Success,
-                    Err(error) if self.should_record_failure(error, duration) => {
-                        StoredOutcome::Failure
-                    }
-                    Err(_) => StoredOutcome::Ignored,
+        let outcome = match self.shared.classify(&result, took) {
+            Some(crate::Outcome::Success) => StoredOutcome::Success,
+            Some(crate::Outcome::Failure) => StoredOutcome::Failure,
+            None => StoredOutcome::Ignored,
+        };
+        let update = match (probe, outcome) {
+            (Some(lease), _) => {
+                let policy = ProbePolicy {
+                    success_threshold: self.policy.recovery().success_threshold(),
+                    cooldown: self.cooldown(),
                 };
-
-                let update = if let Some(lease) = probe {
-                    self.storage
-                        .complete_probe(&self.name, lease, outcome, duration, self.probe_policy())
-                        .await
-                        .map_err(CircuitError::Storage)?
-                } else if outcome == StoredOutcome::Ignored {
-                    StorageUpdate {
-                        snapshot: self
-                            .storage
-                            .load_state(&self.name)
-                            .await
-                            .map_err(CircuitError::Storage)?,
-                        transition: None,
-                        applied: false,
-                    }
-                } else {
-                    self.storage
-                        .record_outcome(
-                            &self.name,
-                            generation,
-                            outcome,
-                            duration,
-                            self.failure_policy(),
-                        )
-                        .await
-                        .map_err(CircuitError::Storage)?
-                };
-
-                self.trigger_transition(update);
-                result.map_err(CircuitError::Execution)
+                self.storage
+                    .complete_probe(&self.shared.name, lease, outcome, took, policy)
+                    .await
+                    .map(Some)
             }
-            DistributedCallGate::Open {
-                _permit: permit,
-                context,
-            } => {
-                drop(permit);
-                options.resolve_open(context).await
+            (None, StoredOutcome::Ignored) => Ok(None),
+            (None, StoredOutcome::Success | StoredOutcome::Failure) => {
+                let policy = FailurePolicy {
+                    threshold: self.policy.threshold(),
+                    window: self.policy.window(),
+                    cooldown: self.cooldown(),
+                };
+                self.storage
+                    .record_outcome(&self.shared.name, generation, outcome, took, policy)
+                    .await
+                    .map(Some)
             }
         }
+        .map_err(CircuitError::Storage)?;
+        if let Some(StorageUpdate {
+            transition: Some(transition),
+            ..
+        }) = update
+        {
+            self.shared.notify([transition_of(transition)]);
+        }
+        result.map_err(CircuitError::Execution)
     }
 
-    /// Load the authoritative shared state.
+    /// The authoritative shared state.
     ///
     /// # Errors
     ///
-    /// Returns the backend's [`StorageError`] if the state cannot be read.
-    pub async fn state(&self) -> Result<CircuitSnapshot, StorageError> {
-        self.storage.load_state(&self.name).await
+    /// The store's [`StorageError`].
+    pub async fn snapshot(&self) -> Result<CircuitSnapshot, StorageError> {
+        self.storage.load_state(&self.shared.name).await
     }
 
-    /// Check whether the authoritative state is open.
+    /// The authoritative shared state's [`State`].
     ///
     /// # Errors
     ///
-    /// Returns the backend's [`StorageError`] if the state cannot be read.
-    pub async fn is_open(&self) -> Result<bool, StorageError> {
-        self.state()
-            .await
-            .map(|snapshot| snapshot.state == SharedCircuitState::Open)
+    /// The store's [`StorageError`].
+    pub async fn state(&self) -> Result<State, StorageError> {
+        self.snapshot().await.map(|snapshot| snapshot.state)
     }
 
-    /// Check whether the authoritative state is closed.
+    /// Clear the shared metrics and state, advancing the generation.
     ///
     /// # Errors
     ///
-    /// Returns the backend's [`StorageError`] if the state cannot be read.
-    pub async fn is_closed(&self) -> Result<bool, StorageError> {
-        self.state()
-            .await
-            .map(|snapshot| snapshot.state == SharedCircuitState::Closed)
-    }
-
-    /// Reset shared metrics and FSM state while advancing its generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns the backend's [`StorageError`] if the reset cannot be applied.
+    /// The store's [`StorageError`].
     pub async fn reset(&self) -> Result<CircuitSnapshot, StorageError> {
-        self.storage.reset(&self.name).await
+        self.storage.reset(&self.shared.name).await
     }
 
-    async fn prepare_call<E>(&self) -> Result<DistributedCallGate, CircuitError<E>> {
-        let permit = if let Some(bulkhead) = &self.bulkhead {
-            Some(
-                bulkhead
-                    .try_acquire()
-                    .ok_or_else(|| CircuitError::BulkheadFull {
-                        circuit: self.name.clone(),
-                        limit: bulkhead.limit(),
-                    })?,
-            )
-        } else {
-            None
+    async fn prepare(&self) -> Result<Gate<'_>, StorageError> {
+        let slot = match self.take_slot() {
+            Ok(slot) => slot,
+            Err(refusal) => {
+                return Ok(Gate::Refused(self.shared.fallback_context(refusal, None)));
+            }
         };
-
-        let snapshot = self
-            .storage
-            .load_state(&self.name)
-            .await
-            .map_err(CircuitError::Storage)?;
-
-        // A closed circuit needs no probe election; route it through the same
-        // `Closed` arm the backend answers with.
-        let decision = if snapshot.state == SharedCircuitState::Closed {
-            ProbeDecision::Closed(snapshot)
-        } else {
-            self.storage
-                .try_begin_probe(&self.name, self.config.probe_timeout_secs)
-                .await
-                .map_err(CircuitError::Storage)?
+        let snapshot = self.storage.load_state(&self.shared.name).await?;
+        // A closed circuit needs no election; route it through the same arm
+        // the store answers with.
+        let decision = match snapshot.state {
+            State::Closed => ProbeDecision::Closed(snapshot),
+            State::Open | State::HalfOpen => {
+                self.storage
+                    .try_begin_probe(&self.shared.name, self.probe_lease)
+                    .await?
+            }
         };
-
-        match decision {
-            ProbeDecision::Closed(snapshot) => Ok(DistributedCallGate::Execute {
-                _permit: permit,
+        Ok(match decision {
+            ProbeDecision::Closed(snapshot) => Gate::Execute {
+                slot,
                 generation: snapshot.generation,
                 probe: None,
-            }),
-            ProbeDecision::Open(snapshot) => Ok(DistributedCallGate::Open {
-                _permit: permit,
-                context: self.fallback_context(snapshot),
-            }),
-            ProbeDecision::Busy(_) => Err(CircuitError::HalfOpenLimitReached {
-                circuit: self.name.clone(),
-            }),
+            },
+            // The store's instants are on the store's clock, which this
+            // node cannot read: it reports no retry_after.
+            ProbeDecision::Open(_) => {
+                Gate::Refused(self.shared.fallback_context(Refusal::Open, None))
+            }
+            ProbeDecision::Busy(_) => {
+                Gate::Refused(self.shared.fallback_context(Refusal::Busy, None))
+            }
             ProbeDecision::Acquired {
-                lease,
-                transitioned,
-                ..
+                lease, transition, ..
             } => {
-                if transitioned {
-                    self.callbacks.trigger_half_open(&self.name);
-                }
-                Ok(DistributedCallGate::Execute {
-                    _permit: permit,
+                self.shared.notify(transition.map(transition_of));
+                Gate::Execute {
+                    slot,
                     generation: lease.generation,
                     probe: Some(lease),
-                })
+                }
             }
-        }
-    }
-
-    fn fallback_context(&self, snapshot: CircuitSnapshot) -> FallbackContext {
-        FallbackContext {
-            circuit_name: self.name.clone(),
-            opened_at: snapshot.opened_at.unwrap_or(0.0),
-            state: snapshot.state.name(),
-        }
-    }
-
-    fn failure_policy(&self) -> FailurePolicy {
-        FailurePolicy {
-            failure_threshold: self.config.failure_threshold,
-            failure_rate_threshold: self.config.failure_rate_threshold,
-            minimum_calls: self.config.minimum_calls,
-            failure_window_secs: self.config.failure_window_secs,
-            open_timeout_secs: self.config.half_open_delay_secs(),
-        }
-    }
-
-    fn probe_policy(&self) -> ProbePolicy {
-        ProbePolicy {
-            success_threshold: self.config.success_threshold,
-            open_timeout_secs: self.config.half_open_delay_secs(),
-        }
-    }
-
-    fn should_record_failure<E: 'static>(&self, error: &E, duration: f64) -> bool {
-        self.failure_classifier.as_ref().is_none_or(|classifier| {
-            classifier.should_trip(&FailureContext {
-                circuit_name: &self.name,
-                error,
-                duration,
-            })
         })
     }
 
-    fn trigger_transition(&self, update: StorageUpdate) {
-        match update.transition {
-            Some(StateTransition::Opened) => self.callbacks.trigger_open(&self.name),
-            Some(StateTransition::Closed) => self.callbacks.trigger_close(&self.name),
-            None => {}
-        }
+    /// This node's concurrency slot, when the policy bounds it.
+    fn take_slot(&self) -> Result<Option<Slot<'_>>, Refusal> {
+        let Some(limit) = self.policy.max_concurrent() else {
+            return Ok(None);
+        };
+        // Check and take in one step: the counter never reads past the
+        // limit, so it cannot wrap, and a refused call never makes a free
+        // slot look taken to a racing one.
+        self.in_flight
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |taken| {
+                taken.checked_add(1).filter(|&next| next <= limit.get())
+            })
+            .map_err(|_| Refusal::Full)?;
+        Ok(Some(Slot(&self.in_flight)))
+    }
+
+    fn cooldown(&self) -> Duration {
+        let draw = self
+            .draws
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .next();
+        self.policy.recovery().cooldown().delay(draw)
     }
 }
 
-impl fmt::Debug for DistributedCircuitBreaker {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DistributedCircuitBreaker")
-            .field("name", &self.name)
-            .field("config", &self.config)
-            .field("storage", &"<dyn AsyncStorageBackend>")
-            .field("failure_classifier", &self.failure_classifier.is_some())
-            .field("bulkhead", &self.bulkhead)
-            .field("callbacks", &self.callbacks)
-            .finish()
+const fn transition_of(transition: StateTransition) -> Transition {
+    match transition {
+        StateTransition::Opened => Transition::Opened,
+        StateTransition::Closed => Transition::Closed,
+        StateTransition::HalfOpened => Transition::HalfOpened,
     }
 }
 

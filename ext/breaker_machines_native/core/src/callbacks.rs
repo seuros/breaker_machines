@@ -1,63 +1,36 @@
-//! Callback system for circuit breaker state transitions
+//! Hooks fired when a runtime circuit changes state.
 
-use alloc::sync::Arc;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
 
-/// Type alias for circuit breaker callback functions
+/// A hook receiving the circuit's name.
 pub type CallbackFn = Arc<dyn Fn(&str) + Send + Sync>;
 
-/// Callbacks for circuit breaker events
-#[derive(Clone)]
+/// The hooks a runtime circuit fires on its transitions. A hook that panics
+/// is contained: the transition it reports has already happened.
+#[derive(Clone, Default)]
 pub struct Callbacks {
+    /// Fired when the circuit opens (threshold crossed, probe failed, or
+    /// forced).
     pub on_open: Option<CallbackFn>,
+    /// Fired when the circuit closes (probes succeeded, or forced).
     pub on_close: Option<CallbackFn>,
+    /// Fired when an elapsed cooldown moves the circuit to half-open.
     pub on_half_open: Option<CallbackFn>,
 }
 
 impl Callbacks {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            on_open: None,
-            on_close: None,
-            on_half_open: None,
+    pub(crate) fn fire(&self, transition: Transition, circuit: &str) {
+        let hook = match transition {
+            Transition::Opened => &self.on_open,
+            Transition::Closed => &self.on_close,
+            Transition::HalfOpened => &self.on_half_open,
+        };
+        if let Some(hook) = hook {
+            // The payload is dropped on purpose: a hook's panic must neither
+            // undo the transition nor unwind into the caller (or across FFI).
+            drop(catch_unwind(AssertUnwindSafe(|| hook(circuit))));
         }
-    }
-
-    /// Invoke an optional callback safely, catching any panics to prevent
-    /// unwinding across FFI boundaries.
-    fn trigger(callback: Option<&CallbackFn>, circuit: &str) {
-        if let Some(callback) = callback {
-            #[cfg(feature = "std")]
-            {
-                let cb = std::panic::AssertUnwindSafe(callback);
-                // A panicking callback is contained here on purpose; its
-                // payload is dropped so the transition still completes.
-                let _ = std::panic::catch_unwind(|| cb(circuit));
-            }
-            #[cfg(not(feature = "std"))]
-            callback(circuit);
-        }
-    }
-
-    /// Trigger the `on_open` callback safely.
-    pub fn trigger_open(&self, circuit: &str) {
-        Self::trigger(self.on_open.as_ref(), circuit);
-    }
-
-    /// Trigger the `on_close` callback safely.
-    pub fn trigger_close(&self, circuit: &str) {
-        Self::trigger(self.on_close.as_ref(), circuit);
-    }
-
-    /// Trigger the `on_half_open` callback safely.
-    pub fn trigger_half_open(&self, circuit: &str) {
-        Self::trigger(self.on_half_open.as_ref(), circuit);
-    }
-}
-
-impl Default for Callbacks {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -69,6 +42,14 @@ impl core::fmt::Debug for Callbacks {
             .field("on_half_open", &self.on_half_open.is_some())
             .finish()
     }
+}
+
+/// A transition a runtime call caused, in the order it happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transition {
+    Opened,
+    Closed,
+    HalfOpened,
 }
 
 #[cfg(test)]

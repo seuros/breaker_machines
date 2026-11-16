@@ -4,32 +4,35 @@ version = "0.24.0"
 edition.workspace = true
 rust-version.workspace = true
 authors = ["Abdelkader Boudih <oss@seuros.com>"]
-license = "MIT"
-description = "High-performance circuit breaker with fallback support and rate-based thresholds"
+license.workspace = true
+description = "Allocation-free circuit breaker decisions, with a std runtime for guarding closures and futures"
 repository = "https://github.com/seuros/breaker_machines"
 readme = "README.md"
-keywords = ["circuit-breaker", "reliability", "fault-tolerance", "state-machine"]
-categories = ["concurrency"]
-exclude = ["src/**/tests.rs", "tests/"]
-[lib]
-crate-type = ["lib"]
+keywords = ["circuit-breaker", "reliability", "fault-tolerance", "no-std"]
+categories = ["no-std", "concurrency", "algorithms"]
+exclude = ["src/**/tests.rs", "src/tests/", "src/test_support.rs", "tests/"]
 
 [features]
-default = ["std"]
-std = ["alloc", "state-machines/std", "chrono-machines/std"]
-alloc = ["chrono-machines/alloc"]
-async = ["std", "state-machines/async", "chrono-machines/async"]
-inspect = ["state-machines/inspect"]
-serde = ["state-machines/serde"]
+default = []
+# The runtime layer: closure-guarding `CircuitBreaker`, clocks, callbacks,
+# failure classifiers. Needs `std` (and with it an allocator); the decision
+# core never does.
+std = ["dep:state-machines"]
+# `AsyncCircuitBreaker`, `DistributedCircuitBreaker` and the async storage
+# contract, on top of `std`.
+async = ["std"]
 
 [lints]
 workspace = true
 
 [dependencies]
-state-machines = { version = "0.34", default-features = false }
-chrono-machines = { version = "0.11", default-features = false }
-hashbrown = "0.17"
-spin = { version = "0.12", default-features = false, features = ["rwlock"] }
+chrono-machines = { version = ">=0.12", default-features = false }
+periscope-machines = ">=0.5"
+# The runtime's lifecycle machine, driven by the core's answers.
+state-machines = { version = ">=0.34", default-features = false, optional = true }
 
 [dev-dependencies]
+# Itself with the runtime enabled, so a plain `cargo test` covers it.
+breaker-machines = { workspace = true, features = ["async"] }
+matryona-machines = { workspace = true, features = ["testing"] }
 pollster = "0.4"

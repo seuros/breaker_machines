@@ -1,65 +1,59 @@
 # frozen_string_literal: true
 
 module BreakerMachines
+  # Every error the runtime raises.
   class Error < StandardError; end
 
-  # Raised when attempting to use a circuit that is in the open state
-  class CircuitOpenError < Error
-    attr_reader :circuit_name, :opened_at
+  # A circuit refused to admit a call and no fallback replaced it.
+  # `refusal` is the core's Symbol; `retry_after` is the Integer nanoseconds
+  # until a probe may run, while the circuit is open.
+  class CircuitRefusedError < Error
+    attr_reader :circuit_name, :refusal, :retry_after
 
-    def initialize(circuit_name, opened_at = nil)
+    def initialize(circuit_name, refusal, retry_after = nil, message = nil)
       @circuit_name = circuit_name
-      @opened_at = opened_at
-      super("Circuit '#{circuit_name}' is open")
+      @refusal = refusal
+      @retry_after = retry_after
+      super(message || "Circuit '#{circuit_name}' refused the call: #{refusal}")
     end
   end
 
-  # Raised when a circuit cannot be called due to unmet dependencies
-  class CircuitDependencyError < CircuitOpenError
-    def initialize(circuit_name, message = nil)
-      @circuit_name = circuit_name
-      @opened_at = nil
-      super_message = message || "Circuit '#{circuit_name}' cannot be called: dependencies not met"
-      Error.instance_method(:initialize).bind(self).call(super_message)
+  # Refused because the circuit is open (`:open`) or every half-open probe
+  # slot is taken (`:busy`).
+  class CircuitOpenError < CircuitRefusedError; end
+
+  # Refused at the concurrency limit (`:full`).
+  class CircuitBulkheadError < CircuitRefusedError; end
+
+  # Refused by the runtime before the core was asked: a circuit this one
+  # depends on is down. `refusal` is `:dependency`, the runtime's own (not a
+  # core refusal); `dependencies` names the circuits that are down, and is
+  # empty when only a CircuitGroup member's `guard_with:` refused.
+  class CircuitDependencyError < CircuitRefusedError
+    attr_reader :dependencies
+
+    def initialize(circuit_name, dependencies)
+      @dependencies = dependencies
+      reason = dependencies.empty? ? 'its guard refused' : "#{dependencies.join(', ')} down"
+      super(circuit_name, :dependency, nil, "Circuit '#{circuit_name}' cannot be called: #{reason}")
     end
   end
 
-  # Raised when a circuit-protected call exceeds the configured timeout
+  # A call ran past the circuit's `timeout:` (Integer nanoseconds).
   class CircuitTimeoutError < Error
     attr_reader :circuit_name, :timeout
 
     def initialize(circuit_name, timeout)
       @circuit_name = circuit_name
       @timeout = timeout
-      super("Circuit '#{circuit_name}' timed out after #{timeout}s")
+      super("Circuit '#{circuit_name}' timed out after #{timeout}ns")
     end
   end
 
-  class ConfigurationError < Error; end
+  # A storage backend failed, or held a record that is not a valid value.
   class StorageError < Error; end
 
-  # Raised when storage backend operation times out
-  class StorageTimeoutError < StorageError
-    attr_reader :timeout_ms
-
-    def initialize(message, timeout_ms = nil)
-      @timeout_ms = timeout_ms
-      super(message)
-    end
-  end
-
-  # Raised when circuit rejects call due to bulkhead limit
-  class CircuitBulkheadError < Error
-    attr_reader :circuit_name, :max_concurrent
-
-    def initialize(circuit_name, max_concurrent)
-      @circuit_name = circuit_name
-      @max_concurrent = max_concurrent
-      super("Circuit '#{circuit_name}' rejected call: max concurrent limit of #{max_concurrent} reached")
-    end
-  end
-
-  # Raised when all parallel fallbacks fail
+  # Every parallel fallback raised; `errors` holds what each raised.
   class ParallelFallbackError < Error
     attr_reader :errors
 

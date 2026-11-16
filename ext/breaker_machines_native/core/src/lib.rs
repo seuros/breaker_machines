@@ -1,112 +1,62 @@
-//! `BreakerMachines` - High-performance circuit breaker implementation
-//!
-//! This crate provides a complete circuit breaker implementation with:
-//! - Thread-safe event storage with sliding window calculations
-//! - State machine for circuit breaker lifecycle (Closed → Open → `HalfOpen`)
-//! - Monotonic time tracking to prevent NTP clock skew issues
-//! - Configurable failure thresholds and timeouts
-//! - Runtime-agnostic async calls behind the `async` feature
-//! - Storage-owned distributed state and fenced probe election behind `async`
-//!
-//! # Example
-//!
-//! ```rust
-//! use breaker_machines::CircuitBreaker;
-//!
-//! let mut circuit = CircuitBreaker::builder("my_service")
-//!     .failure_threshold(5)
-//!     .failure_window_secs(60.0)
-//!     .half_open_timeout_secs(30.0)
-//!     .success_threshold(2)
-//!     .on_open(|name| println!("Circuit {} opened!", name))
-//!     .build();
-//!
-//! // Execute with circuit protection
-//! let result = circuit.call(|| {
-//!     // Your service call here
-//!     Ok::<_, String>("success")
-//! });
-//!
-//! // Check circuit state
-//! if circuit.is_open() {
-//!     println!("Circuit is open, skipping call");
-//! }
-//! ```
-//!
-//! # Async
-//!
-//! Enable the `async` feature to protect futures with `AsyncCircuitBreaker`.
-//! The protected future is never polled while the circuit's state lock is held,
-//! and cancellation safely releases any reserved bulkhead or half-open slot.
-//!
-//! Use `DistributedCircuitBreaker` with an `AsyncStorageBackend` when the
-//! FSM, cooldown timestamp, and half-open probe election must be shared across
-//! processes. The backend is authoritative; gateways keep no local FSM cache.
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
+#![doc = include_str!("../README.md")]
 
-extern crate alloc;
-
-// Tests always link `std` for the harness and fixtures; library code paths
-// stay gated on `feature = "std"`, so no_std tests exercise no_std behavior.
 #[cfg(any(feature = "std", test))]
 extern crate std;
 
-pub mod builder;
-pub mod bulkhead;
-pub mod callbacks;
-pub mod circuit;
-pub mod classifier;
-pub mod errors;
-pub mod storage;
-pub mod time;
+mod answer;
+mod breaker;
+mod policy;
+mod refusal;
 
 #[cfg(feature = "async")]
-pub mod async_circuit;
+mod async_circuit;
+#[cfg(feature = "std")]
+mod callbacks;
+#[cfg(feature = "std")]
+mod circuit;
+#[cfg(feature = "std")]
+mod classifier;
+#[cfg(feature = "std")]
+mod clock;
 #[cfg(feature = "async")]
-pub mod distributed;
-
-#[cfg(test)]
+mod distributed;
+#[cfg(feature = "std")]
+mod error;
+#[cfg(feature = "std")]
+mod lifecycle;
+#[cfg(feature = "async")]
+mod storage;
+#[cfg(all(test, feature = "std"))]
 mod test_support;
 
+pub use answer::{
+    Abandoned, Admitted, Adopted, Completed, Event, ForceClosed, Kind, Observed, Outcome, Settled,
+    Settlement, State, Status, Ticket,
+};
+pub use breaker::Breaker;
 pub use chrono_machines;
-pub use state_machines;
+pub use periscope_machines;
+pub use policy::{Policy, Recovery, Threshold};
+pub use refusal::Refusal;
 
 #[cfg(feature = "async")]
-pub use async_circuit::{AsyncCallOptions, AsyncCallTicket, AsyncCircuitBreaker};
-pub use builder::CircuitBuilder;
-pub use bulkhead::{BulkheadGuard, BulkheadSemaphore};
-pub use circuit::{CallOptions, CircuitBreaker, Config, FallbackContext};
-pub use classifier::{DefaultClassifier, FailureClassifier, FailureContext, PredicateClassifier};
+pub use async_circuit::{AsyncCircuitBreaker, AsyncTicket};
+#[cfg(feature = "std")]
+pub use callbacks::{CallbackFn, Callbacks};
+#[cfg(feature = "std")]
+pub use circuit::{CircuitBreaker, CircuitBuilder, WINDOW};
+#[cfg(feature = "std")]
+pub use classifier::{FailureClassifier, FailureContext, PredicateClassifier};
+#[cfg(feature = "std")]
+pub use clock::{Clock, SystemClock};
 #[cfg(feature = "async")]
 pub use distributed::DistributedCircuitBreaker;
-pub use errors::CircuitError;
-#[cfg(feature = "async")]
-pub use storage::{AsyncStorageBackend, StorageFuture};
-pub use storage::{
-    CircuitSnapshot, FailurePolicy, MemoryStorage, NullStorage, ProbeDecision, ProbeLease,
-    ProbePolicy, SharedCircuitState, StateTransition, StorageBackend, StorageError, StorageUpdate,
-    StoredOutcome,
-};
 #[cfg(feature = "std")]
-pub use time::SystemClock;
-pub use time::{Clock, ZeroClock};
-
-/// Event type for circuit breaker operations
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EventKind {
-    Success,
-    Failure,
-}
-
-/// A single event recorded by the circuit breaker
-#[derive(Debug, Clone)]
-pub struct Event {
-    pub kind: EventKind,
-    pub timestamp: f64,
-    pub duration: f64,
-}
-
-/// Compiles and runs the README's examples as doctests.
-#[cfg(doctest)]
-#[doc = include_str!("../README.md")]
-struct ReadmeDoctests;
+pub use error::{CircuitError, FallbackContext, StorageError};
+#[cfg(feature = "async")]
+pub use storage::{
+    Applied, AsyncStorageBackend, CircuitSnapshot, FailurePolicy, MemoryStorage, ProbeDecision,
+    ProbeLease, ProbePolicy, StateTransition, StorageFuture, StorageUpdate, StoredOutcome,
+};

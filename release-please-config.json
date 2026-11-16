@@ -15,9 +15,6 @@
       "release-type": "rust",
       "package-name": "breaker-machines",
       "changelog-path": "CHANGELOG.md",
-      "extra-files": [
-        "README.md"
-      ],
       "bump-minor-pre-major": true
     }
   }

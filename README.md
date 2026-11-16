@@ -2,7 +2,7 @@
 
 > The circuit breaker that went where no Ruby has gone before! ⭐
 
-A battle-tested Ruby implementation of the Circuit Breaker pattern, built on `state_machines` for reliable distributed systems protection.
+Circuit breakers for Ruby, decided by a native Rust core. The core admits calls, keeps a window of outcomes and moves between closed, open and half-open; it reads no clock and draws no random numbers of its own. A Ruby runtime on top guards your blocks with it, its lifecycle running on `state_machines`: fallbacks, hooks, shared storage, async and hedged execution, coordinated and cascading circuits, groups, a registry, a class DSL and a console.
 
 ## Quick Start
 
@@ -11,107 +11,89 @@ gem 'breaker_machines'
 ```
 
 ```ruby
+SECOND = 1_000_000_000
+
+# Three failures in a minute open it. It waits 30 seconds (up to 25% less,
+# drawn once per opening), then lets one probe through; one success closes it.
+STRIPE = BreakerMachines::Policy.new(
+  BreakerMachines::Threshold.new(3, nil, 0),          # count, rate, minimum_calls
+  60 * SECOND,                                        # window
+  BreakerMachines::Recovery.new(30 * SECOND, 0.25, 1, 1), # cooldown, jitter, successes, probes
+  nil                                                 # max_concurrent
+)
+
 class PaymentService
   include BreakerMachines::DSL
 
   circuit :stripe do
-    threshold failures: 3, within: 1.minute
-    reset_after 30.seconds
-    fallback { { error: "Payment queued for later" } }
+    policy STRIPE
+    handle Stripe::APIConnectionError, Net::ReadTimeout
+    fallback { |error| { error: 'Payment queued for later' } }
   end
 
-  def charge(amount)
-    circuit(:stripe).wrap do
-      Stripe::Charge.create(amount: amount)
-    end
-  end
+  def charge(amount) = circuit(:stripe).call { Stripe::Charge.create(amount:) }
 end
 ```
 
-### Protect an existing client
-
-Use `protect` to route selected public methods through an existing circuit:
+Or without the DSL:
 
 ```ruby
-circuit = BreakerMachines::Circuit.new(:teleporter, failure_threshold: 3)
-protected_client = circuit.protect(teleporter, methods: %i[beam_up beam_down])
-
-protected_client.beam_up('Schrödinger', destination: :sickbay)
+circuit = BreakerMachines::Circuit.new(:stripe, STRIPE, on_open: -> { page_ops })
+circuit.call { Stripe::Charge.create(amount:) }
+circuit.state   # => :closed, :open or :half_open
+circuit.stats   # => #<data BreakerMachines::Stats state=:open, failure_count=3, ...>
 ```
 
-The wrapper forwards arguments, keywords, blocks, and results through `circuit.call`, including its configured error handling and fallback. Other methods pass through without consulting the circuit. `methods:` must be nonempty and name public methods the client responds to; otherwise `protect` raises `ArgumentError`.
+A refused call raises `BreakerMachines::CircuitOpenError` (`refusal` is `:open`, or `:busy` while every half-open probe slot is taken) or `CircuitBulkheadError` (`:full`, at `max_concurrent`), unless a fallback replaces it. Both carry `retry_after`, in nanoseconds.
 
-The original client stays unchanged. Each call through the wrapper counts as one operation, including any internal method calls. Returned objects stay unchanged too: later calls on a returned client or lazy stream need their own protection. Wrap the object that performs the external operation.
+## The Core, Name for Name
 
-Available on Ruby and native circuits, including circuits obtained through the DSL. Multiple wrappers can share the same circuit.
+`Threshold`, `Recovery`, `Policy`, `Event`, `Breaker` and `Ticket` are the Rust core's types, with the core's fields in the core's order and positional arguments in the core's order. Time is Integer nanoseconds on one monotonic clock (`BreakerMachines.monotonic_time`, `Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)`), for instants and spans alike. No floats, no seconds. Every instant and `took` is read over the whole `Duration` range, past `2**64 - 1`, so any instant the breaker returns (`retry_at` is `now + cooldown`) reads back; cooldowns and windows stay within `0..2**64`.
+
+```ruby
+breaker = BreakerMachines::Breaker.new(STRIPE)
+
+ticket = breaker.admit(now)                        # => Ticket, or :open / :busy / :full
+breaker.complete(ticket, :failure, now, rand(2**64)) # => :counted, :opened or :closed
+breaker.complete(ticket, :failure, now, 0)           # => :duplicate, nothing changed
+breaker.abandon(other_ticket)                        # => :released
+breaker.admit(now - 1)                               # => :time_regression
+```
+
+A refusal is a Symbol from `BreakerMachines::REFUSALS` and changes nothing. `:exhausted` answers a call that would need an identity that is used up: a ticket id, or a transition epoch (each transition takes the next of `2**64`, and none is ever reused); `force_close`, `adopt` and `reset` can answer it too (`reset` answers `nil` otherwise). Malformed input raises: `TypeError` for the wrong type, `RangeError` for a value outside what the core accepts. Every value is validated through the core whether the gem built it or you did; the native side checks exact classes, so a forged or subclassed value never reaches the core.
+
+`Circuit.new(name, policy, **runtime)` takes the policy as it is. Its keywords are the runtime's own (`fallback:`, `exceptions:`, `on_open:`, `on_close:`, `on_half_open:`, `on_reject:`, `owner:`, `scope:`, `storage:`, `clock:`, `random:`, `timeout:`, `fiber_safe:`, `hedged:`, `backends:`, `auto_register:`), none of them a default the core lacks. A failure raised because the caller's own `deadline_machines` budget ran out is abandoned, not counted against the dependency.
+
+## The Lifecycle Runs on `state_machines`
+
+Each circuit's `status` (closed, open, half_open) is a `state_machines` machine with no guards, moved only by replaying the Breaker's answers: `:half_opened` admissions fire `attempt_recovery`, `:opened` settlements fire `trip` (or `reopen` from half-open), and so on. A model test drives random runs of every operation and checks the machine never disagrees with the core. The hooks its transitions queue run after the circuit's lock is released.
+
+## Runtime Features
+
+All of these are runtime keywords on `Circuit.new` (or DSL builder calls); none is a default the core lacks.
+
+- **Shared state** across processes: `storage: BreakerMachines::Storage::Cache.new(Rails.cache)`. What crosses is the core's `Status` and `Event`s, validated on read; see [docs/STORAGE.md](docs/STORAGE.md) for the consistency limits. Also `Storage::Memory`, `Storage::Null`, `Storage::FallbackChain`.
+- **Fiber-safe mode and AsyncCircuit**: `fiber_safe: true` runs hedges and parallel fallbacks on `async` tasks and enforces `timeout:` (Integer ns) with an Async timeout (`CircuitTimeoutError`, counted). Without it, `timeout:` is a cooperative deadline_machines scope, never a forceful interrupt. The block is called with no argument in both modes, as without `timeout:`; the scope is ambient, read with `DeadlineMachines.current`. `AsyncCircuit` adds `call_async`, `fire_async` and `health_check_async`.
+- **Hedged requests and backends**: `hedged: { delay: 50_000_000, max_requests: 3 }` sends the call again after each delay (clamped to the caller's deadline budget), first success wins; `backends: [primary, replica]` races them when hedged and fails over in turn otherwise.
+- **Parallel fallbacks**: `fallback: BreakerMachines::ParallelFallback.new([cache, replica])`.
+- **Coordinated and cascading circuits**: `CoordinatedCircuit.new(name, policy, depends_on: [:database])` refuses calls (`CircuitDependencyError`, refusal `:dependency`) while a dependency is open, before the core is asked. `CascadingCircuit.new(name, policy, cascades_to: [...], emergency_protocol: :red_alert)` forces its dependents open whenever it opens.
+- **Circuit groups**: `CircuitGroup#circuit(name, policy, depends_on:)`, `status`, `all_healthy?`, `reset_all!`, `trip_all!`.
+- **Notifications**: transitions, rejections and storage errors are published as `breaker_machines.*` through ActiveSupport::Notifications when it is loaded (`BreakerMachines.setup_notifications` logs them).
+- **Console**: `BreakerMachines.console` lists, shows, opens, closes and resets registered circuits.
+
+See [examples/starship_systems.rb](examples/starship_systems.rb).
+
+## Rust
+
+The same core is the [`breaker-machines`](ext/breaker_machines_native/core) crate: `no_std`, allocation-free, `unsafe` denied. Its `std` feature adds `CircuitBreaker` (guards closures), `async` adds `AsyncCircuitBreaker` and `DistributedCircuitBreaker` (state owned by a shared store, fenced probe leases).
 
 ## A Message to the Resistance
 
 So AI took your job while you were waiting for Fireship to drop the next JavaScript framework?
 
-Welcome to April 2005—when Git was born, branches were just `master`, and nobody cared about your pronouns. This is the pattern your company's distributed systems desperately need, explained in a way that won't make you fall asleep and impulse-buy developer swag just to feel something.
+Welcome to April 2005, when Git was born and branches were just `master`. This is the pattern your company's distributed systems desperately need.
 
 Still reading? Good. Because in space, nobody can hear you scream about microservices. It's all just patterns and pain.
-
-### The Pattern They Don't Want You to Know
-
-Built on the battle-tested `state_machines` gem, because I don't reinvent wheels here—I stop them from catching fire and burning down your entire infrastructure.
-
-## Features
-
-- **Thread-safe** circuit breaker implementation
-- **Fiber-safe mode** for async Ruby (Falcon, async gem)
-- **AsyncCircuit** class with mutex-protected state transitions
-- **Circuit Groups** for managing related circuits with dependencies
-- **Coordinated State Management** for dependency-aware transitions
-- **Cascading Circuit Breakers** for modeling system dependencies
-- **Hedged requests** for latency reduction
-- **Multiple backends** with automatic failover
-- **Bulkheading** to limit concurrent requests
-- **Percentage-based thresholds** with minimum call requirements
-- **Dynamic circuit breakers** with templates for runtime creation
-- **Pluggable storage** (Memory, Redis, Custom)
-- **Rich callbacks** and instrumentation
-- **ActiveSupport::Notifications** integration
-- **Cross-platform support** - Optimized for MRI, JRuby, and TruffleRuby
-
-## Documentation
-
-### Core Features
-- **Getting Started Guide** (docs/GETTING_STARTED.md) - Installation and basic usage
-- **Configuration Reference** (docs/CONFIGURATION.md) - All configuration options
-- **Advanced Patterns** (docs/ADVANCED_PATTERNS.md) - Complex scenarios and patterns
-
-### Advanced Features
-- **Circuit Groups** (docs/CIRCUIT_GROUPS.md) - Managing related circuits with dependencies
-- **Coordinated State Management** (docs/COORDINATED_STATE_MANAGEMENT.md) - Dependency-aware state transitions
-- **Cascading Circuit Breakers** (docs/CASCADING_CIRCUITS.md) - Modeling system dependencies
-
-### Async & Concurrency
-- **Async Mode** (docs/ASYNC.md) - Fiber-safe operations and AsyncCircuit
-- **Async Storage Examples** (docs/ASYNC_STORAGE_EXAMPLES.md) - Non-blocking storage backends
-
-### Storage & Persistence
-- **Persistence Options** (docs/PERSISTENCE.md) - Storage backends and distributed state
-
-### Testing
-- **Testing Guide** (docs/TESTING.md) - Testing strategies
-  - [RSpec Testing](docs/TESTING_RSPEC.md)
-  - [ActiveSupport Testing](docs/TESTING_ACTIVESUPPORT.md)
-
-### Integration & Monitoring
-- **Rails Integration** (docs/RAILS_INTEGRATION.md) - Rails-specific patterns
-- **Observability Guide** (docs/OBSERVABILITY.md) - Monitoring and metrics
-
-### Reference
-- **API Reference** (docs/API_REFERENCE.md) - Complete API documentation
-- **Horror Stories** (docs/HORROR_STORIES.md) - Real production failures and lessons learned
-
-## Why BreakerMachines?
-
-Built on the battle-tested `state_machines` gem, BreakerMachines provides production-ready circuit breaker functionality without reinventing the wheel. It's designed for modern Ruby applications with first-class support for fibers, async operations, and distributed systems.
-
-See [Why I Open Sourced This](docs/WHY_OPEN_SOURCE.md) for the full story.
 
 ## Chapter 1: The Year is 2025 (Stardate 2025.186)
 
@@ -133,30 +115,6 @@ end
 
 "This," whispers the grizzled ops engineer, "is how civilizations fall."
 
-## The Hidden State Machine
-
-They built this on `state_machines` because sometimes, Resistance, you need a tank, not another JavaScript framework.
-
-See the [Circuit Breaker State Machine diagram](docs/DIAGRAMS.md#the-circuit-breaker-state-machine) for a visual representation of hope, despair, and the eternal cycle of production failures.
-
-## What You Think You're Doing vs Reality
-
-### You Think: "I'm implementing retry logic for resilience!"
-### Reality: You're DDOSing your own infrastructure
-
-See [The Retry Death Spiral diagram](docs/DIAGRAMS.md#the-retry-death-spiral) to understand how your well-intentioned retries become a self-inflicted distributed denial of service attack.
-
-## Advanced Features
-
-- **Hedged Requests** - Reduce latency with duplicate requests
-- **Multiple Backends** - Automatic failover across endpoints
-- **Percentage-Based Thresholds** - Open on error rates, not just counts
-- **Dynamic Circuit Breakers** - Runtime creation with templates
-- **Apocalypse-Resistant Storage** - Cascading fallbacks when Redis dies
-- **Custom Storage Backends** - SysV semaphores, distributed locks, etc.
-
-See [Advanced Patterns](docs/ADVANCED_PATTERNS.md) for detailed examples and implementation guides.
-
 ## A Word from the RMNS Atlas Monkey
 
 *The Universal Commentary Engine crackles to life:*
@@ -169,33 +127,22 @@ Does your system stay up when Redis has a bad day?
 
 If not, welcome to the Resistance. We have circuit breakers.
 
-Remember: The pattern isn't about preventing failures—it's about failing fast, failing smart, and living to deploy another day.
+Remember: The pattern isn't about preventing failures, it's about failing fast, failing smart, and living to deploy another day.
 
 As I always say when contemplating the void: 'It's better to break a circuit than to break production.'"
 
-*— Universal Commentary Engine, Log Entry 42*
+*Universal Commentary Engine, Log Entry 42*
 
-## Contributing to the Resistance
+See [Why I Open Sourced This](WHY_OPEN_SOURCE.md) for the full story.
 
-1. Fork it (like it's 2005)
-2. Create your feature branch (`git checkout -b feature/save-the-fleet`)
-3. Commit your changes (`git commit -am 'Add quantum circuit breaker'`)
-4. Push to the branch (`git push origin feature/save-the-fleet`)
-5. Create a new Pull Request (and wait for the Council of Elders to review)
+## 📡 Credits
+
+**AMS Nygard**, NCC-2007, *Nygard*-class escort.
+
+Named for Michael Nygard's *Release It!* (2007), which named the circuit
+breaker pattern: stop calling what is failing, give it time, and let one probe
+decide whether it is back.
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- The `state_machines` gem - The reliable engine under our hood
-- Every service that ever timed out - You taught me well
-- The RMNS Atlas Monkey - For philosophical guidance
-- The Resistance - For never giving up
-
-## Author
-
-Built with ❤️ and ☕ by the Resistance against cascading failures.
-
-**Remember: In space, nobody can hear your Redis timeout. But they can feel your circuit breaker failing over to localhost.**
+MIT License. See [LICENSE](LICENSE.txt) for details.

@@ -1,0 +1,560 @@
+module BreakerMachines
+  VERSION: String
+  REFUSALS: Array[Symbol]
+  STATES: Array[Symbol]
+  OUTCOMES: Array[Symbol]
+
+  # Integer nanoseconds on one monotonic clock, for instants (now, at,
+  # opened_at) and spans (window, cooldown, took) alike. A non-Integer raises
+  # TypeError; a negative one, or one past 2**64 - 1, raises RangeError.
+  type nanoseconds = Integer
+  # A random draw, uniform over 0...2**64.
+  type draw = Integer
+  # A ticket scope: an Integer in 0..65_535.
+  type scope = Integer
+  type state = :closed | :open | :half_open
+  # Anything else raises: TypeError for a non-Symbol, RangeError for another.
+  type outcome = :success | :failure
+  # One symbol per core `Refusal` variant: the call was not honoured and
+  # changed nothing.
+  type refusal = :open | :busy | :full | :time_regression | :unknown | :mismatch | :exhausted
+  type settlement = :counted | :opened | :closed
+
+  def self.monotonic_time: () -> nanoseconds
+  def self.wall_time: () -> nanoseconds
+  def self.registry: () -> Registry
+  def self.config: () -> Configuration
+  def self.configure: () { (Configuration) -> void } -> void
+  def self.logger: () -> Logger
+  def self.reset!: () -> void
+  def self.instrument: (String event, ?Hash[Symbol, untyped] payload) -> void
+  def self.setup_notifications: () -> void
+  def self.log: (Symbol level, String message) -> void
+  def self.console: (?input: IO | StringIO, ?output: IO | StringIO) -> nil
+
+  # Native checks behind each value initialize: the core constructor of the
+  # same name runs on the fields; TypeError or RangeError, nil when valid.
+  private def self.native_threshold: (Integer? count, (Float | Integer)? rate, Integer minimum_calls) -> nil
+  private def self.native_recovery: (nanoseconds cooldown, Float | Integer jitter, Integer success_threshold, Integer half_open_calls) -> nil
+  private def self.native_policy: (Threshold threshold, nanoseconds window, Recovery recovery, Integer? max_concurrent) -> nil
+  private def self.native_status: (state state, nanoseconds? opened_at, nanoseconds? retry_at) -> nil
+  private def self.native_event: (nanoseconds at, outcome outcome, nanoseconds took) -> nil
+
+  # Anything a hedge, backend or fallback race runs: called with no argument.
+  interface _Callable
+    def call: () -> untyped
+  end
+
+  # Where hedges and parallel fallbacks post their result: a Thread::Queue,
+  # or an Async::Queue in fiber-safe mode.
+  interface _Results
+    def <<: ([:ok | :error, untyped] result) -> untyped
+    def pop: () -> [:ok | :error, untyped]
+  end
+
+  class Configuration
+    attr_accessor log_events: bool
+    attr_accessor fiber_safe: bool
+    attr_accessor default_storage: _Storage?
+    attr_writer logger: Logger
+    def initialize: () -> void
+    def logger: () -> Logger
+  end
+
+  class Status < Data
+    attr_reader state: state
+    attr_reader opened_at: nanoseconds?
+    attr_reader retry_at: nanoseconds?
+    # RangeError unless an open status has opened_at <= retry_at and a
+    # closed or half-open one neither.
+    def self.new: (state state, nanoseconds? opened_at, nanoseconds? retry_at) -> instance
+                | (state: state, opened_at: nanoseconds?, retry_at: nanoseconds?) -> instance
+    def initialize: (state: state, opened_at: nanoseconds?, retry_at: nanoseconds?) -> void
+  end
+
+  # A backend sharing circuit state (see Storage).
+  interface _Storage
+    def read_status: (untyped name) -> Storage::Record?
+    def write_status: (untyped name, Storage::Record record) -> bool
+    def record_event: (untyped name, Event event) -> bool
+    def event_log: (untyped name, Integer limit) -> Array[Event]
+    def clear: (untyped name) -> nil
+    def clear_all: () -> nil
+  end
+
+  module Storage
+    class Record < Data
+      attr_reader status: Status
+      attr_reader generation: Integer
+      def self.new: (Status status, Integer generation) -> instance
+                  | (status: Status, generation: Integer) -> instance
+      def self.load: (Array[untyped] data) -> Record
+      def initialize: (status: Status, generation: Integer) -> void
+      def dump: () -> [state, nanoseconds?, nanoseconds?, Integer]
+    end
+
+    def self.dump_event: (Event event) -> [nanoseconds, outcome, nanoseconds]
+    def self.load_event: (Array[untyped] data) -> Event
+
+    class Memory
+      include _Storage
+      def initialize: (?max_events: Integer) -> void
+    end
+
+    class Null
+      include _Storage
+    end
+
+    interface _CacheStore
+      def read: (String key) -> untyped
+      def write: (String key, untyped value, expires_in: Numeric) -> untyped
+      def delete: (String key) -> untyped
+    end
+
+    class Cache
+      include _Storage
+      attr_reader store: _CacheStore
+      attr_reader prefix: String
+      def initialize: (_CacheStore store, ?prefix: String, ?expires_in: Numeric, ?max_events: Integer) -> void
+
+      private
+
+      def key: (untyped name, String part) -> String
+      def remember: (untyped name) -> Set[untyped]
+    end
+
+    class FallbackChain
+      include _Storage
+      attr_reader backends: Array[_Storage]
+      def initialize: (Array[_Storage] backends, ?cooldown: nanoseconds, ?clock: _Clock) -> void
+
+      private
+
+      # The first healthy backend that does not raise answers; StorageError
+      # when every one raises.
+      def first: [T] () { (_Storage backend) -> T } -> T
+      def each_healthy: () { (_Storage backend) -> untyped } -> nil
+      # The backends out of cooldown, or every backend when none is.
+      def healthy: () -> Array[_Storage]
+      def mark_failed: (_Storage backend) -> nanoseconds
+    end
+  end
+
+  class Threshold < Data
+    attr_reader count: Integer?
+    attr_reader rate: Float | Integer | nil
+    attr_reader minimum_calls: Integer
+    # RangeError unless a count (>= 1) or a rate (0.0 < rate <= 1.0) is set.
+    def self.new: (Integer? count, (Float | Integer)? rate, Integer minimum_calls) -> instance
+                | (count: Integer?, rate: (Float | Integer)?, minimum_calls: Integer) -> instance
+    def initialize: (count: Integer?, rate: (Float | Integer)?, minimum_calls: Integer) -> void
+  end
+
+  class Recovery < Data
+    attr_reader cooldown: nanoseconds
+    attr_reader jitter: Float | Integer
+    attr_reader success_threshold: Integer
+    attr_reader half_open_calls: Integer
+    # RangeError unless jitter is in 0.0..1.0 and both counts are >= 1.
+    def self.new: (nanoseconds cooldown, Float | Integer jitter, Integer success_threshold, Integer half_open_calls) -> instance
+                | (cooldown: nanoseconds, jitter: Float | Integer, success_threshold: Integer, half_open_calls: Integer) -> instance
+    def initialize: (cooldown: nanoseconds, jitter: Float | Integer, success_threshold: Integer, half_open_calls: Integer) -> void
+  end
+
+  class Policy < Data
+    attr_reader threshold: Threshold
+    attr_reader window: nanoseconds
+    attr_reader recovery: Recovery
+    attr_reader max_concurrent: Integer?
+    # TypeError unless threshold and recovery are exactly this gem's classes;
+    # RangeError for a zero window or a max_concurrent below 1.
+    def self.new: (Threshold threshold, nanoseconds window, Recovery recovery, Integer? max_concurrent) -> instance
+                | (threshold: Threshold, window: nanoseconds, recovery: Recovery, max_concurrent: Integer?) -> instance
+    def initialize: (threshold: Threshold, window: nanoseconds, recovery: Recovery, max_concurrent: Integer?) -> void
+  end
+
+  class Event < Data
+    attr_reader at: nanoseconds
+    attr_reader outcome: outcome
+    attr_reader took: nanoseconds
+    def self.new: (nanoseconds at, outcome outcome, nanoseconds took) -> instance
+                | (at: nanoseconds, outcome: outcome, took: nanoseconds) -> instance
+    def initialize: (at: nanoseconds, outcome: outcome, took: nanoseconds) -> void
+  end
+
+  # Admission for one operation, built only by Breaker#admit.
+  class Ticket
+    def id: () -> Integer
+    def kind: () -> (:call | :probe)
+    # :half_opened when this admission moved the circuit to half-open.
+    def admission: () -> (:call | :probe | :half_opened)
+    def admitted_at: () -> nanoseconds
+    # nil while unsettled, :abandoned, or [outcome, the original answer].
+    def settled: () -> (nil | :abandoned | [outcome, settlement])
+  end
+
+  class Breaker
+    def self.new: (Policy policy) -> Breaker
+    def self.with_scope: (Policy policy, scope scope) -> Breaker
+    def admit: (nanoseconds now) -> (Ticket | :open | :busy | :full | :time_regression | :exhausted)
+    def complete: (Ticket ticket, outcome outcome, nanoseconds now, draw draw) -> (settlement | :duplicate | :unknown | :mismatch | :time_regression | :exhausted)
+    def abandon: (Ticket ticket) -> (:released | :duplicate | :unknown | :mismatch)
+    def observe: (outcome outcome, nanoseconds took, nanoseconds now, draw draw) -> (settlement | :half_opened | :half_opened_and_reopened | :half_opened_and_closed | :time_regression | :exhausted)
+    def force_open: (nanoseconds now, draw draw) -> (:opened | :time_regression | :exhausted)
+    def force_close: () -> (:closed | :already_closed | :exhausted)
+    def status: () -> Status
+    def adopt: (Status status) -> (:unchanged | :opened | :closed | :half_opened | :exhausted)
+    def reset: () -> :exhausted?
+    def state: () -> state
+    def policy: () -> Policy
+    def latest: () -> nanoseconds
+    def opened_at: () -> nanoseconds?
+    def retry_at: () -> nanoseconds?
+    def retry_after: (nanoseconds now) -> nanoseconds?
+    def failures: (nanoseconds now) -> Integer
+    def successes: (nanoseconds now) -> Integer
+    def half_open_attempts: () -> Integer
+    def half_open_successes: () -> Integer
+    def outstanding: () -> Integer
+    def scope: () -> scope
+    def events: (Integer limit) -> Array[Event]
+
+    private def self.native_new: (Policy policy) -> Breaker
+    private def self.native_with_scope: (Policy policy, scope scope) -> Breaker
+  end
+
+  class Error < StandardError
+  end
+
+  class CircuitRefusedError < Error
+    attr_reader circuit_name: untyped
+    attr_reader refusal: refusal | :dependency
+    attr_reader retry_after: nanoseconds?
+    def initialize: (untyped circuit_name, refusal | :dependency refusal, ?nanoseconds? retry_after, ?String? message) -> void
+  end
+
+  class CircuitOpenError < CircuitRefusedError
+  end
+
+  class CircuitDependencyError < CircuitRefusedError
+    attr_reader dependencies: Array[untyped]
+    def initialize: (untyped circuit_name, Array[untyped] dependencies) -> void
+  end
+
+  class CircuitTimeoutError < Error
+    attr_reader circuit_name: untyped
+    attr_reader timeout: nanoseconds
+    def initialize: (untyped circuit_name, nanoseconds timeout) -> void
+  end
+
+  class StorageError < Error
+  end
+
+  class ParallelFallbackError < Error
+    attr_reader errors: Array[Exception]
+    def initialize: (String message, Array[Exception] errors) -> void
+  end
+
+  class ParallelFallback
+    attr_reader fallbacks: Array[untyped]
+    def initialize: (Array[untyped] fallbacks) -> void
+    def call: (Exception error, ?fiber_safe: bool) -> untyped
+
+    private
+
+    def resolve: (untyped fallback, Exception error) -> untyped
+    def race_threads: (Exception error) -> untyped
+    def race_async: (Exception error) -> untyped
+    def outcome: (untyped fallback, Exception error, _Results results) -> untyped
+    def collect: (_Results results) -> untyped
+  end
+
+  module Hedging
+    POLL: Integer
+
+    private
+
+    def configure_hedging: (hedging? hedged, Array[_Callable]? backends) -> nil
+    # nil when valid; TypeError, RangeError or ArgumentError otherwise.
+    def validate_hedging: () -> nil
+    def hedging?: () -> bool
+    def hedge: () ?{ () -> untyped } -> untyped
+    def failover: (Array[_Callable] callables) -> untyped
+    def hedge_delay: () -> nanoseconds
+    def race_threads: (Array[_Callable] callables) -> untyped
+    def race_async: (Array[_Callable] callables) -> untyped
+    def attempt: (_Callable callable, _Results results) -> untyped
+    def first_success: (_Results results, Integer count) -> untyped
+  end
+
+  class CircuitBulkheadError < CircuitRefusedError
+  end
+
+  class Stats < Data
+    attr_reader state: state
+    attr_reader failure_count: Integer
+    attr_reader success_count: Integer
+    attr_reader last_failure_at: nanoseconds?
+    attr_reader opened_at: nanoseconds?
+    attr_reader half_open_attempts: Integer
+    attr_reader half_open_successes: Integer
+    def self.new: (state: state, failure_count: Integer, success_count: Integer, last_failure_at: nanoseconds?, opened_at: nanoseconds?, half_open_attempts: Integer, half_open_successes: Integer) -> instance
+  end
+
+  interface _Clock
+    def call: () -> nanoseconds
+  end
+
+  type hedged = { delay: nanoseconds, max_requests: Integer }
+  # What `hedged:` accepts: delay defaults to 0, max_requests to 2.
+  type hedging = { ?delay: nanoseconds, ?max_requests: Integer }
+
+  class Circuit
+    include Hedging
+    attr_reader name: untyped
+    attr_reader policy: Policy
+    attr_reader storage: _Storage?
+    attr_reader breaker: Breaker
+    attr_reader last_error: Exception?
+    attr_reader last_failure_at: nanoseconds?
+    def initialize: (untyped name, Policy policy, ?fallback: untyped, ?exceptions: Array[Module],
+                     ?on_open: Proc?, ?on_close: Proc?, ?on_half_open: Proc?, ?on_reject: Proc?,
+                     ?owner: untyped, ?scope: scope, ?storage: _Storage?, ?clock: _Clock?, ?random: Random,
+                     ?timeout: nanoseconds?, ?fiber_safe: bool, ?hedged: hedging?, ?backends: Array[_Callable]?,
+                     ?auto_register: bool) -> void
+    def status_name: () -> state
+    def summary: () -> String
+    def call: [T] () ?{ () -> T } -> T
+    alias wrap call
+    def observe: (outcome outcome, nanoseconds took) -> state
+    def force_open: () -> self
+    def force_close: () -> self
+    def reset: () -> self
+    def state: () -> state
+    def open?: () -> bool
+    def closed?: () -> bool
+    def half_open?: () -> bool
+    def now: () -> nanoseconds
+    def opened_at: () -> nanoseconds?
+    def retry_after: () -> nanoseconds?
+    def events: (?Integer limit) -> Array[Event]
+    def stats: () -> Stats
+    def to_h: () -> Hash[Symbol, untyped]
+
+    private
+
+    def draw: () -> draw
+    # The block answers the lifecycle events replaying the core; answers the
+    # transitions it made, once their hooks ran.
+    def decide: (?share: bool) { (nanoseconds now) -> Array[Symbol] } -> Array[state]
+    # nil when the machine agrees with the core; RuntimeError otherwise.
+    def check_agreement: (Array[Symbol] events) -> nil
+    def transitioned: (state to) -> Array[state]
+    def announce: (state state) -> void
+    def opened_event: (state before) -> (:trip | :reopen)
+    def admit: () -> (Ticket | :open | :busy | :full | :time_regression | :exhausted)
+    def settle: (Ticket ticket, outcome outcome) -> (settlement | :duplicate | :unknown | :mismatch | :time_regression)
+    def abandon: (Ticket ticket) -> (:released | :duplicate | :unknown | :mismatch)
+    def execute: () ?{ () -> untyped } -> untyped
+    def run_with_timeout: [T] () { () -> T } -> T
+    def async_timeout: [T] () { () -> T } -> T
+    # Re-raises `error` unless a fallback replaces it.
+    def failed: (Ticket ticket, Exception error) -> untyped
+    # nil when there is no current deadline_machines scope.
+    def caller_gave_up?: (Exception error) -> bool?
+    # Raises CircuitOpenError or CircuitBulkheadError unless a fallback
+    # replaces the call.
+    def refused: (refusal refusal) -> untyped
+    def run_hook: (:on_open | :on_close | :on_half_open | :on_reject name) -> untyped
+    def run_fallback: (Exception error) -> untyped
+    def run: (Proc callable, *untyped args) -> untyped
+    def resolve_owner: () -> untyped
+    # The transitions adopted from a newer stored record, if any.
+    def sync_from_storage: () -> Array[state]?
+    def read_record: () -> Storage::Record?
+    def publish: () -> void
+    def share_event: (Ticket ticket, outcome outcome) -> void
+  end
+
+  class AsyncCircuit < Circuit
+    def initialize: (untyped name, Policy policy, ?fiber_safe: bool, **untyped runtime) -> void
+    def call_async: () { () -> untyped } -> untyped
+    def fire_async: (:force_open | :force_close | :reset event) -> untyped
+    def health_check_async: () -> untyped
+  end
+
+  class CoordinatedCircuit < Circuit
+    attr_reader dependencies: Array[untyped]
+    def initialize: (untyped name, Policy policy, ?depends_on: Array[untyped], **untyped runtime) -> void
+    def dependencies_healthy?: () -> bool
+
+    private
+
+    # The names of the dependencies that are open, in declared order.
+    def dependencies_down: () -> Array[untyped]
+    def dependency_name: (untyped dependency) -> untyped
+    def find_dependent_circuit: (untyped dependency) -> Circuit?
+  end
+
+  class CascadeInfo < Data
+    attr_reader dependent_circuits: Array[untyped]
+    attr_reader emergency_protocol: Symbol?
+    attr_reader cascade_triggered_at: nanoseconds?
+    attr_reader dependent_status: Hash[untyped, Symbol]
+  end
+
+  class CascadingCircuit < CoordinatedCircuit
+    attr_reader dependent_circuits: Array[untyped]
+    attr_reader emergency_protocol: Symbol?
+    attr_reader cascade_triggered_at: nanoseconds?
+    def initialize: (untyped name, Policy policy, ?cascades_to: Array[untyped], ?emergency_protocol: Symbol?,
+                     ?on_cascade: ^(Array[untyped]) -> void | nil, **untyped runtime) -> void
+    def cascade_failure!: () -> Array[untyped]
+    def dependent_status: () -> Hash[untyped, Symbol]
+    def dependents_compromised?: () -> bool
+    def cascade_info: () -> CascadeInfo
+
+    private
+
+    def announce: (state state) -> void
+    def perform_cascade: () -> Array[untyped]
+    def trigger_emergency_protocol: (Array[untyped] tripped) -> void
+  end
+
+  class CircuitGroup
+    attr_reader name: untyped
+    attr_reader circuits: Hash[untyped, untyped]
+    def initialize: (untyped name, **untyped runtime) -> void
+    def circuit: (untyped name, ?Policy? policy, ?depends_on: Array[untyped], ?guard_with: ^() -> boolish | nil,
+                  **untyped runtime) -> untyped
+    def []: (untyped name) -> untyped
+    def all_healthy?: () -> bool
+    def any_open?: () -> bool
+    def status: () -> Hash[untyped, state]
+    def reset_all!: () -> void
+    def trip_all!: () -> void
+    def dependencies_met?: (untyped name) -> bool
+    def dependencies_down: (untyped name) -> Array[untyped]
+    def guard_allows?: (untyped name) -> bool
+
+    private
+
+    def full_circuit_name: (untyped name) -> String
+    def spec: (untyped name) -> { depends_on: Array[untyped], guard: (^() -> boolish)? }
+
+    # A group member: a SimpleDelegator over its Circuit. `call` refuses
+    # with CircuitDependencyError while the member's dependencies are down or
+    # its guard refuses; everything else is the circuit's own, answering what
+    # the circuit answers.
+    class GuardedCircuit < SimpleDelegator
+      def initialize: (Circuit circuit, CircuitGroup group, untyped name) -> void
+      def call: [T] () ?{ () -> T } -> T
+      alias wrap call
+      def __getobj__: () -> Circuit
+    end
+  end
+
+  class Console
+    COMMANDS: Array[String]
+    def initialize: (?input: IO | StringIO, ?output: IO | StringIO) -> void
+    def run: () -> nil
+    def process: (String line) -> untyped
+
+    private
+
+    def list: () -> Array[Circuit]
+    def events: (Circuit circuit, Integer limit) -> Array[Event]
+    def act: (String? name, :force_open | :force_close | :reset action) -> nil
+    def with_circuit: [T] (String? name) { (Circuit circuit) -> T } -> (T | nil)
+    # The name as given when a circuit has it, its Symbol otherwise.
+    def coerce: (String? name) -> (String | Symbol | nil)
+    def puts_hash: (Hash[Symbol, untyped] hash) -> Hash[Symbol, untyped]
+  end
+
+  class Registry
+    DYNAMIC_CIRCUIT_MAX_AGE: Integer
+    CLEANUP_INTERVAL: Integer
+    def self.instance: () -> Registry
+    # Singleton: only `instance` builds one.
+    private def self.new: () -> Registry
+    private def self.allocate: () -> Registry
+    def register: (Circuit circuit) -> Circuit
+    def unregister: (Circuit circuit) -> nil
+    def all_circuits: () -> Array[Circuit]
+    def find_by_name: (untyped name) -> Array[Circuit]
+    def find: (untyped name) -> Circuit?
+    def force_open: (untyped name) -> bool
+    def force_close: (untyped name) -> bool
+    def reset: (untyped name) -> bool
+    def stats_summary: () -> Hash[Symbol, untyped]
+    def detailed_report: () -> Array[Hash[Symbol, untyped]]
+    def get_or_create_dynamic_circuit: (untyped name, untyped owner, Policy policy, ?circuit_class: singleton(Circuit),
+                                        **untyped runtime) -> Circuit
+    def remove_dynamic_circuit: (untyped name) -> bool
+    def dynamic_circuit_names: () -> Array[untyped]
+    def cleanup_stale_dynamic_circuits: (?nanoseconds max_age) -> Integer
+    def cleanup_dead_references: () -> Integer
+    def clear: () -> nil
+
+    private
+
+    def each_named: (untyped name) { (Circuit circuit) -> untyped } -> bool
+    def live: () -> Array[Circuit]
+    # How many dead references were dropped.
+    def sweep_dead: () -> Integer
+    # How many stale dynamic circuits were dropped.
+    def sweep_stale: (nanoseconds max_age) -> Integer
+  end
+
+  module DSL
+    class CircuitBuilder
+      def initialize: (?Hash[Symbol, untyped] base) -> void
+      def config: () -> Hash[Symbol, untyped]
+      def policy: (Policy policy) -> Policy
+      def handle: (*Module exceptions) -> Array[Module]
+      def fallback: (?untyped value) ?{ (?Exception) -> untyped } -> Array[untyped]
+      def on_open: () { () -> void } -> Proc
+      def on_close: () { () -> void } -> Proc
+      def on_half_open: () { () -> void } -> Proc
+      def on_reject: () { () -> void } -> Proc
+      def parallel_fallback: (Array[untyped] fallbacks) -> ParallelFallback
+      def storage: (_Storage backend) -> _Storage
+      def timeout: (nanoseconds nanoseconds) -> nanoseconds
+      def fiber_safe: (?bool enabled) -> bool
+      def hedged: (?delay: nanoseconds, ?max_requests: Integer) -> hedged
+      def backends: (*untyped callables) -> Array[untyped]
+      def depends_on: (*untyped circuits) -> Array[untyped]
+      def cascades_to: (*untyped circuits) -> Array[untyped]
+      def emergency_protocol: (Symbol name) -> Symbol
+      def on_cascade: () { (Array[untyped]) -> void } -> Proc
+    end
+
+    module ClassMethods
+      def circuit: (Symbol name) ?{ (CircuitBuilder builder) [self: CircuitBuilder] -> void } -> Hash[Symbol, untyped]?
+      def circuits: () -> Hash[Symbol, Hash[Symbol, untyped]]
+      def cascade_circuit: (Symbol name) { (CircuitBuilder builder) [self: CircuitBuilder] -> void } -> Hash[Symbol, untyped]?
+      def circuit_template: (Symbol name) ?{ (CircuitBuilder builder) [self: CircuitBuilder] -> void } -> Hash[Symbol, untyped]?
+      def circuit_templates: () -> Hash[Symbol, Hash[Symbol, untyped]]
+
+      private
+
+      def own_circuits: () -> Hash[Symbol, Hash[Symbol, untyped]]
+      def own_templates: () -> Hash[Symbol, Hash[Symbol, untyped]]
+      def build: (?Hash[Symbol, untyped] base) { (CircuitBuilder builder) [self: CircuitBuilder] -> void } -> Hash[Symbol, untyped]
+    end
+
+    def self.included: (Module base) -> void
+    def circuit: (Symbol name) -> Circuit
+    def dynamic_circuit: (untyped name, ?template: Symbol?, ?global: bool) ?{ (CircuitBuilder builder) [self: CircuitBuilder] -> void } -> Circuit
+    def circuit_instances: () -> Hash[untyped, Circuit]
+    def reset_all_circuits: () -> Hash[untyped, Circuit]
+    def circuits_summary: () -> Hash[untyped, String]
+
+    private
+
+    def build_circuit: (untyped name, Hash[Symbol, untyped] definition) -> Circuit
+    # The policy, the circuit class and the runtime keywords; ArgumentError
+    # without a policy.
+    def split: (Hash[Symbol, untyped] definition) -> [Policy, singleton(Circuit), Hash[Symbol, untyped]]
+  end
+end

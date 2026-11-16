@@ -1,184 +1,332 @@
 use super::*;
 use crate::test_support::ManualClock;
 use core::assert_matches;
-use core::time::Duration;
 
-fn retained_events(storage: &MemoryStorage) -> usize {
-    storage
-        .circuits
-        .read()
-        .get("test_circuit")
-        .map_or(0, |circuit| circuit.events.len())
+fn store(clock: &ManualClock) -> MemoryStorage {
+    MemoryStorage::with_clock(clock.clone())
+}
+
+fn failure_policy(count: u32) -> FailurePolicy {
+    FailurePolicy {
+        threshold: Threshold::new(NonZeroU32::new(count), None, 0).expect("valid"),
+        window: Duration::from_secs(60),
+        cooldown: Duration::from_secs(10),
+    }
+}
+
+fn probe_policy(successes: u32) -> ProbePolicy {
+    ProbePolicy {
+        success_threshold: NonZeroU32::new(successes).expect("positive"),
+        cooldown: Duration::from_secs(10),
+    }
+}
+
+fn acquired(decision: ProbeDecision) -> ProbeLease {
+    match decision {
+        ProbeDecision::Acquired { lease, .. } => lease,
+        other => panic!("expected an acquired probe, got {other:?}"),
+    }
 }
 
 #[test]
-fn memory_storage_counts_by_kind() {
-    let storage = MemoryStorage::new();
-
-    storage.record_success("test_circuit", 0.1);
-    storage.record_success("test_circuit", 0.2);
-    storage.record_failure("test_circuit", 0.5);
-
-    assert_eq!(storage.success_count("test_circuit", 60.0), 2);
-    assert_eq!(storage.failure_count("test_circuit", 60.0), 1);
-    assert_eq!(storage.success_count("other_circuit", 60.0), 0);
+fn outcomes_open_at_the_threshold_and_stale_generations_change_nothing() {
+    pollster::block_on(async {
+        let clock = ManualClock::default();
+        let store = store(&clock);
+        let first = store
+            .record_outcome(
+                "a",
+                0,
+                StoredOutcome::Failure,
+                Duration::ZERO,
+                failure_policy(2),
+            )
+            .await
+            .expect("recorded");
+        assert_eq!(first.transition, None);
+        clock.advance(Duration::from_secs(1));
+        let second = store
+            .record_outcome(
+                "a",
+                0,
+                StoredOutcome::Failure,
+                Duration::ZERO,
+                failure_policy(2),
+            )
+            .await
+            .expect("recorded");
+        assert_eq!(second.transition, Some(StateTransition::Opened));
+        assert_eq!(second.snapshot.opened_at, Some(Duration::from_secs(1)));
+        assert_eq!(second.snapshot.retry_at, Some(Duration::from_secs(11)));
+        let stale = store
+            .record_outcome(
+                "a",
+                0,
+                StoredOutcome::Failure,
+                Duration::ZERO,
+                failure_policy(2),
+            )
+            .await
+            .expect("answered");
+        assert_eq!(stale.applied, Applied::Stale);
+        assert_eq!(stale.snapshot, second.snapshot);
+        assert_eq!(
+            store.load_state("unseen").await,
+            Ok(CircuitSnapshot::default())
+        );
+    });
 }
 
 #[test]
-fn memory_storage_clear_drops_one_circuit() {
-    let storage = MemoryStorage::new();
-    storage.record_success("test_circuit", 0.1);
-    storage.record_success("other_circuit", 0.1);
-
-    storage.clear("test_circuit");
-
-    assert_eq!(storage.success_count("test_circuit", 60.0), 0);
-    assert_eq!(storage.success_count("other_circuit", 60.0), 1);
-
-    storage.clear_all();
-    assert_eq!(storage.success_count("other_circuit", 60.0), 0);
-}
-
-#[test]
-fn memory_storage_event_log_keeps_order_and_limit() {
-    let storage = MemoryStorage::new();
-    storage.record_success("test_circuit", 0.1);
-    storage.record_failure("test_circuit", 0.2);
-    storage.record_success("test_circuit", 0.3);
-
-    let kinds = |limit| -> Vec<EventKind> {
-        storage
-            .event_log("test_circuit", limit)
-            .iter()
-            .map(|event| event.kind)
-            .collect()
-    };
-
-    assert_eq!(
-        kinds(10),
-        [EventKind::Success, EventKind::Failure, EventKind::Success]
-    );
-    assert_eq!(kinds(2), [EventKind::Failure, EventKind::Success]);
-}
-
-#[test]
-fn memory_storage_event_log_matches_vec_semantics_across_ring_wraps() {
-    // Caps whose overflow trims one event (5) and a batch of two (25).
-    for max_events in [5, 25] {
-        let storage = MemoryStorage::with_max_events(max_events);
-        let mut model = Vec::new();
-        for i in 0..80_u32 {
-            storage.record_success("test_circuit", f64::from(i));
-            model.push(f64::from(i));
-            if model.len() > max_events {
-                model.drain(..(max_events / 10).max(1));
+fn one_probe_lease_at_a_time_and_expired_leases_recover() {
+    pollster::block_on(async {
+        let clock = ManualClock::default();
+        let store = store(&clock);
+        store
+            .record_outcome(
+                "a",
+                0,
+                StoredOutcome::Failure,
+                Duration::ZERO,
+                failure_policy(1),
+            )
+            .await
+            .expect("opened");
+        assert_matches!(
+            store.try_begin_probe("a", Duration::from_secs(2)).await,
+            Ok(ProbeDecision::Open(_))
+        );
+        clock.advance(Duration::from_secs(10));
+        let decision = store
+            .try_begin_probe("a", Duration::from_secs(2))
+            .await
+            .expect("elected");
+        assert_matches!(
+            decision,
+            ProbeDecision::Acquired {
+                transition: Some(StateTransition::HalfOpened),
+                ..
             }
+        );
+        let lease = acquired(decision);
+        assert_matches!(
+            store.try_begin_probe("a", Duration::from_secs(2)).await,
+            Ok(ProbeDecision::Busy(_))
+        );
+        clock.advance(Duration::from_secs(2));
+        let takeover = acquired(
+            store
+                .try_begin_probe("a", Duration::from_secs(2))
+                .await
+                .expect("expired lease taken over"),
+        );
+        let late = store
+            .complete_probe(
+                "a",
+                lease,
+                StoredOutcome::Success,
+                Duration::ZERO,
+                probe_policy(1),
+            )
+            .await
+            .expect("answered");
+        assert_eq!(late.applied, Applied::Stale);
+        let closed = store
+            .complete_probe(
+                "a",
+                takeover,
+                StoredOutcome::Success,
+                Duration::ZERO,
+                probe_policy(1),
+            )
+            .await
+            .expect("closed");
+        assert_eq!(closed.transition, Some(StateTransition::Closed));
+        assert_matches!(
+            store.try_begin_probe("a", Duration::from_secs(2)).await,
+            Ok(ProbeDecision::Closed(_))
+        );
+    });
+}
 
-            for limit in [0, 1, 3, max_events, max_events + 3] {
-                let durations: Vec<f64> = storage
-                    .event_log("test_circuit", limit)
-                    .iter()
-                    .map(|event| event.duration)
-                    .collect();
-                assert_eq!(
-                    durations,
-                    model[model.len().saturating_sub(limit)..],
-                    "cap {max_events}, {} pushes, limit {limit}",
-                    i + 1
-                );
-            }
+#[test]
+fn a_failed_probe_reopens_and_reset_advances_the_generation() {
+    pollster::block_on(async {
+        let clock = ManualClock::default();
+        let store = store(&clock);
+        store
+            .record_outcome(
+                "a",
+                0,
+                StoredOutcome::Failure,
+                Duration::ZERO,
+                failure_policy(1),
+            )
+            .await
+            .expect("opened");
+        clock.advance(Duration::from_secs(10));
+        let lease = acquired(
+            store
+                .try_begin_probe("a", Duration::from_secs(2))
+                .await
+                .expect("elected"),
+        );
+        let reopened = store
+            .complete_probe(
+                "a",
+                lease,
+                StoredOutcome::Failure,
+                Duration::ZERO,
+                probe_policy(1),
+            )
+            .await
+            .expect("reopened");
+        assert_eq!(reopened.transition, Some(StateTransition::Opened));
+        assert_eq!(reopened.snapshot.retry_at, Some(Duration::from_secs(20)));
+        let reset = store.reset("a").await.expect("reset");
+        assert_eq!(reset.state, State::Closed);
+        assert!(reset.generation > reopened.snapshot.generation);
+    });
+}
+
+/// Everything the store keeps for `name`, to prove a refusal changed none of
+/// it.
+fn kept(store: &MemoryStorage, name: &str) -> (CircuitSnapshot, Option<ProbeLease>, u64, usize) {
+    store
+        .circuits()
+        .get(name)
+        .map(|circuit| {
+            (
+                circuit.snapshot,
+                circuit.probe,
+                circuit.next_token,
+                circuit.events.len(),
+            )
+        })
+        .expect("a seen circuit")
+}
+
+fn set(store: &MemoryStorage, name: &str, act: impl FnOnce(&mut MemoryCircuit)) {
+    act(store.circuits().entry(String::from(name)).or_default());
+}
+
+async fn record(store: &MemoryStorage, generation: u64) -> Result<StorageUpdate, StorageError> {
+    store
+        .record_outcome(
+            "a",
+            generation,
+            StoredOutcome::Failure,
+            Duration::ZERO,
+            failure_policy(1),
+        )
+        .await
+}
+
+#[test]
+fn an_exhausted_generation_refuses_every_transition_and_changes_nothing() {
+    pollster::block_on(async {
+        let clock = ManualClock::default();
+        let store = store(&clock);
+        set(&store, "a", |c| c.snapshot.generation = u64::MAX);
+
+        // Opening would reuse a generation an in-flight call may carry.
+        let before = kept(&store, "a");
+        assert!(record(&store, u64::MAX).await.is_err());
+        assert_eq!(kept(&store, "a"), before, "the outcome was not kept");
+        assert!(store.reset("a").await.is_err());
+        assert_eq!(kept(&store, "a"), before);
+
+        // Open, cooldown elapsed: half-opening needs a generation.
+        set(&store, "a", |c| {
+            c.snapshot.generation = u64::MAX - 1;
+        });
+        record(&store, u64::MAX - 1).await.expect("opened");
+        clock.advance(Duration::from_secs(10));
+        let before = kept(&store, "a");
+        assert_eq!(before.0.generation, u64::MAX, "the last one is used once");
+        assert!(
+            store
+                .try_begin_probe("a", Duration::from_secs(2))
+                .await
+                .is_err()
+        );
+        assert_eq!(kept(&store, "a"), before);
+    });
+}
+
+#[test]
+fn an_exhausted_generation_refuses_completing_a_probe_that_transitions() {
+    pollster::block_on(async {
+        let clock = ManualClock::default();
+        let store = store(&clock);
+        record(&store, 0).await.expect("opened");
+        clock.advance(Duration::from_secs(10));
+        let lease = acquired(
+            store
+                .try_begin_probe("a", Duration::from_secs(2))
+                .await
+                .expect("elected"),
+        );
+        set(&store, "a", |c| {
+            c.snapshot.generation = u64::MAX;
+            c.probe = c.probe.map(|probe| ProbeLease {
+                generation: u64::MAX,
+                ..probe
+            });
+        });
+        let lease = ProbeLease {
+            generation: u64::MAX,
+            ..lease
+        };
+        let before = kept(&store, "a");
+        for outcome in [StoredOutcome::Success, StoredOutcome::Failure] {
+            assert!(
+                store
+                    .complete_probe("a", lease, outcome, Duration::ZERO, probe_policy(1))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(kept(&store, "a"), before, "{outcome:?} changed nothing");
         }
-    }
+        // A success below the threshold transitions nothing: honoured.
+        let counted = store
+            .complete_probe(
+                "a",
+                lease,
+                StoredOutcome::Success,
+                Duration::ZERO,
+                probe_policy(2),
+            )
+            .await
+            .expect("counted");
+        assert_eq!(counted.transition, None);
+    });
 }
 
 #[test]
-fn memory_storage_caps_retained_events() {
-    let storage = MemoryStorage::with_max_events(100);
-    for i in 0..150 {
-        storage.record_success("test_circuit", f64::from(i) * 0.01);
-    }
-
-    assert_matches!(retained_events(&storage), 1..=100);
-}
-
-#[test]
-fn memory_storage_caps_small_limits() {
-    let storage = MemoryStorage::with_max_events(5);
-    for i in 0..20 {
-        storage.record_success("test_circuit", f64::from(i) * 0.01);
-    }
-
-    assert_matches!(retained_events(&storage), 1..=5);
-}
-
-#[test]
-fn memory_storage_window_follows_its_clock() {
-    let clock = ManualClock::starting_at(100);
-    let storage = MemoryStorage::with_clock(Box::new(clock.clone()));
-
-    storage.record_failure("test_circuit", 0.1);
-    clock.advance(Duration::from_secs(2));
-    storage.record_failure("test_circuit", 0.1);
-
-    assert_eq!(storage.monotonic_time(), 102.0);
-    assert_eq!(storage.failure_count("test_circuit", 1.0), 1);
-    assert_eq!(storage.failure_count("test_circuit", 2.0), 2);
-}
-
-#[test]
-#[cfg(feature = "std")]
-fn memory_storage_system_clock_is_monotonic() {
-    let storage = MemoryStorage::new();
-
-    let before = storage.monotonic_time();
-    std::thread::sleep(Duration::from_millis(10));
-
-    assert!(storage.monotonic_time() > before);
-}
-
-#[test]
-fn null_storage_discards_everything() {
-    let storage = NullStorage::new();
-
-    storage.record_success("test_circuit", 0.1);
-    storage.record_failure("test_circuit", 0.2);
-    storage.clear("test_circuit");
-    storage.clear_all();
-
-    assert_eq!(storage.success_count("test_circuit", 60.0), 0);
-    assert_eq!(storage.failure_count("test_circuit", 60.0), 0);
-    assert!(storage.event_log("test_circuit", 10).is_empty());
-}
-
-#[test]
-#[cfg(feature = "std")]
-fn null_storage_time_still_advances() {
-    let storage = NullStorage::new();
-
-    let before = storage.monotonic_time();
-    std::thread::sleep(Duration::from_millis(10));
-
-    assert!(storage.monotonic_time() > before);
-}
-
-#[test]
-#[cfg(not(feature = "std"))]
-fn default_clocks_read_zero_without_std() {
-    // `ZeroClock` is the no_std default; inject a real clock via `with_clock`.
-    assert_eq!(MemoryStorage::new().monotonic_time(), 0.0);
-    assert_eq!(NullStorage::new().monotonic_time(), 0.0);
-}
-
-#[test]
-fn null_storage_never_trips_a_circuit() {
-    let mut circuit = crate::CircuitBreaker::builder("test")
-        .storage(alloc::sync::Arc::new(NullStorage::new()))
-        .failure_threshold(3)
-        .build();
-
-    for _ in 0..3 {
-        let _ = circuit.call(|| Err::<(), _>("error"));
-    }
-
-    assert!(circuit.is_closed());
+fn exhausted_probe_tokens_refuse_and_change_nothing() {
+    pollster::block_on(async {
+        let clock = ManualClock::default();
+        let store = store(&clock);
+        record(&store, 0).await.expect("opened");
+        clock.advance(Duration::from_secs(10));
+        set(&store, "a", |c| c.next_token = u64::MAX - 1);
+        let last = acquired(
+            store
+                .try_begin_probe("a", Duration::from_secs(2))
+                .await
+                .expect("the last token is issued"),
+        );
+        assert_eq!(last.token, u64::MAX);
+        clock.advance(Duration::from_secs(2));
+        let before = kept(&store, "a");
+        assert!(
+            store
+                .try_begin_probe("a", Duration::from_secs(2))
+                .await
+                .is_err(),
+            "a takeover would reuse a token"
+        );
+        assert_eq!(kept(&store, "a"), before);
+    });
 }

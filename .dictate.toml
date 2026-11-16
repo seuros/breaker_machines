@@ -1,0 +1,27 @@
+[decree.supreme]
+trailing_whitespace = "deny"
+tabs_vs_spaces = "spaces"
+tab_width = 2
+final_newline = "require"
+line_endings = "lf"
+blank_line_whitespace = "deny"
+
+[decree.supreme.ignore.tab-character]
+filenames = ["Makefile", "GNUmakefile", "makefile"]
+extensions = ["md", "mdx", "tsv"]
+
+[decree.ruby]
+max_line_length = 120
+max_lines = 400
+ignore_comments = true
+ignore_blank_lines = true
+method_visibility_order = ["public", "protected", "private"]
+comment_spacing = true
+
+[decree.rust]
+tab_width = 4
+max_line_length = 100
+max_lines = 400
+ignore_comments = true
+ignore_blank_lines = true
+visibility_order = ["pub", "private"]

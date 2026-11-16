@@ -1,81 +1,42 @@
 use super::*;
-use alloc::string::{String, ToString};
-use core::sync::atomic::{AtomicBool, Ordering};
+use std::string::{String, ToString};
 use std::sync::Mutex;
 
-fn flag() -> (Arc<AtomicBool>, CallbackFn) {
-    let called = Arc::new(AtomicBool::new(false));
-    let setter = Arc::clone(&called);
-    (
-        called,
-        Arc::new(move |_| setter.store(true, Ordering::SeqCst)),
-    )
-}
-
 #[test]
-#[cfg(feature = "std")]
-fn panicking_callbacks_are_contained() {
-    let callbacks = Callbacks {
-        on_open: Some(Arc::new(|_| panic!("intentional panic in on_open"))),
-        on_close: Some(Arc::new(|_| panic!("intentional panic in on_close"))),
-        on_half_open: Some(Arc::new(|_| panic!("intentional panic in on_half_open"))),
+fn each_transition_fires_its_hook_with_the_name() {
+    let seen = Arc::new(Mutex::new(std::vec::Vec::<String>::new()));
+    let hook = |tag: &'static str| -> CallbackFn {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |name| {
+            seen.lock()
+                .expect("unpoisoned")
+                .push(std::format!("{tag}:{name}"));
+        })
     };
-
-    // Panics are caught so they never unwind across the FFI boundary.
-    callbacks.trigger_open("test");
-    callbacks.trigger_close("test");
-    callbacks.trigger_half_open("test");
-}
-
-#[test]
-#[cfg(not(feature = "std"))]
-#[should_panic(expected = "intentional panic in on_open")]
-fn panicking_callbacks_propagate_without_std() {
     let callbacks = Callbacks {
-        on_open: Some(Arc::new(|_| panic!("intentional panic in on_open"))),
-        ..Callbacks::new()
+        on_open: Some(hook("open")),
+        on_close: Some(hook("close")),
+        on_half_open: Some(hook("half_open")),
     };
-
-    // Without `std` there is no `catch_unwind` to contain it.
-    callbacks.trigger_open("test");
-}
-
-#[test]
-fn each_trigger_runs_its_callback() {
-    let (opened, on_open) = flag();
-    let (closed, on_close) = flag();
-    let (half_opened, on_half_open) = flag();
-    let callbacks = Callbacks {
-        on_open: Some(on_open),
-        on_close: Some(on_close),
-        on_half_open: Some(on_half_open),
-    };
-
-    callbacks.trigger_open("test");
-    assert!(opened.load(Ordering::SeqCst), "on_open not called");
-    assert!(!closed.load(Ordering::SeqCst), "on_close called early");
-
-    callbacks.trigger_close("test");
-    callbacks.trigger_half_open("test");
-    assert!(closed.load(Ordering::SeqCst), "on_close not called");
-    assert!(
-        half_opened.load(Ordering::SeqCst),
-        "on_half_open not called"
+    callbacks.fire(Transition::Opened, "a");
+    callbacks.fire(Transition::HalfOpened, "b");
+    callbacks.fire(Transition::Closed, "c");
+    assert_eq!(
+        *seen.lock().expect("unpoisoned"),
+        ["open:a", "half_open:b", "close:c"].map(ToString::to_string)
     );
 }
 
 #[test]
-fn callback_receives_circuit_name() {
-    let received = Arc::new(Mutex::new(String::new()));
-    let sink = Arc::clone(&received);
+fn a_panicking_hook_is_contained() {
     let callbacks = Callbacks {
-        on_open: Some(Arc::new(move |name| {
-            *sink.lock().unwrap() = name.to_string();
-        })),
-        ..Callbacks::new()
+        on_open: Some(Arc::new(|_| panic!("intentional panic in on_open"))),
+        ..Callbacks::default()
     };
-
-    callbacks.trigger_open("my_circuit");
-
-    assert_eq!(*received.lock().unwrap(), "my_circuit");
+    callbacks.fire(Transition::Opened, "test");
+    callbacks.fire(Transition::Closed, "no hook set");
+    assert_eq!(
+        std::format!("{callbacks:?}"),
+        "Callbacks { on_open: true, on_close: false, on_half_open: false }"
+    );
 }

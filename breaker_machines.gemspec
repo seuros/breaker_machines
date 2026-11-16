@@ -8,50 +8,30 @@ Gem::Specification.new do |spec|
   spec.authors = ['Abdelkader Boudih']
   spec.email = ['terminale@gmail.com']
 
-  spec.summary = 'Circuit breaker implementation for Ruby with a clean DSL and state_machines under the hood'
-  spec.description = <<~DESC
-    BreakerMachines is a production-ready circuit breaker implementation for Ruby that prevents
-    cascade failures in distributed systems. Built on the battle-tested state_machines gem, it
-    provides a clean DSL, thread-safe operations, multiple storage backends, and comprehensive
-    introspection tools. Unlike other solutions, BreakerMachines prioritizes safety by avoiding
-    dangerous forceful timeouts while supporting fallback chains, jitter, and event callbacks.
-  DESC
+  spec.summary = 'Circuit breakers over a native Rust core, with a runtime that guards blocks'
+  spec.description = 'Circuit breaker admission, outcome windows and transitions decided by the no_std ' \
+                     'breaker-machines core in Integer nanoseconds, with a Ruby runtime for guarding ' \
+                     'blocks, fallbacks, hooks, a registry and a class DSL.'
   spec.homepage = 'https://github.com/seuros/breaker_machines'
   spec.license = 'MIT'
   spec.required_ruby_version = '>= 4.0.0'
 
-  # Platform support
-  spec.platform = Gem::Platform::RUBY
-  # NOTE: This gem supports JRuby and TruffleRuby, but async features require MRI
-
-  # Note: allowed_push_host removed to allow publishing to both RubyGems.org and GitHub Packages
-  # Use --host flag on gem push to specify target registry
-
   spec.metadata['homepage_uri'] = spec.homepage
   spec.metadata['source_code_uri'] = 'https://github.com/seuros/breaker_machines'
-  spec.metadata['bug_tracker_uri'] = 'https://github.com/seuros/breaker_machines/issues'
-  spec.metadata['documentation_uri'] = 'https://github.com/seuros/breaker_machines#readme'
+  spec.metadata['changelog_uri'] = 'https://github.com/seuros/breaker_machines/blob/master/CHANGELOG.md'
   spec.metadata['rubygems_mfa_required'] = 'true'
   spec.metadata['cargo_crate_name'] = 'breaker_machines_native'
   spec.metadata['cargo_manifest_path'] = 'ext/breaker_machines_native/ffi/Cargo.toml'
 
-  # Specify which files should be added to the gem. The generic `ruby` gem is
-  # pure Ruby; native binaries are shipped only in platform gems built by rb_sys.
-  lib_files = Dir['lib/**/*'].reject { |path| path =~ /\.(bundle|so|dll)\z/ }
-  spec.files = lib_files + %w[LICENSE.txt README.md]
+  spec.files = Dir.glob(%w[
+    lib/**/*.rb sig/**/*.rbs sig/manifest.yaml ext/**/*.{rb,rs,toml,md} Cargo.toml
+    README.md CHANGELOG.md LICENSE.txt
+  ]).select { |path| File.file?(path) }
+    .reject { |path| path.end_with?('/tests.rs') || path.include?('/tests/') }
   spec.require_paths = ['lib']
+  spec.extensions = ['ext/breaker_machines_native/extconf.rb']
 
-  # Core dependencies
-  spec.add_dependency 'activesupport', '>= 8.1'
-  spec.add_dependency 'chrono_machines', '>= 0.12.1'
-  spec.add_dependency 'deadline_machines', '>= 0.1'
-  spec.add_dependency 'concurrent-ruby', '~> 1.3'
+  spec.add_dependency 'deadline_machines', '>= 0.2.0'
   spec.add_dependency 'state_machines', '>= 0.202'
-  spec.add_dependency 'zeitwerk', '~> 2.7'
-
-  # Development dependencies
-  spec.add_development_dependency 'minitest', '~> 6.0'
-  spec.add_development_dependency 'rb_sys', '~> 0.9'
-  spec.add_development_dependency 'rake', '~> 13.0'
-  spec.add_development_dependency 'rake-compiler', '~> 1.3'
+  spec.add_dependency 'rb_sys', '~> 0.9', '>= 0.9.130'
 end

@@ -1,256 +1,123 @@
 # frozen_string_literal: true
 
-require 'test_helper'
+require_relative 'test_helper'
 
-class CircuitTest < ActiveSupport::TestCase
-  class MockService
-    def self.call
-      'success'
-    end
-  end
+class CircuitTest < Minitest::Test
+  include BreakerHelpers
 
   def setup
-    BreakerMachines.reset!
-    @circuit = BreakerMachines::Circuit.new(:test_circuit, {
-                                              failure_threshold: 3,
-                                              failure_window: 60,
-                                              reset_timeout: 1,
-                                              reset_timeout_jitter: 0, # Disable jitter for predictable tests
-                                              timeout: 2
-                                            })
+    @clock = ManualClock.new
+    @seen = []
   end
 
-  def test_initial_state_is_closed
-    assert_predicate @circuit, :closed?
-    refute_predicate @circuit, :open?
-    refute_predicate @circuit, :half_open?
+  def teardown = B.registry.clear
+
+  def circuit(policy = self.policy, **runtime)
+    hooks = %i[on_open on_close on_half_open on_reject].to_h { |hook| [hook, -> { @seen << hook }] }
+    B::Circuit.new(:svc, policy, clock: @clock, **hooks, **runtime)
   end
 
-  def test_successful_calls_keep_circuit_closed
-    10.times do
-      result = @circuit.wrap { MockService.call }
+  def fail(circuit) = circuit.call { raise IOError, 'down' }
 
-      assert_equal 'success', result
+  def test_a_full_cycle_fires_each_hook_once
+    c = circuit(policy(failures: 2))
+    assert_equal 7, c.call { 7 }
+    2.times { assert_raises(IOError) { fail(c) } }
+    assert_predicate c, :open?
+    error = assert_raises(B::CircuitOpenError) { c.call { 1 } }
+    assert_equal [:svc, :open, at(30)], [error.circuit_name, error.refusal, error.retry_after]
+    @clock.advance(at(30))
+    assert_equal :up, c.call { :up }
+    assert_predicate c, :closed?
+    assert_equal %i[on_open on_reject on_half_open on_close], @seen
+  end
+
+  def test_fallbacks_replace_refusals_and_failures
+    c = circuit(policy(failures: 1), fallback: ->(error) { "fallback: #{error.class}" })
+    assert_equal 'fallback: IOError', fail(c)
+    assert_equal 'fallback: BreakerMachines::CircuitOpenError', c.call { :live }
+    chained = circuit(policy(failures: 1), fallback: [-> { raise 'first' }, ->(error) { error.message }, :never])
+    assert_equal 'first', fail(chained)
+    static = circuit(policy(failures: 1), fallback: :cached)
+    assert_equal :cached, fail(static)
+  end
+
+  def test_only_listed_exceptions_count
+    c = circuit(policy(failures: 1), exceptions: [IOError])
+    assert_raises(ArgumentError) { c.call { raise ArgumentError } }
+    assert_predicate c, :closed?
+    assert_equal 0, c.stats.failure_count
+    assert_equal 0, c.instance_variable_get(:@breaker).outstanding, 'the uncounted call was abandoned'
+    catch(:out) { c.call { throw :out } }
+    assert_equal 0, c.instance_variable_get(:@breaker).outstanding
+  end
+
+  def test_the_concurrency_limit_raises_a_bulkhead_error
+    c = circuit(policy(limit: 1))
+    c.call do
+      error = assert_raises(B::CircuitBulkheadError) { c.call { :inner } }
+      assert_equal :full, error.refusal
     end
-
-    assert_predicate @circuit, :closed?
   end
 
-  def test_circuit_opens_after_failure_threshold
-    # Simulate failures
-    3.times do
-      assert_raises(RuntimeError) do
-        @circuit.wrap { raise 'Service error' }
+  def test_stats_observe_force_and_reset
+    c = circuit(policy(failures: 1))
+    @clock.advance(at(5))
+    assert_raises(IOError) { fail(c) }
+    stats = c.stats
+    assert_equal [:open, 1, 0, at(5), at(5)], stats.to_h.values_at(:state, :failure_count, :success_count,
+                                                                    :last_failure_at, :opened_at)
+    assert_instance_of IOError, c.last_error
+    c.reset
+    assert_nil c.last_error
+    assert_equal :open, c.observe(:failure, 0)
+    @clock.advance(at(30))
+    assert_equal :closed, c.observe(:success, 0)
+    assert_same c, c.force_open
+    assert_same c, c.force_close
+    assert_same c, c.force_close
+    assert_equal %i[on_open on_open on_half_open on_close on_open on_close], @seen
+    assert_equal :svc, c.to_h[:name]
+    assert_empty c.events, 'recovering by probe starts a fresh window'
+  end
+
+  def test_a_clock_that_steps_back_reads_as_standing_still
+    c = circuit
+    @clock.advance(at(10))
+    c.call { 1 }
+    @clock.advance(-at(5))
+    assert_equal at(10), c.now
+    assert_equal 1, c.call { 1 }
+  end
+
+  def test_hooks_and_fallbacks_run_on_their_owner
+    owner = Struct.new(:calls).new([])
+    c = B::Circuit.new(:owned, policy(failures: 1), owner:, on_open: -> { calls << :open },
+                                                    fallback: -> { calls << :fallback })
+    fail(c)
+    assert_equal %i[open fallback], owner.calls
+  end
+
+  def test_a_raising_hook_is_ignored
+    c = B::Circuit.new(:loud, policy(failures: 1), on_open: -> { raise 'hook' })
+    assert_raises(IOError) { fail(c) }
+    assert_predicate c, :open?
+  end
+
+  def test_call_needs_a_block_and_wrap_is_call
+    assert_raises(ArgumentError) { circuit.call }
+    assert_equal 3, circuit.wrap { 3 }
+  end
+
+  def test_a_spent_deadline_is_abandoned_not_counted
+    c = circuit(policy(failures: 1))
+    assert_raises(DeadlineMachines::Error) do
+      DeadlineMachines.with_deadline(1) do
+        sleep 0.001
+        c.call { DeadlineMachines.check! }
       end
     end
-
-    # Circuit should now be open
-    assert_predicate @circuit, :open?
-    refute_predicate @circuit, :closed?
-  end
-
-  def test_error_rate_threshold
-    # Create circuit with rate-based threshold
-    rate_circuit = BreakerMachines::Circuit.new(:rate_test, {
-                                                  use_rate_threshold: true,
-                                                  failure_rate: 0.5,
-                                                  minimum_calls: 10,
-                                                  failure_window: 60,
-                                                  reset_timeout: 1,
-                                                  reset_timeout_jitter: 0
-                                                })
-
-    # Make less than minimum calls - circuit should stay closed
-    4.times do
-      rate_circuit.wrap { 'success' }
-    rescue StandardError
-      nil
-    end
-
-    4.times { assert_raises(RuntimeError) { rate_circuit.wrap { raise 'error' } } }
-
-    assert_predicate rate_circuit, :closed?
-
-    # Make 2 more calls to reach minimum (10 total: 6 success, 4 failures = 40% failure rate)
-    2.times { rate_circuit.wrap { 'success' } }
-
-    # Still below 50% failure rate
-    assert_predicate rate_circuit, :closed?
-
-    # One more failure brings us to 5/11 = 45.5% - still below threshold
-    assert_raises(RuntimeError) { rate_circuit.wrap { raise 'error' } }
-    assert_predicate rate_circuit, :closed?
-
-    # Another failure: 6/12 = 50% - should trip
-    assert_raises(RuntimeError) { rate_circuit.wrap { raise 'error' } }
-    assert_predicate rate_circuit, :open?
-  end
-
-  def test_open_circuit_rejects_calls_immediately
-    # Open the circuit
-    3.times do
-      assert_raises(RuntimeError) do
-        @circuit.wrap { raise 'Service error' }
-      end
-    end
-
-    # Next call should fail immediately with CircuitOpenError
-    error = assert_raises(BreakerMachines::CircuitOpenError) do
-      @circuit.wrap { MockService.call }
-    end
-
-    assert_equal "Circuit 'test_circuit' is open", error.message
-    assert_equal :test_circuit, error.circuit_name
-  end
-
-  def test_circuit_transitions_to_half_open_after_reset_timeout
-    # Open the circuit
-    3.times do
-      assert_raises(RuntimeError) do
-        @circuit.wrap { raise 'Service error' }
-      end
-    end
-
-    assert_predicate @circuit, :open?
-
-    # Wait for reset timeout
-    sleep 1.1
-
-    # Next call should be allowed (half-open state)
-    result = @circuit.wrap { MockService.call }
-
-    assert_equal 'success', result
-
-    # Circuit should be closed again
-    assert_predicate @circuit, :closed?
-  end
-
-  def test_half_open_circuit_reopens_on_failure
-    # Open the circuit
-    3.times do
-      assert_raises(RuntimeError) do
-        @circuit.wrap { raise 'Service error' }
-      end
-    end
-
-    # Wait for reset timeout
-    sleep 1.1
-
-    # Fail in half-open state
-    assert_raises(RuntimeError) do
-      @circuit.wrap { raise 'Still failing' }
-    end
-
-    # Circuit should be open again
-    assert_predicate @circuit, :open?
-  end
-
-  def test_timeout_configuration_is_documented_only
-    # Timeout configuration is for documentation purposes only
-    # Actual timeouts must be implemented by the caller
-    slow_circuit = BreakerMachines::Circuit.new(:slow_circuit, {
-                                                  failure_threshold: 2,
-                                                  timeout: 0.1
-                                                })
-
-    # The circuit executes normally without forceful timeout
-    result = slow_circuit.wrap do
-      # In real usage, you would use library-specific timeouts
-      # e.g., Faraday's request.options.timeout
-      'completed'
-    end
-
-    assert_equal 'completed', result
-    assert_predicate slow_circuit, :closed?
-  end
-
-  def test_fallback_is_invoked_when_configured
-    circuit_with_fallback = BreakerMachines::Circuit.new(:with_fallback, {
-                                                           failure_threshold: 1,
-                                                           fallback: ->(_error) { 'fallback result' }
-                                                         })
-
-    # Trigger failure
-    result = circuit_with_fallback.wrap { raise 'Service error' }
-
-    assert_equal 'fallback result', result
-
-    # Circuit should be open
-    assert_predicate circuit_with_fallback, :open?
-
-    # Fallback should work for open circuit too
-    result = circuit_with_fallback.wrap { 'should not execute' }
-
-    assert_equal 'fallback result', result
-  end
-
-  def test_callbacks_are_invoked
-    events = []
-
-    circuit_with_callbacks = BreakerMachines::Circuit.new(:with_callbacks, {
-                                                            failure_threshold: 2,
-                                                            reset_timeout: 0.5,
-                                                            reset_timeout_jitter: 0, # Disable jitter for test
-                                                            on_open: -> { events << :opened },
-                                                            on_close: -> { events << :closed },
-                                                            on_half_open: -> { events << :half_opened },
-                                                            on_reject: -> { events << :rejected }
-                                                          })
-
-    # Trigger failures to open circuit
-    2.times do
-      assert_raises(RuntimeError) do
-        circuit_with_callbacks.wrap { raise 'error' }
-      end
-    end
-
-    assert_includes events, :opened
-
-    # Try to call while open (should be rejected)
-    assert_raises(BreakerMachines::CircuitOpenError) do
-      circuit_with_callbacks.wrap { 'test' }
-    end
-
-    assert_includes events, :rejected
-
-    # Wait for half-open
-    sleep 0.6
-
-    # Successful call should close circuit
-    circuit_with_callbacks.wrap { 'success' }
-
-    assert_includes events, :closed
-  end
-
-  def test_thread_safety
-    results = []
-    errors = []
-    threads = []
-
-    circuit = BreakerMachines::Circuit.new(:concurrent_circuit, {
-                                             failure_threshold: 5,
-                                             failure_window: 60
-                                           })
-
-    # Launch multiple threads
-    10.times do |i|
-      threads << Thread.new do
-        result = circuit.wrap do
-          raise "Error #{i}" if i < 5
-
-          "Success #{i}"
-        end
-        results << result
-      rescue StandardError => e
-        errors << e
-      end
-    end
-
-    threads.each(&:join)
-
-    # Should have some failures (at least the RuntimeErrors)
-    assert(errors.any? { |e| e.is_a?(RuntimeError) || e.is_a?(BreakerMachines::CircuitOpenError) })
-    # Circuit behavior was thread-safe (no crashes, all threads completed)
-    assert_equal 10, results.size + errors.size
+    assert_predicate c, :closed?
+    assert_equal 0, c.stats.failure_count
   end
 end

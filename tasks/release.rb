@@ -107,7 +107,9 @@ module BreakerMachinesRelease
     artifacts.reject do |artifact|
       existing = versions.find { it['number'] == release_version && it['platform'] == artifact.platform }
       next false unless existing
-      raise Error, "RubyGems already has different bytes for #{artifact.platform}" unless existing['sha'] == artifact.sha256
+      unless existing['sha'] == artifact.sha256
+        raise Error, "RubyGems already has different bytes for #{artifact.platform}"
+      end
 
       puts "Already published: #{File.basename(artifact.path)}"
       true

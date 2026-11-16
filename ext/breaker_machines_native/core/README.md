@@ -1,518 +1,108 @@
 # breaker-machines
 
-High-performance circuit breaker implementation with state machine-based lifecycle management.
+> The circuit breaker that went where no Ruby has gone before! ⭐
 
-This crate provides a complete, standalone circuit breaker that can be used independently or as a performance backend for the [breaker_machines](https://github.com/seuros/breaker_machines) Ruby gem.
+Circuit breaker decisions with no clock, no allocation and no `unsafe`, and a
+`std` runtime that guards closures and futures with them. The decision core
+of the [breaker_machines](https://github.com/seuros/breaker_machines) Ruby gem.
 
-## Features
+## The core
 
-- **State Machine**: Built on [state-machines](https://crates.io/crates/state-machines) with dynamic mode for runtime state transitions
-- **Thread-safe Storage**: Sliding window event tracking with `RwLock` for concurrent access
-- **Monotonic Time**: Uses `Instant` to prevent NTP clock skew issues
-- **Builder API**: Ergonomic fluent configuration interface
-- **Callbacks**: Type-safe hooks for state transitions (`on_open`, `on_close`, `on_half_open`)
-- **Fallback Support**: Return default values when circuit is open
-- **Async Support**: Optional `AsyncCircuitBreaker` for protecting futures
-- **Distributed State**: Optional storage-owned FSM, cooldown, generations, and fenced probe leases
-- **Rate-based Thresholds**: Trip circuit based on failure percentage, not just absolute counts
-- **Exception Filtering**: Classify which errors should trip the circuit using custom predicates
-- **Bulkheading**: Limit concurrent operations to prevent resource exhaustion
-- **Jitter Support**: Configurable jitter using [chrono-machines](https://crates.io/crates/chrono-machines) to prevent thundering herd
-- **Storage Abstraction**: Local metrics via `StorageBackend`; distributed coordination via `AsyncStorageBackend`
-- **Zero-cost**: Optimized for high-performance applications
-
-## Performance
-
-Approximately 65x faster than Ruby-based storage for sliding window calculations (10,000 operations: 0.011s vs 0.735s).
-
-## Usage
-
-### Basic Example
+[`Breaker`] admits calls, records their outcomes in a fixed window of `N`
+and moves between [`State::Closed`], [`State::Open`] and
+[`State::HalfOpen`]. The caller supplies every instant (a [`Duration`] since
+an epoch it picks) and every random draw. A [`Refusal`] changes nothing.
 
 ```rust
-use breaker_machines::CircuitBreaker;
-# struct StripeApi;
-# impl StripeApi {
-#     fn charge(&self, amount: u64) -> Result<String, String> {
-#         Ok(format!("charged {amount}"))
-#     }
-# }
-# let (stripe_api, amount) = (StripeApi, 4200);
+use breaker_machines::{
+    Admitted, Breaker, Completed, Outcome, Policy, Recovery, Refusal, Settled, State, Threshold,
+};
+use core::num::NonZeroU32;
+use core::time::Duration;
 
-let mut circuit = CircuitBreaker::builder("payment_api")
-    .failure_threshold(5)
-    .failure_window_secs(60.0)
-    .half_open_timeout_secs(30.0)
-    .success_threshold(2)
-    .on_open(|name| eprintln!("Circuit {} opened!", name))
-    .build();
+let secs = Duration::from_secs;
+let one = NonZeroU32::MIN;
+// Two failures in a minute open it; it probes after 30 s; one success closes it.
+let policy = Policy::new(
+    Threshold::new(NonZeroU32::new(2), None, 0).ok_or("threshold")?,
+    secs(60),
+    Recovery::new(secs(30), 0.0, one, one).ok_or("recovery")?,
+    None,
+)
+.ok_or("policy")?;
+let mut breaker = Breaker::<64>::new(policy);
 
-// Execute with circuit protection
-let result = circuit.call(|| {
-    // Your service call here
-    stripe_api.charge(amount)
-});
-
-match result {
-    Ok(payment) => println!("Payment successful: {:?}", payment),
-    Err(e) => eprintln!("Payment failed: {}", e),
+for at in [1, 2] {
+    let mut ticket = breaker.admit(secs(at))?.into_ticket();
+    breaker.complete(&mut ticket, Outcome::Failure, secs(at), 0)?;
 }
+assert_eq!(breaker.state(), State::Open);
+assert_eq!(breaker.admit(secs(10)), Err(Refusal::Open));
 
-// Check circuit state
-if circuit.is_open() {
-    println!("Circuit is open, falling back to queue");
-}
+let Admitted::HalfOpened(mut probe) = breaker.admit(secs(32))? else {
+    return Err("the cooldown elapsed".into());
+};
+assert_eq!(
+    breaker.complete(&mut probe, Outcome::Success, secs(33), 0),
+    Ok(Completed::Settled(Settled::Closed)),
+);
+// A repeat of the same settlement is honoured and changes nothing.
+assert_eq!(
+    breaker.complete(&mut probe, Outcome::Success, secs(34), 0),
+    Ok(Completed::Duplicate(Settled::Closed)),
+);
+# Ok::<(), Box<dyn core::error::Error>>(())
 ```
 
-### With Callbacks
+Tickets carry ids issued through `periscope-machines`: build breakers that
+may see each other's tickets `with_scope` so a foreign ticket is refused as
+[`Refusal::Unknown`]. The cooldown is a `chrono-machines` `Constant`,
+jittered by the draw passed when the circuit opens.
+
+Identities never wrap. Every transition takes the next `u64` epoch, which
+fences the tickets admitted before it; once the last is taken, a call that
+would transition is `Refusal::Exhausted` with nothing changed, while calls
+that would not are still honoured. `MemoryStorage` treats its circuit
+generations and probe tokens the same way, answering a `StorageError`.
+
+## The runtime (`std`, `async`)
 
 ```rust
-use breaker_machines::CircuitBreaker;
-# fn alert_ops(_circuit: &str) {}
-# fn api_request() -> Result<&'static str, std::io::Error> { Ok("ok") }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
+use breaker_machines::{CircuitBreaker, CircuitError, Policy, Recovery, Refusal, Threshold};
+use core::num::NonZeroU32;
+use core::time::Duration;
 
-let mut circuit = CircuitBreaker::builder("api")
-    .failure_threshold(3)
-    .on_open(|name| {
-        // Send alert to PagerDuty
-        alert_ops(name);
-    })
-    .on_close(|name| {
-        // Log recovery
-        println!("Circuit {} recovered", name);
-    })
+# let one = NonZeroU32::MIN;
+# let policy = Policy::new(
+#     Threshold::new(Some(one), None, 0).ok_or("threshold")?,
+#     Duration::from_secs(60),
+#     Recovery::new(Duration::from_secs(30), 0.0, one, one).ok_or("recovery")?,
+#     None,
+# )
+# .ok_or("policy")?;
+let mut circuit = CircuitBreaker::builder("payments", policy)
+    .on_open(|name| eprintln!("{name} opened"))
     .build();
-
-circuit.call(|| api_request())?;
-# Ok(())
-# }
-```
-
-### With Jitter (Thundering Herd Prevention)
-
-```rust
-use breaker_machines::CircuitBreaker;
-# fn api_request() -> Result<&'static str, std::io::Error> { Ok("ok") }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-
-let mut circuit = CircuitBreaker::builder("distributed_api")
-    .failure_threshold(5)
-    .half_open_timeout_secs(30.0)
-    .jitter_factor(0.1) // 10% jitter = 90-100% of timeout
-    .on_open(|name| eprintln!("Circuit {} opened!", name))
-    .build();
-
-// With jitter, multiple circuits won't retry simultaneously
-// Prevents thundering herd problem in distributed systems
-circuit.call(|| api_request())?;
-# Ok(())
-# }
-```
-
-### With Fallback
-
-```rust
-use breaker_machines::{CircuitBreaker, CallOptions};
-# fn expensive_api_call() -> Result<String, String> { Err("upstream down".into()) }
-# fn get_cached_value() -> String { "cached".into() }
-
-let mut circuit = CircuitBreaker::builder("api")
-    .failure_threshold(3)
-    .build();
-
-// Provide a fallback when circuit is open
-let result = circuit.call((
-    || expensive_api_call(),
-    CallOptions::new().with_fallback(|ctx| {
-        // Access circuit name, opened_at timestamp, and state
-        eprintln!("Circuit '{}' is {}, using cache", ctx.circuit_name, ctx.state);
-        Ok(get_cached_value())
-    }),
+let charge = || Err::<&str, _>("card network down");
+assert_eq!(circuit.call(charge), Err(CircuitError::Execution("card network down")));
+assert!(matches!(
+    circuit.call(charge),
+    Err(CircuitError::Refused { refusal: Refusal::Open, .. }),
 ));
-
-// Fallback is only called when circuit is Open
-// Normal calls work as before: circuit.call(|| api_request())
+# Ok::<(), Box<dyn core::error::Error>>(())
 ```
 
-### Observing Outcomes
-
-When the work runs whether or not the circuit allows it (a health signal
-derived from requests you serve anyway), feed each outcome to `observe`
-instead of gating it with `call`. The outcome runs the same machine: an `Open`
-circuit whose cooldown has elapsed moves to `HalfOpen`, the failure classifier
-applies, and the outcome drives the transition it warrants. Nothing is
-admitted, so no probe slot or bulkhead permit is taken; outcomes observed
-during the cooldown are recorded in the metrics but cannot close the circuit.
-
-```rust
-use breaker_machines::{CircuitBreaker, circuit::CircuitState};
-
-let mut health = CircuitBreaker::builder("session_health")
-    .failure_threshold(3)
-    .build();
-
-for _ in 0..3 {
-    health.observe(Err("timeout"), 0.2);
-}
-assert_eq!(health.state(), CircuitState::Open);
-```
-
-### Async Support
-
-Enable the `async` feature to use `AsyncCircuitBreaker` with Rust futures:
-
-```toml
-[dependencies]
-breaker-machines = { version = "0.24.0", features = ["async"] } # x-release-please-version
-```
-
-```rust
-# #[cfg(feature = "async")]
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-# pollster::block_on(async {
-use breaker_machines::{AsyncCallOptions, AsyncCircuitBreaker};
-# struct PaymentClient;
-# impl PaymentClient {
-#     async fn charge(&self, amount: u64) -> Result<String, std::io::Error> {
-#         Ok(format!("charged {amount}"))
-#     }
-# }
-# let (payment_client, amount) = (PaymentClient, 4200);
-# fn cached_payment() -> String { "cached".into() }
-
-let circuit = AsyncCircuitBreaker::builder("payment_api")
-    .failure_threshold(3)
-    .build_async();
-
-let payment = circuit
-    .call(|| async {
-        payment_client.charge(amount).await
-    })
-    .await?;
-
-let cached = circuit
-    .call_with_options(
-        || async {
-            payment_client.charge(amount).await
-        },
-        AsyncCallOptions::new().with_fallback(|ctx| async move {
-            eprintln!("Circuit '{}' is {}, using cache", ctx.circuit_name, ctx.state);
-            Ok(cached_payment())
-        }),
-    )
-    .await?;
-# Ok::<(), Box<dyn std::error::Error>>(())
-# })
-# }
-# #[cfg(not(feature = "async"))]
-# fn main() {}
-```
-
-`AsyncCircuitBreaker` is runtime-agnostic. It only locks around short circuit
-state checks and records outcomes after the protected future completes. Dropping
-an in-flight call releases its bulkhead permit and half-open probe slot. Results
-from calls admitted before a state transition are still recorded in the rolling
-metrics, but cannot drive transitions in a newer half-open generation.
-
-### Admission Across an `.await`
-
-When the protected work is not a single future the circuit can run (a request
-whose outcome is only known after an `.await` elsewhere), take the admission
-first and settle it later. The ticket borrows the circuit, so a future dropped
-mid-probe gives the half-open slot and bulkhead permit back, as `call` does.
-The sync `CallTicket` cannot do that: it has no reference to its circuit, and
-a dropped probe ticket leaks the slot for that `HalfOpen` visit.
-
-`retry_after()` reports the seconds left on the cooldown the circuit drew when
-it opened, jitter included, so an actor can sleep exactly that long and wake to
-a probe instead of reconstructing the deadline from `on_open` callbacks.
-
-```rust
-# #[cfg(feature = "async")]
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-# pollster::block_on(async {
-use breaker_machines::{AsyncCircuitBreaker, CircuitError, circuit::CircuitState};
-# struct Upstream;
-# impl Upstream {
-#     async fn fetch(&self) -> Result<&'static str, std::io::Error> { Ok("payload") }
-# }
-# let upstream = Upstream;
-
-let circuit = AsyncCircuitBreaker::builder("upstream")
-    .failure_threshold(3)
-    .half_open_timeout_secs(30.0)
-    .jitter_factor(0.1)
-    .build_async();
-
-match circuit.try_acquire() {
-    Ok(ticket) => {
-        let outcome = upstream.fetch().await;
-        let _ = ticket.complete(outcome);
-    }
-    Err(CircuitError::Open { .. }) => {
-        if let Some(delay) = circuit.retry_after() {
-            eprintln!("next probe in {delay:.1}s");
-        }
-    }
-    Err(_) => {}
-}
-
-assert_eq!(circuit.state(), CircuitState::Closed);
-# Ok::<(), Box<dyn std::error::Error>>(())
-# })
-# }
-# #[cfg(not(feature = "async"))]
-# fn main() {}
-```
-
-### Distributed Async State
-
-`AsyncCircuitBreaker` intentionally owns a process-local FSM. Use
-`DistributedCircuitBreaker` when multiple gateways must share one circuit:
-
-```toml
-[dependencies]
-breaker-machines = { version = "0.24.0", features = ["async"] } # x-release-please-version
-```
-
-```rust
-# #[cfg(feature = "async")]
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-# pollster::block_on(async {
-use breaker_machines::{CircuitBreaker, MemoryStorage};
-use std::sync::Arc;
-# struct PaymentClient;
-# impl PaymentClient {
-#     async fn charge(&self, amount: u64) -> Result<String, std::io::Error> {
-#         Ok(format!("charged {amount}"))
-#     }
-# }
-# let (payment_client, amount) = (PaymentClient, 4200);
-
-let state_store = Arc::new(MemoryStorage::new());
-
-// In production, each process builds this with an AsyncStorageBackend adapter
-// pointing at the same Redis, database, or coordination service.
-let gateway = CircuitBreaker::builder("payment_api")
-    .failure_threshold(5)
-    .half_open_timeout_secs(30.0)
-    .probe_timeout_secs(5.0)
-    .success_threshold(2)
-    .build_distributed(state_store);
-
-let payment = gateway
-    .call(|| async { payment_client.charge(amount).await })
-    .await?;
-# Ok::<(), Box<dyn std::error::Error>>(())
-# })
-# }
-# #[cfg(not(feature = "async"))]
-# fn main() {}
-```
-
-The backend owns the complete control-plane record: FSM state, generation,
-`opened_at`, `retry_at`, rolling outcomes, half-open successes, and the active
-probe lease. Its operations are asynchronous and atomic per circuit key:
-
-- `record_outcome` updates the rolling window and performs a fenced open transition.
-- `try_begin_probe` checks cooldown using the backend clock and elects one node.
-- `complete_probe` accepts only the current generation and fencing token.
-- `reset` advances the generation so old calls cannot mutate new state.
-
-Probe leases expire. If the elected process crashes or its call future is
-cancelled, another gateway can take over after `probe_timeout_secs`. A custom
-Redis or database adapter must use server-side time and a transaction, script,
-or compare-and-swap primitive to satisfy the `AsyncStorageBackend` atomicity
-contract. `MemoryStorage` provides the same semantics for tests and for
-multi-worker coordination inside one process.
-
-### Rate-based Thresholds
-
-```rust
-use breaker_machines::CircuitBreaker;
-
-// Trip circuit when 50% of calls fail (modern approach)
-let mut circuit = CircuitBreaker::builder("api")
-    .failure_rate(0.5)           // 50% failure rate threshold
-    .minimum_calls(10)            // Need at least 10 calls before evaluating rate
-    .disable_failure_threshold()  // Don't use absolute count
-    .build();
-
-// Or combine both: whichever threshold is hit first opens the circuit
-let mut circuit = CircuitBreaker::builder("api")
-    .failure_threshold(100)      // Absolute: 100 failures
-    .failure_rate(0.3)            // OR 30% failure rate
-    .minimum_calls(20)            // (after at least 20 calls)
-    .build();
-```
-
-### Exception Filtering
-
-```rust
-use breaker_machines::{CircuitBreaker, PredicateClassifier};
-use std::sync::Arc;
-
-#[derive(Debug)]
-enum ApiError {
-    ClientError(u16),  // 4xx - client's fault
-    ServerError(u16),  // 5xx - our fault
-}
-
-// Only trip circuit on server errors (5xx), ignore client errors (4xx)
-let classifier = Arc::new(PredicateClassifier::new(|ctx| {
-    ctx.error
-        .downcast_ref::<ApiError>()
-        .map(|e| matches!(e, ApiError::ServerError(_)))
-        .unwrap_or(true) // Trip on unknown errors
-}));
-
-let mut circuit = CircuitBreaker::builder("api")
-    .failure_threshold(5)
-    .failure_classifier(classifier)
-    .build();
-
-// Client errors don't trip the circuit
-for _ in 0..5 {
-    let _ = circuit.call(|| Err::<(), _>(ApiError::ClientError(400)));
-}
-assert!(circuit.is_closed());
-
-// Server errors do trip the circuit
-for _ in 0..5 {
-    let _ = circuit.call(|| Err::<(), _>(ApiError::ServerError(500)));
-}
-assert!(circuit.is_open());
-```
-
-### Bulkheading
-
-```rust
-use breaker_machines::{CircuitBreaker, CircuitError};
-# struct Database;
-# impl Database {
-#     fn query(&self, _sql: &str) -> Result<Vec<String>, String> {
-#         Ok(vec!["alice".into(), "bob".into()])
-#     }
-# }
-# let database = Database;
-
-// Limit concurrent operations to prevent resource exhaustion
-let mut circuit = CircuitBreaker::builder("database")
-    .max_concurrency(10)  // Max 10 concurrent DB connections
-    .failure_threshold(5)
-    .build();
-
-// The limit counts operations in flight together: futures sharing one
-// `AsyncCircuitBreaker`, or tickets held from `try_acquire`. A sync `call`
-// borrows the circuit mutably, so on its own it runs one at a time.
-let result = circuit.call(|| {
-    database.query("SELECT * FROM users")
-});
-
-match result {
-    Ok(rows) => println!("Query successful: {} rows", rows.len()),
-    Err(CircuitError::BulkheadFull { circuit, limit }) => {
-        // Too many concurrent calls, circuit is protecting resources
-        eprintln!("Circuit '{}' at capacity (limit: {})", circuit, limit);
-    }
-    Err(CircuitError::Open { .. }) => {
-        eprintln!("Circuit is open, database may be down");
-    }
-    Err(e) => eprintln!("Query failed: {}", e),
-}
-```
-
-Bulkheading is especially useful for:
-- **Database connection pools**: Prevent connection exhaustion
-- **API rate limiting**: Stay within provider limits
-- **Thread pool protection**: Avoid starvation in executors
-- **Memory-intensive operations**: Limit parallel processing
-
-### Custom Storage Backend
-
-```rust
-use breaker_machines::{CircuitBreaker, MemoryStorage};
-use std::sync::Arc;
-
-// Default in-memory storage with event tracking
-let storage = Arc::new(MemoryStorage::new());
-
-let mut circuit = CircuitBreaker::builder("api")
-    .storage(storage)
-    .build();
-```
-
-### NullStorage for Testing/Benchmarking
-
-```rust
-use breaker_machines::{CircuitBreaker, NullStorage};
-use std::sync::Arc;
-
-// No-op storage: discards all events, returns zero counts
-// Useful for testing state machine logic without storage overhead
-let storage = Arc::new(NullStorage::new());
-
-let mut circuit = CircuitBreaker::builder("benchmark_test")
-    .storage(storage)
-    .build();
-
-// Circuit will never open (no failure tracking)
-for _ in 0..10 {
-    let _ = circuit.call(|| Err::<(), _>("always fails"));
-}
-assert!(circuit.is_closed()); // Still closed
-```
-
-## State Machine
-
-The circuit breaker implements a state machine with three states:
-
-```text
-Closed → Open → HalfOpen → Closed
-   ↑                 ↓
-   └─────────────────┘
-```
-
-- **Closed**: Normal operation, tracking failures
-- **Open**: Circuit tripped, rejecting calls immediately
-- **HalfOpen**: Testing recovery with limited requests. `half_open_calls`
-  probes run at a time, `success_threshold` successful probes close the
-  circuit, and one failed probe reopens it and restarts the cooldown, whatever
-  the failure window still holds
-
-Transitions are guarded by configurable thresholds and timeouts.
-
-## Architecture
-
-- **Dynamic Mode**: Uses runtime state dispatch via `state-machines` crate
-- **Guards**: Validate transitions based on failure counts and timeouts
-- **State Data**: Tracks `opened_at` timestamps and success counters
-- **Context**: Shared circuit name, config, and storage across states
-
-## Ruby FFI Integration
-
-This crate can be used as a high-performance backend for Ruby applications via Magnus FFI bindings. See the parent [breaker_machines](https://github.com/seuros/breaker_machines) gem for Ruby usage.
-
-## Examples
-
-See `examples/` directory for more usage patterns:
-
-- `basic.rs` - Simple circuit with builder API and callbacks
-
-Run examples with:
-```bash
-cargo run --example basic
-```
-
-## Testing
-
-```bash
-cargo test
-```
-
-All tests use the dynamic state machine with proper guard validation.
-
-## License
-
-MIT
+`async` adds `AsyncCircuitBreaker` (decisions under a short lock, futures
+awaited outside it; a cancelled call gives its slots back) and
+`DistributedCircuitBreaker`, whose state lives in an `AsyncStorageBackend`
+shared by every gateway, with fenced half-open probe leases. Its per-node
+`max_concurrent` slot is checked and taken in one atomic step, so the
+in-flight count never passes the limit or wraps.
+
+[`Breaker`]: https://docs.rs/breaker-machines/latest/breaker_machines/struct.Breaker.html
+[`State::Closed`]: https://docs.rs/breaker-machines/latest/breaker_machines/enum.State.html
+[`State::Open`]: https://docs.rs/breaker-machines/latest/breaker_machines/enum.State.html
+[`State::HalfOpen`]: https://docs.rs/breaker-machines/latest/breaker_machines/enum.State.html
+[`Refusal`]: https://docs.rs/breaker-machines/latest/breaker_machines/enum.Refusal.html
+[`Refusal::Unknown`]: https://docs.rs/breaker-machines/latest/breaker_machines/enum.Refusal.html
+[`Duration`]: https://doc.rust-lang.org/core/time/struct.Duration.html

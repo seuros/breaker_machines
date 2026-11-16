@@ -1,46 +1,33 @@
 # frozen_string_literal: true
 
-# Requires async gem ~> 2.31.0 for modern async patterns
-
-require_relative 'circuit/async_state_management'
-
 module BreakerMachines
-  # AsyncCircuit provides a circuit breaker with async-enabled state machine
-  # for thread-safe, fiber-safe concurrent operations
+  # A Circuit for fiber-based concurrency: fiber-safe by default, with calls,
+  # forced transitions and health checks run as tasks of the `async` gem
+  # (required on first use; add it to your Gemfile).
   class AsyncCircuit < Circuit
-    include Circuit::AsyncStateManagement
+    def initialize(name, policy, fiber_safe: true, **runtime)
+      super
+    end
 
-    # Additional async-specific methods
+    # `call` as an Async task; `.wait` for the result.
     def call_async(&)
-      require 'async' unless defined?(::Async)
-
-      Async do
-        call(&)
-      end
+      require 'async'
+      Async { call(&) }
     end
 
-    # Fire state transition events asynchronously
-    # @param event_name [Symbol] The event to fire
-    # @return [Async::Task] The async task
-    def fire_async(event_name)
-      require 'async' unless defined?(::Async)
+    # Run `:force_open`, `:force_close` or `:reset` as an Async task.
+    def fire_async(event)
+      raise ArgumentError, "unknown event #{event.inspect}" unless %i[force_open force_close reset].include?(event)
 
-      fire_event_async(event_name)
+      require 'async'
+      Async { public_send(event) }
     end
 
-    # Check circuit health asynchronously
-    # Useful for monitoring multiple circuits concurrently
+    # The circuit's health as an Async task answering a Hash.
     def health_check_async
-      require 'async' unless defined?(::Async)
-
+      require 'async'
       Async do
-        {
-          name: @name,
-          status: status_name,
-          open: open?,
-          stats: stats.to_h,
-          can_recover: open? && reset_timeout_elapsed?
-        }
+        { name:, state:, open: open?, stats: stats.to_h, can_recover: open? && retry_after.zero? }
       end
     end
   end

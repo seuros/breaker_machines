@@ -1,354 +1,297 @@
-//! Async-friendly circuit breaker wrapper.
-//!
-//! This module keeps the core state machine synchronous and runs only short
-//! state checks under a mutex. User futures are awaited outside the lock.
+//! A runtime circuit for futures: decisions under a short lock, operations
+//! awaited outside it.
 
+use crate::circuit::{Core, Shared, WINDOW};
 use crate::{
-    CircuitBreaker, CircuitBuilder, Config, FallbackContext,
-    circuit::{CallGate, CallPermit, CallTicket, CircuitState},
-    errors::CircuitError,
+    Breaker, CircuitBreaker, CircuitBuilder, CircuitError, FallbackContext, Policy, State, Ticket,
 };
 use core::convert::Infallible;
-use std::{
-    future::Future,
-    pin::Pin,
-    sync::{Arc, Mutex, MutexGuard},
-};
+use core::future::Future;
+use core::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-pub(crate) type BoxFutureResult<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
-pub(crate) type AsyncFallbackFn<T, E> =
-    Box<dyn FnOnce(FallbackContext) -> BoxFutureResult<T, E> + Send>;
-
-/// Options for async circuit breaker calls.
-#[must_use = "call options do nothing unless passed to `call_with_options`"]
-pub struct AsyncCallOptions<T, E> {
-    pub(crate) fallback: Option<AsyncFallbackFn<T, E>>,
-}
-
-impl<T, E> Default for AsyncCallOptions<T, E> {
-    fn default() -> Self {
-        Self { fallback: None }
-    }
-}
-
-impl<T, E> AsyncCallOptions<T, E> {
-    /// Create new async call options with no fallback.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set an async fallback function called when the circuit is open.
-    pub fn with_fallback<F, Fut>(mut self, fallback: F) -> Self
-    where
-        F: FnOnce(FallbackContext) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<T, E>> + Send + 'static,
-    {
-        self.fallback = Some(Box::new(move |ctx| Box::pin(fallback(ctx))));
-        self
-    }
-
-    /// Resolve an open-circuit gate: run the fallback if present, otherwise
-    /// return the rejection error.
-    pub(crate) async fn resolve_open(self, context: FallbackContext) -> Result<T, CircuitError<E>> {
-        match self.fallback {
-            Some(fallback) => fallback(context).await.map_err(CircuitError::Execution),
-            None => Err(context.into_open_error()),
-        }
-    }
-}
-
-enum AsyncCallGate {
-    Execute(CallTicket),
-    Open {
-        permit: CallPermit,
-        context: FallbackContext,
-    },
-}
-
-struct HalfOpenProbe<'a> {
-    circuit: &'a AsyncCircuitBreaker,
-    active: bool,
-    state_epoch: u64,
-}
-
-impl<'a> HalfOpenProbe<'a> {
-    const fn new(circuit: &'a AsyncCircuitBreaker, active: bool, state_epoch: u64) -> Self {
-        Self {
-            circuit,
-            active,
-            state_epoch,
-        }
-    }
-
-    const fn disarm(&mut self) {
-        self.active = false;
-    }
-}
-
-impl Drop for HalfOpenProbe<'_> {
-    fn drop(&mut self) {
-        if self.active {
-            self.circuit
-                .lock_inner()
-                .release_half_open_probe(self.state_epoch);
-        }
-    }
-}
-
-/// Admission for one operation that runs across `.await`, from
-/// [`AsyncCircuitBreaker::try_acquire`].
-///
-/// Hand it to [`complete`](Self::complete) once the outcome is known, or
-/// [`abandon`](Self::abandon) when nothing should be recorded. Unlike the sync
-/// [`CallTicket`], dropping it (a cancelled future, an early return) gives the
-/// half-open probe slot and bulkhead permit back, as [`AsyncCircuitBreaker::call`]
-/// does for the future it runs.
-#[must_use = "pass the ticket to `complete` or `abandon`; dropping it records no outcome"]
-pub struct AsyncCallTicket<'a> {
-    circuit: &'a AsyncCircuitBreaker,
-    ticket: Option<CallTicket>,
-}
-
-impl core::fmt::Debug for AsyncCallTicket<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("AsyncCallTicket")
-            .field("ticket", &self.ticket)
-            .finish_non_exhaustive()
-    }
-}
-
-impl AsyncCallTicket<'_> {
-    /// Record the outcome of the admitted operation, exactly as
-    /// [`AsyncCircuitBreaker::call`] would: the failure classifier applies, and
-    /// an outcome admitted before the circuit last changed state still counts
-    /// in the metrics but cannot drive a transition.
-    ///
-    /// # Errors
-    ///
-    /// Returns the operation's own error as [`CircuitError::Execution`].
-    pub fn complete<T, E: 'static>(mut self, result: Result<T, E>) -> Result<T, CircuitError<E>> {
-        let ticket = self.take();
-        self.circuit.lock_inner().complete(ticket, result)
-    }
-
-    /// Give back the admission without recording an outcome; see
-    /// [`CircuitBreaker::abandon`].
-    pub fn abandon(mut self) {
-        let ticket = self.take();
-        self.circuit.lock_inner().abandon(ticket);
-    }
-
-    fn take(&mut self) -> CallTicket {
-        self.ticket
-            .take()
-            .unwrap_or_else(|| unreachable!("a ticket is consumed once, by complete or abandon"))
-    }
-}
-
-impl Drop for AsyncCallTicket<'_> {
-    fn drop(&mut self) {
-        if let Some(ticket) = self.ticket.take() {
-            self.circuit.lock_inner().abandon(ticket);
-        }
-    }
-}
-
-/// Async-friendly circuit breaker.
-///
-/// `AsyncCircuitBreaker` can be shared across tasks with `Arc`. It does not
-/// hold its internal mutex while awaiting the protected operation.
+/// A circuit breaker that guards futures. Share it across tasks with `Arc`;
+/// its lock is never held across an `.await` or while a hook, classifier or
+/// fallback runs.
+#[derive(Debug)]
 pub struct AsyncCircuitBreaker {
-    inner: Mutex<CircuitBreaker>,
+    shared: Shared,
+    core: Mutex<Core>,
+}
+
+impl From<CircuitBreaker> for AsyncCircuitBreaker {
+    fn from(circuit: CircuitBreaker) -> Self {
+        let (shared, core) = circuit.into_parts();
+        Self {
+            shared,
+            core: Mutex::new(core),
+        }
+    }
 }
 
 impl AsyncCircuitBreaker {
-    /// Create a new async circuit breaker.
-    ///
-    /// `name` accepts `&str`, `String`, or an existing `Arc<str>`; the latter
-    /// is shared without copying the bytes.
+    /// A circuit named `name` deciding by `policy`, on the system clock.
     #[must_use]
-    pub fn new(name: impl Into<Arc<str>>, config: Config) -> Self {
-        Self::from_circuit(CircuitBreaker::new(name, config))
+    pub fn new(name: impl Into<Arc<str>>, policy: Policy) -> Self {
+        CircuitBreaker::new(name, policy).into()
     }
 
-    /// Create a builder for async circuit breakers.
-    pub fn builder(name: impl Into<String>) -> CircuitBuilder {
-        CircuitBreaker::builder(name)
+    /// A builder; finish it with [`CircuitBuilder::build_async`].
+    pub fn builder(name: impl Into<Arc<str>>, policy: Policy) -> CircuitBuilder {
+        CircuitBreaker::builder(name, policy)
     }
 
-    /// Wrap an existing synchronous circuit breaker.
+    /// The circuit's name.
     #[must_use]
-    pub const fn from_circuit(circuit: CircuitBreaker) -> Self {
-        Self {
-            inner: Mutex::new(circuit),
-        }
+    pub fn name(&self) -> &str {
+        &self.shared.name
     }
 
-    /// Return the wrapped synchronous circuit breaker.
-    pub fn into_inner(self) -> CircuitBreaker {
-        self.inner
-            .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Execute an async fallible operation with circuit breaker protection.
+    /// Await `operation` if the circuit admits it and record its outcome.
     ///
     /// # Errors
     ///
-    /// Same as [`call_with_options`](Self::call_with_options) without a
-    /// fallback.
+    /// [`CircuitError::Refused`] when the circuit refuses the call,
+    /// [`CircuitError::Execution`] with the operation's own error.
     pub async fn call<F, Fut, T, E: 'static>(&self, operation: F) -> Result<T, CircuitError<E>>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<T, E>>,
     {
-        self.call_with_options(operation, AsyncCallOptions::default())
-            .await
+        self.call_with_fallback(operation, |context| async move {
+            Err(CircuitError::Refused {
+                circuit: context.circuit,
+                refusal: context.refusal,
+            })
+        })
+        .await
     }
 
-    /// Execute an async fallible operation with async call options.
+    /// Await `operation` if the circuit admits it, `fallback` if it refuses.
     ///
     /// # Errors
     ///
-    /// - [`CircuitError::BulkheadFull`] when the concurrency limit is reached.
-    /// - [`CircuitError::HalfOpenLimitReached`] when every half-open probe slot
-    ///   is taken.
-    /// - [`CircuitError::Open`] when the circuit is open and no fallback is set.
-    /// - [`CircuitError::Execution`] wrapping the operation's (or fallback's)
-    ///   own error.
-    pub async fn call_with_options<F, Fut, T, E: 'static>(
+    /// [`CircuitError::Execution`] with the operation's own error; whatever
+    /// `fallback` answers when the call is refused.
+    pub async fn call_with_fallback<F, Fut, G, FutG, T, E: 'static>(
         &self,
         operation: F,
-        options: AsyncCallOptions<T, E>,
+        fallback: G,
     ) -> Result<T, CircuitError<E>>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<T, E>>,
+        G: FnOnce(FallbackContext) -> FutG,
+        FutG: Future<Output = Result<T, CircuitError<E>>>,
     {
-        let gate = {
-            let mut circuit = self.lock_inner();
-            match circuit.prepare_call()? {
-                CallGate::Execute(permit) => AsyncCallGate::Execute(circuit.ticket(permit)),
-                CallGate::Open {
-                    _permit: permit,
-                    context,
-                } => AsyncCallGate::Open { permit, context },
-            }
+        let ticket = match self.admit_inner() {
+            Ok(ticket) => ticket,
+            Err(context) => return fallback(context).await,
         };
-
-        match gate {
-            AsyncCallGate::Execute(ticket) => {
-                // Releases the reserved probe slot if this future is dropped
-                // while the operation is pending.
-                let mut probe =
-                    HalfOpenProbe::new(self, ticket.half_open_probe(), ticket.state_epoch());
-                let result = operation().await;
-                let mut circuit = self.lock_inner();
-                // `complete` releases the probe before invoking storage,
-                // classifiers, or callbacks. Disarming here prevents a panic
-                // in any of those hooks from releasing another task's slot.
-                probe.disarm();
-                circuit.complete(ticket, result)
-            }
-            AsyncCallGate::Open { permit, context } => {
-                drop(permit);
-                options.resolve_open(context).await
-            }
-        }
+        ticket.complete(operation().await)
     }
 
     /// Admit one operation without running it, for work whose outcome is
-    /// only known after an `.await` this circuit cannot wrap; see
-    /// [`CircuitBreaker::try_acquire`]. The ticket borrows the circuit and
-    /// releases its half-open probe slot if it is dropped before
-    /// [`AsyncCallTicket::complete`] or [`AsyncCallTicket::abandon`].
+    /// only known after an `.await` this circuit cannot wrap. Dropping the
+    /// ticket unsettled (a cancelled future, an early return) abandons it.
     ///
     /// # Errors
     ///
-    /// The same rejections [`call`](Self::call) returns without a fallback:
-    /// - [`CircuitError::BulkheadFull`] when the concurrency limit is reached.
-    /// - [`CircuitError::Open`] while the cooldown has not elapsed.
-    /// - [`CircuitError::HalfOpenLimitReached`] when every probe slot is taken.
-    pub fn try_acquire(&self) -> Result<AsyncCallTicket<'_>, CircuitError<Infallible>> {
-        let ticket = self.lock_inner().try_acquire()?;
-        Ok(AsyncCallTicket {
-            circuit: self,
-            ticket: Some(ticket),
+    /// [`CircuitError::Refused`] when the circuit refuses the call.
+    pub fn admit(&self) -> Result<AsyncTicket<'_>, CircuitError<Infallible>> {
+        self.admit_inner().map_err(|context| CircuitError::Refused {
+            circuit: context.circuit,
+            refusal: context.refusal,
         })
     }
 
     /// Record an operation that ran outside this circuit's admission and
-    /// return the state it left; see [`CircuitBreaker::observe`].
-    pub fn observe<E: 'static>(&self, outcome: Result<(), E>, duration: f64) -> CircuitState {
-        self.lock_inner().observe(outcome, duration)
+    /// answer the state it left the circuit in.
+    pub fn observe<E: 'static>(&self, outcome: &Result<(), E>, took: Duration) -> State {
+        let outcome = self.shared.classify(outcome, took);
+        let (transitions, state) = {
+            let mut core = self.lock();
+            let now = core.now(&*self.shared.clock);
+            (core.observe(outcome, took, now), core.lifecycle())
+        };
+        self.shared.notify(transitions.into_iter().flatten());
+        state
     }
 
-    /// Record a successful operation and drive `HalfOpen` -> Closed transitions.
-    pub fn record_success_and_maybe_close(&self, duration: f64) {
-        self.lock_inner().record_success_and_maybe_close(duration);
+    /// Open the circuit whatever its threshold says, restarting the
+    /// cooldown.
+    ///
+    /// # Errors
+    ///
+    /// [`CircuitError::Refused`] with [`Refusal::Exhausted`] when no
+    /// transition epoch is left; nothing changed.
+    pub fn force_open(&self) -> Result<(), CircuitError<Infallible>> {
+        let transition = {
+            let mut core = self.lock();
+            let now = core.now(&*self.shared.clock);
+            core.force_open(now)
+        }
+        .map_err(|refusal| self.shared.refused(refusal))?;
+        self.shared.notify(transition);
+        Ok(())
     }
 
-    /// Record a failed operation and attempt to trip the circuit.
-    pub fn record_failure_and_maybe_trip(&self, duration: f64) {
-        self.lock_inner().record_failure_and_maybe_trip(duration);
-    }
-
-    /// Record a successful operation.
-    pub fn record_success(&self, duration: f64) {
-        self.lock_inner().record_success(duration);
-    }
-
-    /// Record a failed operation.
-    pub fn record_failure(&self, duration: f64) {
-        self.lock_inner().record_failure(duration);
-    }
-
-    /// Check failure threshold and attempt to trip the circuit.
-    pub fn check_and_trip(&self) -> bool {
-        self.lock_inner().check_and_trip()
-    }
-
-    /// Check if circuit is open.
-    pub fn is_open(&self) -> bool {
-        self.lock_inner().is_open()
-    }
-
-    /// Check if circuit is closed.
-    pub fn is_closed(&self) -> bool {
-        self.lock_inner().is_closed()
-    }
-
-    /// Get the current state.
-    pub fn state(&self) -> CircuitState {
-        self.lock_inner().state()
-    }
-
-    /// Get current state name.
-    pub fn state_name(&self) -> &'static str {
-        self.lock_inner().state_name()
-    }
-
-    /// Storage-clock time this circuit opened, while it is Open; see
-    /// [`CircuitBreaker::opened_at`].
-    pub fn opened_at(&self) -> Option<f64> {
-        self.lock_inner().opened_at()
-    }
-
-    /// Seconds until the next admission may run a half-open probe, while the
-    /// circuit is Open; see [`CircuitBreaker::retry_after`].
-    pub fn retry_after(&self) -> Option<f64> {
-        self.lock_inner().retry_after()
-    }
-
-    /// Clear all events and reset circuit to Closed state.
-    pub fn reset(&self) {
-        self.lock_inner().reset();
-    }
-
-    fn lock_inner(&self) -> MutexGuard<'_, CircuitBreaker> {
-        self.inner
+    /// Close the circuit whatever its threshold says, keeping its window.
+    ///
+    /// # Errors
+    ///
+    /// [`CircuitError::Refused`] with [`Refusal::Exhausted`] when the
+    /// circuit is not closed and no transition epoch is left; nothing
+    /// changed.
+    pub fn force_close(&self) -> Result<(), CircuitError<Infallible>> {
+        let transition = self
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .force_close()
+            .map_err(|refusal| self.shared.refused(refusal))?;
+        self.shared.notify(transition);
+        Ok(())
+    }
+
+    /// Close the circuit and clear its window; fires no hook.
+    ///
+    /// # Errors
+    ///
+    /// [`CircuitError::Refused`] with [`Refusal::Exhausted`] when no
+    /// transition epoch is left; nothing changed.
+    pub fn reset(&self) -> Result<(), CircuitError<Infallible>> {
+        self.lock()
+            .reset()
+            .map_err(|refusal| self.shared.refused(refusal))
+    }
+
+    /// The circuit's state.
+    #[must_use]
+    pub fn state(&self) -> State {
+        self.lock().lifecycle()
+    }
+
+    /// Whether the circuit is open.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.state() == State::Open
+    }
+
+    /// Whether the circuit is closed.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.state() == State::Closed
+    }
+
+    /// The instant the circuit opened, while it is open.
+    #[must_use]
+    pub fn opened_at(&self) -> Option<Duration> {
+        self.lock().breaker.opened_at()
+    }
+
+    /// How long until a probe may run, while the circuit is open.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<Duration> {
+        let core = self.lock();
+        core.breaker.retry_after(core.now(&*self.shared.clock))
+    }
+
+    /// A copy of the decision core, for every other query.
+    #[must_use]
+    pub fn breaker(&self) -> Breaker<WINDOW> {
+        (*self.lock().breaker).clone()
+    }
+
+    fn admit_inner(&self) -> Result<AsyncTicket<'_>, FallbackContext> {
+        let admitted = {
+            let mut core = self.lock();
+            let now = core.now(&*self.shared.clock);
+            core.admit(now)
+                .map_err(|refusal| (refusal, core.breaker.retry_after(now)))
+        };
+        match admitted {
+            Ok((ticket, transition)) => {
+                self.shared.notify(transition);
+                Ok(AsyncTicket {
+                    circuit: self,
+                    ticket,
+                })
+            }
+            Err((refusal, retry_after)) => Err(self.shared.fallback_context(refusal, retry_after)),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Core> {
+        // The lock guards plain data that no user code runs under, so a
+        // poisoned lock holds a consistent value.
+        self.core.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Admission for one operation that runs across `.await`, from
+/// [`AsyncCircuitBreaker::admit`]. Settle it with
+/// [`complete`](Self::complete) or [`abandon`](Self::abandon); dropping it
+/// unsettled abandons it.
+#[must_use = "pass the ticket to `complete` or `abandon`; dropping it records no outcome"]
+#[derive(Debug)]
+pub struct AsyncTicket<'a> {
+    circuit: &'a AsyncCircuitBreaker,
+    ticket: Ticket,
+}
+
+impl AsyncTicket<'_> {
+    /// Record the operation's result and hand it back; the failure
+    /// classifier applies.
+    ///
+    /// # Errors
+    ///
+    /// [`CircuitError::Execution`] with the operation's own error.
+    pub fn complete<T, E: 'static>(mut self, result: Result<T, E>) -> Result<T, CircuitError<E>> {
+        let circuit = self.circuit;
+        let shared = &circuit.shared;
+        let took = shared.clock.now().saturating_sub(self.ticket.admitted_at());
+        // The classifier is user code: it runs before the lock is taken.
+        let outcome = shared.classify(&result, took);
+        let settled = {
+            let mut core = circuit.lock();
+            let now = core.now(&*shared.clock);
+            core.settle(&mut self.ticket, outcome, now)
+        };
+        match settled {
+            Ok(transition) => {
+                shared.notify(transition);
+                result.map_err(CircuitError::Execution)
+            }
+            Err(refusal) => Err(shared.refused(refusal)),
+        }
+    }
+
+    /// Give back the admission without recording an outcome.
+    pub fn abandon(self) {
+        drop(self);
+    }
+
+    /// The instant the ticket was admitted at.
+    #[must_use]
+    pub const fn admitted_at(&self) -> Duration {
+        self.ticket.admitted_at()
+    }
+}
+
+impl Drop for AsyncTicket<'_> {
+    fn drop(&mut self) {
+        if self.ticket.settled().is_none() {
+            // The circuit issued this ticket and it is unsettled, so the
+            // abandon is honoured; nothing is left to report from a drop.
+            let abandoned = {
+                let mut core = self.circuit.lock();
+                let now = core.now(&*self.circuit.shared.clock);
+                core.settle(&mut self.ticket, None, now)
+            };
+            debug_assert!(
+                abandoned.is_ok(),
+                "an unsettled ticket abandons: {abandoned:?}"
+            );
+        }
     }
 }
 
