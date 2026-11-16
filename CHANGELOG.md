@@ -6,6 +6,13 @@
 
 * Restore shared circuit state after state machine initialization.
 
+## [0.28.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.28.0...breaker_machines/v0.28.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* give StorageError a kind so store exhaustion refuses as Refusal::Exhausted ([1c83941](https://github.com/seuros/breaker_machines/commit/1c839417f7c2c864835b4a817130224111826f7d))
+
 ## [0.28.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.27.0...breaker_machines/v0.28.0) (2026-11-16)
 
 
