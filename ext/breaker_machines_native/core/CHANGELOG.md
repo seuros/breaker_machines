@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.1](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.25.0...breaker-machines-v0.25.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* give StorageError a kind so store exhaustion refuses as Refusal::Exhausted ([1c83941](https://github.com/seuros/breaker_machines/commit/1c839417f7c2c864835b4a817130224111826f7d))
+
 ## [0.25.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.24.0...breaker-machines-v0.25.0) (2026-11-16)
 
 

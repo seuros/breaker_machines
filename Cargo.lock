@@ -37,7 +37,7 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
 name = "breaker-machines"
-version = "0.25.0"
+version = "0.25.1"
 dependencies = [
  "chrono-machines",
  "matryona-machines",
@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "breaker_machines_native"
-version = "0.5.26"
+version = "0.5.27"
 dependencies = [
  "breaker-machines",
  "magnus",
