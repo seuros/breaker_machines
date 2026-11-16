@@ -109,3 +109,160 @@ fn a_full_node_never_admits_even_at_the_counter_limit() {
     );
     assert_eq!(node.in_flight.load(Ordering::SeqCst), u32::MAX);
 }
+
+/// A store whose state reads as `state` and whose every other operation
+/// fails with `kind`.
+#[derive(Debug)]
+struct Failing {
+    state: State,
+    kind: StorageErrorKind,
+}
+
+impl Failing {
+    fn gateway(state: State, kind: StorageErrorKind) -> DistributedCircuitBreaker {
+        CircuitBreaker::builder("payments", policy(1, 1, 1, None)).build_distributed(
+            Arc::new(Self { state, kind }) as Arc<dyn AsyncStorageBackend>,
+            Duration::from_secs(2),
+        )
+    }
+
+    fn fail<'a, T: 'a>(&self) -> crate::StorageFuture<'a, T> {
+        let error = StorageError::new(self.kind, "refused");
+        Box::pin(async move { Err(error) })
+    }
+}
+
+impl AsyncStorageBackend for Failing {
+    fn load_state<'a>(&'a self, _: &'a str) -> crate::StorageFuture<'a, CircuitSnapshot> {
+        let snapshot = CircuitSnapshot {
+            state: self.state,
+            ..CircuitSnapshot::default()
+        };
+        Box::pin(async move { Ok(snapshot) })
+    }
+
+    fn record_outcome<'a>(
+        &'a self,
+        _: &'a str,
+        _: u64,
+        _: StoredOutcome,
+        _: Duration,
+        _: FailurePolicy,
+    ) -> crate::StorageFuture<'a, StorageUpdate> {
+        self.fail()
+    }
+
+    fn try_begin_probe<'a>(
+        &'a self,
+        _: &'a str,
+        _: Duration,
+    ) -> crate::StorageFuture<'a, ProbeDecision> {
+        self.fail()
+    }
+
+    fn complete_probe<'a>(
+        &'a self,
+        _: &'a str,
+        _: ProbeLease,
+        _: StoredOutcome,
+        _: Duration,
+        _: ProbePolicy,
+    ) -> crate::StorageFuture<'a, StorageUpdate> {
+        self.fail()
+    }
+
+    fn reset<'a>(&'a self, _: &'a str) -> crate::StorageFuture<'a, CircuitSnapshot> {
+        self.fail()
+    }
+}
+
+// Bug: a store out of generations or probe tokens surfaced as
+// CircuitError::Storage, indistinguishable from a backend failure.
+#[test]
+fn an_exhausted_store_refuses_as_exhausted() {
+    pollster::block_on(async {
+        // Electing a probe needs a generation or token: refused, fallback runs.
+        let open = Failing::gateway(State::Open, StorageErrorKind::Exhausted);
+        assert_matches!(
+            open.call(|| async { Ok::<_, &str>(()) }).await,
+            Err(CircuitError::Refused {
+                refusal: Refusal::Exhausted,
+                ..
+            })
+        );
+        let answered = open
+            .call_with_fallback(
+                || async { Ok::<_, &str>("ran") },
+                |context| async move {
+                    assert_eq!(context.refusal, Refusal::Exhausted);
+                    Ok("fallback")
+                },
+            )
+            .await;
+        assert_matches!(answered, Ok("fallback"));
+
+        // Recording an outcome that would transition: refused, as the local
+        // circuit refuses settling with no epoch left.
+        let closed = Failing::gateway(State::Closed, StorageErrorKind::Exhausted);
+        assert_matches!(
+            closed.call(|| async { Err::<(), _>("down") }).await,
+            Err(CircuitError::Refused {
+                refusal: Refusal::Exhausted,
+                ..
+            })
+        );
+        assert_matches!(
+            closed.reset().await,
+            Err(CircuitError::Refused {
+                refusal: Refusal::Exhausted,
+                ..
+            })
+        );
+    });
+}
+
+#[test]
+fn a_failing_backend_is_a_storage_error() {
+    pollster::block_on(async {
+        let open = Failing::gateway(State::Open, StorageErrorKind::Backend);
+        let answered = open
+            .call_with_fallback(
+                || async { Ok::<_, &str>(()) },
+                |_| async { panic!("a backend failure is no refusal") },
+            )
+            .await;
+        assert_matches!(
+            answered,
+            Err(CircuitError::Storage(error)) if error.kind() == StorageErrorKind::Backend
+        );
+
+        let closed = Failing::gateway(State::Closed, StorageErrorKind::Backend);
+        assert_matches!(
+            closed.call(|| async { Err::<(), _>("down") }).await,
+            Err(CircuitError::Storage(error)) if error.kind() == StorageErrorKind::Backend
+        );
+        assert_matches!(
+            closed.reset().await,
+            Err(CircuitError::Storage(error)) if error.kind() == StorageErrorKind::Backend
+        );
+    });
+}
+
+#[test]
+fn an_exhausted_memory_store_refuses_the_gateway() {
+    pollster::block_on(async {
+        let clock = ManualClock::default();
+        let store = Arc::new(MemoryStorage::with_clock(clock.clone()));
+        store.exhaust_generations("payments");
+        let gateway = gateway(&store, None);
+        let before = gateway.snapshot().await;
+        assert_matches!(
+            gateway.call(|| async { Err::<(), _>("down") }).await,
+            Err(CircuitError::Refused {
+                refusal: Refusal::Exhausted,
+                ..
+            })
+        );
+        assert_eq!(gateway.snapshot().await, before, "nothing changed");
+    });
+}

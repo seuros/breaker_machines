@@ -10,8 +10,9 @@ use crate::clock::Draws;
 use crate::{
     AsyncStorageBackend, CircuitError, CircuitSnapshot, FailurePolicy, FallbackContext, Policy,
     ProbeDecision, ProbeLease, ProbePolicy, Refusal, State, StateTransition, StorageError,
-    StorageUpdate, StoredOutcome,
+    StorageErrorKind, StorageUpdate, StoredOutcome,
 };
+use core::convert::Infallible;
 use core::future::Future;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
@@ -81,9 +82,10 @@ impl DistributedCircuitBreaker {
     /// # Errors
     ///
     /// [`CircuitError::Refused`] when the circuit refuses the call (open,
-    /// another node holds the probe lease, or this node is at its
-    /// concurrency limit), [`CircuitError::Storage`] when the store fails,
-    /// [`CircuitError::Execution`] with the operation's own error.
+    /// another node holds the probe lease, this node is at its concurrency
+    /// limit, or the store has no fencing identity left:
+    /// [`Refusal::Exhausted`]), [`CircuitError::Storage`] when the store
+    /// fails, [`CircuitError::Execution`] with the operation's own error.
     pub async fn call<F, Fut, T, E: 'static>(&self, operation: F) -> Result<T, CircuitError<E>>
     where
         F: FnOnce() -> Fut,
@@ -104,8 +106,14 @@ impl DistributedCircuitBreaker {
     /// # Errors
     ///
     /// [`CircuitError::Storage`] when the store fails,
+    /// [`CircuitError::Refused`] with [`Refusal::Exhausted`] when the store
+    /// cannot record the outcome because no generation is left (the
+    /// operation's result is dropped, as [`CircuitBreaker`] does),
     /// [`CircuitError::Execution`] with the operation's own error; whatever
-    /// `fallback` answers when the call is refused.
+    /// `fallback` answers when the call is refused, including when electing
+    /// a probe finds no generation or probe token left.
+    ///
+    /// [`CircuitBreaker`]: crate::CircuitBreaker
     pub async fn call_with_fallback<F, Fut, G, FutG, T, E: 'static>(
         &self,
         operation: F,
@@ -117,13 +125,22 @@ impl DistributedCircuitBreaker {
         G: FnOnce(FallbackContext) -> FutG,
         FutG: Future<Output = Result<T, CircuitError<E>>>,
     {
-        let (slot, generation, probe) = match self.prepare().await.map_err(CircuitError::Storage)? {
-            Gate::Execute {
+        let (slot, generation, probe) = match self.prepare().await {
+            Ok(Gate::Execute {
                 slot,
                 generation,
                 probe,
-            } => (slot, generation, probe),
-            Gate::Refused(context) => return fallback(context).await,
+            }) => (slot, generation, probe),
+            Ok(Gate::Refused(context)) => return fallback(context).await,
+            // No generation or probe token left to admit with: refused like
+            // an exhausted admission, nothing changed.
+            Err(error) => match error.kind() {
+                StorageErrorKind::Exhausted => {
+                    let context = self.shared.fallback_context(Refusal::Exhausted, None);
+                    return fallback(context).await;
+                }
+                StorageErrorKind::Backend => return Err(CircuitError::Storage(error)),
+            },
         };
         let start = self.shared.clock.now();
         let result = operation().await;
@@ -159,7 +176,7 @@ impl DistributedCircuitBreaker {
                     .map(Some)
             }
         }
-        .map_err(CircuitError::Storage)?;
+        .map_err(|error| self.storage_failed(error))?;
         if let Some(StorageUpdate {
             transition: Some(transition),
             ..
@@ -192,9 +209,24 @@ impl DistributedCircuitBreaker {
     ///
     /// # Errors
     ///
-    /// The store's [`StorageError`].
-    pub async fn reset(&self) -> Result<CircuitSnapshot, StorageError> {
-        self.storage.reset(&self.shared.name).await
+    /// [`CircuitError::Refused`] with [`Refusal::Exhausted`] when no
+    /// generation is left; nothing changed. [`CircuitError::Storage`] when
+    /// the store fails.
+    pub async fn reset(&self) -> Result<CircuitSnapshot, CircuitError<Infallible>> {
+        self.storage
+            .reset(&self.shared.name)
+            .await
+            .map_err(|error| self.storage_failed(error))
+    }
+
+    /// A store's failure as the circuit answers it: an exhausted fencing
+    /// identity is the core's [`Refusal::Exhausted`], anything else a
+    /// storage failure.
+    fn storage_failed<E>(&self, error: StorageError) -> CircuitError<E> {
+        match error.kind() {
+            StorageErrorKind::Exhausted => self.shared.refused(Refusal::Exhausted),
+            StorageErrorKind::Backend => CircuitError::Storage(error),
+        }
     }
 
     async fn prepare(&self) -> Result<Gate<'_>, StorageError> {

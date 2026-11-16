@@ -63,7 +63,11 @@ Identities never wrap. Every transition takes the next `u64` epoch, which
 fences the tickets admitted before it; once the last is taken, a call that
 would transition is `Refusal::Exhausted` with nothing changed, while calls
 that would not are still honoured. `MemoryStorage` treats its circuit
-generations and probe tokens the same way, answering a `StorageError`.
+generations and probe tokens the same way, answering a `StorageError` of
+kind `StorageErrorKind::Exhausted` (a failing backend is
+`StorageErrorKind::Backend`). `DistributedCircuitBreaker` answers the
+exhausted kind as `Refusal::Exhausted`, and a backend failure as
+`CircuitError::Storage`.
 
 ## The runtime (`std`, `async`)
 

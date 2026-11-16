@@ -4,13 +4,14 @@
 //! [`MemoryStorage`] saturates retry deadlines and half-open probe lease
 //! expiries at `Duration::MAX`. Its generations and probe tokens are fencing
 //! identities and never wrap: once `u64::MAX` is taken, an operation that
-//! needs another answers a [`StorageError`] with nothing changed, and
+//! needs another answers a [`StorageError`] of kind
+//! [`StorageErrorKind::Exhausted`] with nothing changed, and
 //! operations that need none are still honoured.
 //!
 //! [`DistributedCircuitBreaker`]: crate::DistributedCircuitBreaker
 
 use crate::clock::{Clock, SystemClock};
-use crate::{Event, Outcome, State, StorageError, Threshold};
+use crate::{Event, Outcome, State, StorageError, StorageErrorKind, Threshold};
 use core::future::Future;
 use core::num::NonZeroU32;
 use core::pin::Pin;
@@ -249,17 +250,22 @@ impl MemoryCircuit {
     /// The generation a transition takes. Generations fence in-flight
     /// calls and leases, so one is never reused.
     fn next_generation(&self) -> Result<u64, StorageError> {
-        self.snapshot
-            .generation
-            .checked_add(1)
-            .ok_or_else(|| StorageError::new("every circuit generation has been used"))
+        self.snapshot.generation.checked_add(1).ok_or_else(|| {
+            StorageError::new(
+                StorageErrorKind::Exhausted,
+                "every circuit generation has been used",
+            )
+        })
     }
 
     /// The token the next lease takes; never reused.
     fn next_token(&self) -> Result<u64, StorageError> {
-        self.next_token
-            .checked_add(1)
-            .ok_or_else(|| StorageError::new("every probe token has been used"))
+        self.next_token.checked_add(1).ok_or_else(|| {
+            StorageError::new(
+                StorageErrorKind::Exhausted,
+                "every probe token has been used",
+            )
+        })
     }
 
     const fn transition(&mut self, state: State, generation: u64) {
@@ -313,6 +319,16 @@ impl MemoryStorage {
     fn circuits(&self) -> MutexGuard<'_, HashMap<String, MemoryCircuit>> {
         // Only plain data is mutated under the lock.
         self.circuits.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Use up `name`'s generations, for tests outside this module.
+    #[cfg(test)]
+    pub(crate) fn exhaust_generations(&self, name: &str) {
+        self.circuits()
+            .entry(String::from(name))
+            .or_default()
+            .snapshot
+            .generation = u64::MAX;
     }
 
     fn with_circuit<T>(

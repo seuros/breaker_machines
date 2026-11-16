@@ -210,6 +210,11 @@ fn set(store: &MemoryStorage, name: &str, act: impl FnOnce(&mut MemoryCircuit)) 
     act(store.circuits().entry(String::from(name)).or_default());
 }
 
+/// The kind of failure `result` answered, if any.
+fn kind<T>(result: Result<T, StorageError>) -> Option<StorageErrorKind> {
+    result.err().map(|error| error.kind())
+}
+
 async fn record(store: &MemoryStorage, generation: u64) -> Result<StorageUpdate, StorageError> {
     store
         .record_outcome(
@@ -222,6 +227,10 @@ async fn record(store: &MemoryStorage, generation: u64) -> Result<StorageUpdate,
         .await
 }
 
+// Bug: exhaustion answered a message-only StorageError, indistinguishable
+// from a backend failure; it now answers the Exhausted kind.
+const EXHAUSTED: Option<StorageErrorKind> = Some(StorageErrorKind::Exhausted);
+
 #[test]
 fn an_exhausted_generation_refuses_every_transition_and_changes_nothing() {
     pollster::block_on(async {
@@ -231,9 +240,9 @@ fn an_exhausted_generation_refuses_every_transition_and_changes_nothing() {
 
         // Opening would reuse a generation an in-flight call may carry.
         let before = kept(&store, "a");
-        assert!(record(&store, u64::MAX).await.is_err());
+        assert_eq!(kind(record(&store, u64::MAX).await), EXHAUSTED);
         assert_eq!(kept(&store, "a"), before, "the outcome was not kept");
-        assert!(store.reset("a").await.is_err());
+        assert_eq!(kind(store.reset("a").await), EXHAUSTED);
         assert_eq!(kept(&store, "a"), before);
 
         // Open, cooldown elapsed: half-opening needs a generation.
@@ -244,11 +253,9 @@ fn an_exhausted_generation_refuses_every_transition_and_changes_nothing() {
         clock.advance(Duration::from_secs(10));
         let before = kept(&store, "a");
         assert_eq!(before.0.generation, u64::MAX, "the last one is used once");
-        assert!(
-            store
-                .try_begin_probe("a", Duration::from_secs(2))
-                .await
-                .is_err()
+        assert_eq!(
+            kind(store.try_begin_probe("a", Duration::from_secs(2)).await),
+            EXHAUSTED
         );
         assert_eq!(kept(&store, "a"), before);
     });
@@ -280,11 +287,13 @@ fn an_exhausted_generation_refuses_completing_a_probe_that_transitions() {
         };
         let before = kept(&store, "a");
         for outcome in [StoredOutcome::Success, StoredOutcome::Failure] {
-            assert!(
-                store
-                    .complete_probe("a", lease, outcome, Duration::ZERO, probe_policy(1))
-                    .await
-                    .is_err()
+            assert_eq!(
+                kind(
+                    store
+                        .complete_probe("a", lease, outcome, Duration::ZERO, probe_policy(1))
+                        .await
+                ),
+                EXHAUSTED
             );
             assert_eq!(kept(&store, "a"), before, "{outcome:?} changed nothing");
         }
@@ -320,11 +329,9 @@ fn exhausted_probe_tokens_refuse_and_change_nothing() {
         assert_eq!(last.token, u64::MAX);
         clock.advance(Duration::from_secs(2));
         let before = kept(&store, "a");
-        assert!(
-            store
-                .try_begin_probe("a", Duration::from_secs(2))
-                .await
-                .is_err(),
+        assert_eq!(
+            kind(store.try_begin_probe("a", Duration::from_secs(2)).await),
+            EXHAUSTED,
             "a takeover would reuse a token"
         );
         assert_eq!(kept(&store, "a"), before);

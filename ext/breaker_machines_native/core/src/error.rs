@@ -57,18 +57,38 @@ pub struct FallbackContext {
     pub retry_after: Option<Duration>,
 }
 
+/// What kind of failure a [`StorageError`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageErrorKind {
+    /// The store refused because a fencing identity (circuit generation or
+    /// probe token) would have been reused; nothing changed. A
+    /// [`DistributedCircuitBreaker`](crate::DistributedCircuitBreaker)
+    /// answers it as [`Refusal::Exhausted`].
+    Exhausted,
+    /// The backend itself failed (connection, timeout, invalid record).
+    Backend,
+}
+
 /// A distributed storage backend's failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageError {
+    kind: StorageErrorKind,
     message: String,
 }
 
 impl StorageError {
-    /// A storage error carrying the backend's message.
-    pub fn new(message: impl Into<String>) -> Self {
+    /// A storage error of `kind` carrying the backend's message.
+    pub fn new(kind: StorageErrorKind, message: impl Into<String>) -> Self {
         Self {
+            kind,
             message: message.into(),
         }
+    }
+
+    /// What kind of failure this is.
+    #[must_use]
+    pub const fn kind(&self) -> StorageErrorKind {
+        self.kind
     }
 
     /// The backend's message.

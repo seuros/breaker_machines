@@ -54,7 +54,7 @@ pub use clock::{Clock, SystemClock};
 #[cfg(feature = "async")]
 pub use distributed::DistributedCircuitBreaker;
 #[cfg(feature = "std")]
-pub use error::{CircuitError, FallbackContext, StorageError};
+pub use error::{CircuitError, FallbackContext, StorageError, StorageErrorKind};
 #[cfg(feature = "async")]
 pub use storage::{
     Applied, AsyncStorageBackend, CircuitSnapshot, FailurePolicy, MemoryStorage, ProbeDecision,
