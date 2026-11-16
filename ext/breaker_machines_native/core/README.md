@@ -68,6 +68,8 @@ generations and probe tokens the same way, answering a `StorageError`.
 ## The runtime (`std`, `async`)
 
 ```rust
+# #[cfg(not(feature = "std"))] fn main() {}
+# #[cfg(feature = "std")] fn main() -> Result<(), Box<dyn core::error::Error>> {
 use breaker_machines::{CircuitBreaker, CircuitError, Policy, Recovery, Refusal, Threshold};
 use core::num::NonZeroU32;
 use core::time::Duration;
@@ -89,7 +91,8 @@ assert!(matches!(
     circuit.call(charge),
     Err(CircuitError::Refused { refusal: Refusal::Open, .. }),
 ));
-# Ok::<(), Box<dyn core::error::Error>>(())
+# Ok(())
+# }
 ```
 
 `async` adds `AsyncCircuitBreaker` (decisions under a short lock, futures

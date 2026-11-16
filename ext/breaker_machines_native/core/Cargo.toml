@@ -32,7 +32,5 @@ periscope-machines = ">=0.5"
 state-machines = { version = ">=0.34", default-features = false, optional = true }
 
 [dev-dependencies]
-# Itself with the runtime enabled, so a plain `cargo test` covers it.
-breaker-machines = { workspace = true, features = ["async"] }
 matryona-machines = { workspace = true, features = ["testing"] }
 pollster = "0.4"
