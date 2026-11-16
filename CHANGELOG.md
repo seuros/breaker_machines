@@ -6,6 +6,17 @@
 
 * Restore shared circuit state after state machine initialization.
 
+## [0.28.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.27.0...breaker_machines/v0.28.0) (2026-11-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* the whole Ruby API is the core's: Integer nanoseconds, `Data` configuration values, refusal Symbols, Ruby >= 4.0 and a native extension. In Rust, `Breaker::force_close`, `reset` and `adopt` and the runtime's `force_open`/`force_close`/`reset` return `Result`.
+
+### Features
+
+* decide circuits in a no_std Rust core, Ruby runtime on top ([a030b81](https://github.com/seuros/breaker_machines/commit/a030b8196de7394b7231cfabed3b6a70e07d08f6))
+
 ## [0.27.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.26.1...breaker_machines/v0.27.0) (2026-11-06)
 
 
