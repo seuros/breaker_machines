@@ -22,6 +22,18 @@ fn threshold_needs_a_count_or_a_valid_rate() {
 }
 
 #[test]
+fn a_threshold_validates_at_compile_time() {
+    const COUNT: Threshold = match Threshold::new(NonZeroU32::new(5), None, 0) {
+        Some(threshold) => threshold,
+        None => panic!("a valid threshold"),
+    };
+    const NOTHING: Option<Threshold> = Threshold::new(None, None, 0);
+    const NAN: Option<Threshold> = Threshold::new(NonZeroU32::new(5), Some(f64::NAN), 0);
+    assert_eq!(COUNT.count(), NonZeroU32::new(5));
+    assert_eq!((NOTHING, NAN), (None, None));
+}
+
+#[test]
 fn threshold_judges_count_and_rate() {
     let count = Threshold::new(Some(nz(3)), None, 0).expect("valid");
     assert!(!count.exceeded(2, 0));

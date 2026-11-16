@@ -20,13 +20,24 @@ impl Threshold {
     /// outcomes. `None` unless at least one of `count` and `rate` is set and
     /// `rate` is finite and in `0.0 < rate <= 1.0`.
     #[must_use]
-    pub fn new(count: Option<NonZeroU32>, rate: Option<f64>, minimum_calls: u32) -> Option<Self> {
-        let rate_valid = rate.is_none_or(|rate| rate.is_finite() && rate > 0.0 && rate <= 1.0);
-        (rate_valid && (count.is_some() || rate.is_some())).then_some(Self {
-            count,
-            rate,
-            minimum_calls,
-        })
+    pub const fn new(
+        count: Option<NonZeroU32>,
+        rate: Option<f64>,
+        minimum_calls: u32,
+    ) -> Option<Self> {
+        let rate_valid = match rate {
+            Some(rate) => rate.is_finite() && rate > 0.0 && rate <= 1.0,
+            None => count.is_some(),
+        };
+        if rate_valid {
+            Some(Self {
+                count,
+                rate,
+                minimum_calls,
+            })
+        } else {
+            None
+        }
     }
 
     /// Failures in the window that open the circuit.
