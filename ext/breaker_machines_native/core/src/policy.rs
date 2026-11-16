@@ -88,17 +88,20 @@ impl Recovery {
     /// at a time; `success_threshold` successful probes close it and one
     /// failed probe reopens it. `None` unless `jitter` is in `0.0..=1.0`.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         cooldown: Duration,
         jitter: f64,
         success_threshold: NonZeroU32,
         half_open_calls: NonZeroU32,
     ) -> Option<Self> {
-        Some(Self {
-            cooldown: Constant::new(cooldown, jitter)?,
-            success_threshold,
-            half_open_calls,
-        })
+        match Constant::new(cooldown, jitter) {
+            Some(cooldown) => Some(Self {
+                cooldown,
+                success_threshold,
+                half_open_calls,
+            }),
+            None => None,
+        }
     }
 
     /// The cooldown as the chrono-machines strategy that draws it.

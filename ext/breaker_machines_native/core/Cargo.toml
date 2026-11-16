@@ -26,7 +26,7 @@ async = ["std"]
 workspace = true
 
 [dependencies]
-chrono-machines = { version = ">=0.12", default-features = false }
+chrono-machines = { version = ">=0.13", default-features = false }
 periscope-machines = ">=0.5"
 # The runtime's lifecycle machine, driven by the core's answers.
 state-machines = { version = ">=0.34", default-features = false, optional = true }

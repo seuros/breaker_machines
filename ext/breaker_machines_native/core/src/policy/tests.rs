@@ -34,6 +34,36 @@ fn a_threshold_validates_at_compile_time() {
 }
 
 #[test]
+fn a_policy_validates_at_compile_time() {
+    const POLICY: Policy = {
+        let threshold = Threshold::new(NonZeroU32::new(5), None, 0);
+        let recovery = Recovery::new(
+            Duration::from_secs(30),
+            0.0,
+            NonZeroU32::MIN,
+            NonZeroU32::MIN,
+        );
+        match (threshold, recovery) {
+            (Some(threshold), Some(recovery)) => {
+                match Policy::new(threshold, Duration::from_secs(60), recovery, None) {
+                    Some(policy) => policy,
+                    None => panic!("a valid policy"),
+                }
+            }
+            _ => panic!("a valid threshold and recovery"),
+        }
+    };
+    const JITTERY: Option<Recovery> = Recovery::new(
+        Duration::from_secs(1),
+        1.5,
+        NonZeroU32::MIN,
+        NonZeroU32::MIN,
+    );
+    assert_eq!(POLICY.recovery().cooldown().span(), Duration::from_secs(30));
+    assert_eq!(JITTERY, None);
+}
+
+#[test]
 fn threshold_judges_count_and_rate() {
     let count = Threshold::new(Some(nz(3)), None, 0).expect("valid");
     assert!(!count.exceeded(2, 0));

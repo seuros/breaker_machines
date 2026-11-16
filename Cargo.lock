@@ -79,9 +79,9 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "chrono-machines"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08956cd20c79e5c2835feca8725fc4c39262a625db7fa044f1487909e91adb94"
+checksum = "048698e0b5e5af9301fc37849e441e8ec332c8275652f6566f06120fd598ed56"
 
 [[package]]
 name = "clang-sys"
