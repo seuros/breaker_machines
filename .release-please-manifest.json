@@ -1,5 +1,5 @@
 {
-  ".": "0.29.0",
-  "ext/breaker_machines_native/core": "0.26.0",
-  "ext/breaker_machines_native/ffi": "0.5.28"
+  ".": "0.30.0",
+  "ext/breaker_machines_native/core": "0.27.0",
+  "ext/breaker_machines_native/ffi": "0.5.29"
 }
