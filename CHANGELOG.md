@@ -6,6 +6,13 @@
 
 * Restore shared circuit state after state machine initialization.
 
+## [0.29.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.28.1...breaker_machines/v0.29.0) (2026-11-17)
+
+
+### Features
+
+* const Threshold::new ([a6cbc64](https://github.com/seuros/breaker_machines/commit/a6cbc64ed42cd5c51b7f617184fffa5f0ff37e05))
+
 ## [0.28.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.28.0...breaker_machines/v0.28.1) (2026-11-16)
 
 

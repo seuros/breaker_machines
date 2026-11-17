@@ -1,6 +1,6 @@
 [package]
 name = "breaker_machines_native"
-version = "0.5.27"
+version = "0.5.28"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
