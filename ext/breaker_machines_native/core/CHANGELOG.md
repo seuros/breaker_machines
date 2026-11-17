@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.26.0...breaker-machines-v0.27.0) (2026-11-17)
+
+
+### Features
+
+* const Recovery::new ([c81f98f](https://github.com/seuros/breaker_machines/commit/c81f98fe44626edbdab9861617f3fa392b66eb43))
+
 ## [0.26.0](https://github.com/seuros/breaker_machines/compare/breaker-machines-v0.25.1...breaker-machines-v0.26.0) (2026-11-17)
 
 

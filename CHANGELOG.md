@@ -6,6 +6,13 @@
 
 * Restore shared circuit state after state machine initialization.
 
+## [0.30.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.29.0...breaker_machines/v0.30.0) (2026-11-17)
+
+
+### Features
+
+* const Recovery::new ([c81f98f](https://github.com/seuros/breaker_machines/commit/c81f98fe44626edbdab9861617f3fa392b66eb43))
+
 ## [0.29.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.28.1...breaker_machines/v0.29.0) (2026-11-17)
 
 
