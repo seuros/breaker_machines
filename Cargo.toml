@@ -10,7 +10,7 @@ license = "MIT"
 
 [workspace.dependencies]
 breaker-machines = { path = "ext/breaker_machines_native/core" }
-matryona-machines = { version = ">=0.6", default-features = false }
+matryona-machines = { version = ">=0.7", default-features = false }
 magnus = { version = "0.9.3", default-features = false }
 # Nothing here calls rb-sys directly: this is the compiled fallback that
 # implements the stable API for a Ruby rb-sys ships no pre-generated bindings
