@@ -9,7 +9,7 @@ use core::num::NonZeroU32;
 use magnus::{Error, Ruby, Value, prelude::*};
 use matryona_machines::ruby::{
     class_name, duration, exact_fields_with, finite, instant, integer, nanoseconds,
-    optional_positive, positive,
+    optional_instant, optional_positive, positive,
 };
 
 use crate::classes::classes;
@@ -188,13 +188,6 @@ pub fn validate_policy(
     build_policy(ruby, threshold, window, recovery, max_concurrent).map(drop)
 }
 
-fn optional_duration(value: Value, name: &str) -> Result<Option<core::time::Duration>, Error> {
-    if value.is_nil() {
-        return Ok(None);
-    }
-    instant(value, name).map(Some)
-}
-
 /// `Status::new` of Ruby values, in order.
 fn build_status(
     ruby: &Ruby,
@@ -203,8 +196,8 @@ fn build_status(
     retry_at: Value,
 ) -> Result<Status, Error> {
     let state = States::parse(ruby, state)?;
-    let opened_at = optional_duration(opened_at, "opened_at")?;
-    let retry_at = optional_duration(retry_at, "retry_at")?;
+    let opened_at = optional_instant(opened_at, "opened_at")?;
+    let retry_at = optional_instant(retry_at, "retry_at")?;
     Status::new(state, opened_at, retry_at).ok_or_else(|| {
         range_error(
             ruby,
