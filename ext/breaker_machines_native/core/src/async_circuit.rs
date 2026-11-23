@@ -109,9 +109,10 @@ impl AsyncCircuitBreaker {
     /// answer the state it left the circuit in.
     pub fn observe<E: 'static>(&self, outcome: &Result<(), E>, took: Duration) -> State {
         let outcome = self.shared.classify(outcome, took);
+        let sampled_at = self.shared.clock.now();
         let (transitions, state) = {
             let mut core = self.lock();
-            let now = core.now(&*self.shared.clock);
+            let now = core.clamp_time(sampled_at);
             (core.observe(outcome, took, now), core.lifecycle())
         };
         self.shared.notify(transitions.into_iter().flatten());
@@ -126,9 +127,10 @@ impl AsyncCircuitBreaker {
     /// [`CircuitError::Refused`] with [`Refusal::Exhausted`] when no
     /// transition epoch is left; nothing changed.
     pub fn force_open(&self) -> Result<(), CircuitError<Infallible>> {
+        let sampled_at = self.shared.clock.now();
         let transition = {
             let mut core = self.lock();
-            let now = core.now(&*self.shared.clock);
+            let now = core.clamp_time(sampled_at);
             core.force_open(now)
         }
         .map_err(|refusal| self.shared.refused(refusal))?;
@@ -191,8 +193,9 @@ impl AsyncCircuitBreaker {
     /// How long until a probe may run, while the circuit is open.
     #[must_use]
     pub fn retry_after(&self) -> Option<Duration> {
+        let sampled_at = self.shared.clock.now();
         let core = self.lock();
-        core.breaker.retry_after(core.now(&*self.shared.clock))
+        core.breaker.retry_after(core.clamp_time(sampled_at))
     }
 
     /// A copy of the decision core, for every other query.
@@ -202,9 +205,10 @@ impl AsyncCircuitBreaker {
     }
 
     fn admit_inner(&self) -> Result<AsyncTicket<'_>, FallbackContext> {
+        let sampled_at = self.shared.clock.now();
         let admitted = {
             let mut core = self.lock();
-            let now = core.now(&*self.shared.clock);
+            let now = core.clamp_time(sampled_at);
             core.admit(now)
                 .map_err(|refusal| (refusal, core.breaker.retry_after(now)))
         };
@@ -221,8 +225,8 @@ impl AsyncCircuitBreaker {
     }
 
     fn lock(&self) -> MutexGuard<'_, Core> {
-        // The lock guards plain data that no user code runs under, so a
-        // poisoned lock holds a consistent value.
+        // Sample the configurable clock before locking, then clamp against the
+        // latest instant while holding the guard.
         self.core.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -251,9 +255,10 @@ impl AsyncTicket<'_> {
         let took = shared.clock.now().saturating_sub(self.ticket.admitted_at());
         // The classifier is user code: it runs before the lock is taken.
         let outcome = shared.classify(&result, took);
+        let sampled_at = shared.clock.now();
         let settled = {
             let mut core = circuit.lock();
-            let now = core.now(&*shared.clock);
+            let now = core.clamp_time(sampled_at);
             core.settle(&mut self.ticket, outcome, now)
         };
         match settled {
@@ -282,9 +287,10 @@ impl Drop for AsyncTicket<'_> {
         if self.ticket.settled().is_none() {
             // The circuit issued this ticket and it is unsettled, so the
             // abandon is honoured; nothing is left to report from a drop.
+            let sampled_at = self.circuit.shared.clock.now();
             let abandoned = {
                 let mut core = self.circuit.lock();
-                let now = core.now(&*self.circuit.shared.clock);
+                let now = core.clamp_time(sampled_at);
                 core.settle(&mut self.ticket, None, now)
             };
             debug_assert!(

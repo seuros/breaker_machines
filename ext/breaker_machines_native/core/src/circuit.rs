@@ -108,7 +108,11 @@ impl Core {
     /// The clock's reading, never behind the latest honoured instant: a
     /// clock that steps back reads as standing still.
     pub fn now(&self, clock: &dyn Clock) -> Duration {
-        clock.now().max(self.breaker.latest())
+        self.clamp_time(clock.now())
+    }
+
+    pub fn clamp_time(&self, sampled_at: Duration) -> Duration {
+        sampled_at.max(self.breaker.latest())
     }
 
     /// The lifecycle machine's state.

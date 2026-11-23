@@ -6,6 +6,47 @@ use core::future::pending;
 use core::pin::pin;
 use core::task::Poll;
 use std::boxed::Box;
+use std::sync::{OnceLock, Weak};
+
+#[derive(Debug)]
+struct ReentrantClock(Arc<OnceLock<Weak<AsyncCircuitBreaker>>>);
+
+impl crate::Clock for ReentrantClock {
+    fn now(&self) -> Duration {
+        if let Some(circuit) = self.0.get().and_then(Weak::upgrade) {
+            // Fail instead of hanging if a caller holds the lock again.
+            assert!(
+                circuit.core.try_lock().is_ok(),
+                "clock called with the core locked"
+            );
+            assert_matches!(circuit.state(), State::Closed | State::Open);
+        }
+        Duration::from_secs(5)
+    }
+}
+
+#[test]
+fn the_clock_can_query_the_same_circuit() -> Result<(), CircuitError<Infallible>> {
+    let link = Arc::new(OnceLock::new());
+    let circuit = Arc::new(
+        AsyncCircuitBreaker::builder("reentrant", policy(2, 1, 1, None))
+            .clock(ReentrantClock(Arc::clone(&link)))
+            .build_async(),
+    );
+    assert!(link.set(Arc::downgrade(&circuit)).is_ok());
+
+    let call = circuit.admit()?;
+    assert_eq!(call.admitted_at(), Duration::from_secs(5));
+    call.complete(Ok(()))?;
+    circuit.admit()?.abandon();
+    assert_eq!(
+        circuit.observe(&Ok::<_, ()>(()), Duration::ZERO),
+        State::Closed
+    );
+    circuit.force_open()?;
+    assert_eq!(circuit.retry_after(), Some(Duration::from_secs(30)));
+    Ok(())
+}
 
 fn circuit(clock: &ManualClock, failures: u32, limit: Option<u32>) -> AsyncCircuitBreaker {
     AsyncCircuitBreaker::builder("async", policy(failures, 1, 1, limit))

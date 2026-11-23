@@ -90,6 +90,27 @@ class CircuitTest < Minitest::Test
     assert_equal 1, c.call { 1 }
   end
 
+  def test_clock_can_reenter_the_circuit_before_the_decision_locks
+    c = nil
+    states = []
+    clock = lambda do
+      if c && states.empty?
+        states << c.state
+        @clock.advance(at(10))
+        c.force_open
+        next at(5)
+      end
+      @clock.call
+    end
+    c = B::Circuit.new(:reentrant_clock, policy, clock:, storage: nil)
+
+    c.force_open
+
+    assert_equal [:closed], states
+    assert_predicate c, :open?
+    assert_equal at(10), c.opened_at
+  end
+
   def test_hooks_and_fallbacks_run_on_their_owner
     owner = Struct.new(:calls).new([])
     c = B::Circuit.new(:owned, policy(failures: 1), owner:, on_open: -> { calls << :open },

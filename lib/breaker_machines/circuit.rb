@@ -232,15 +232,16 @@ module BreakerMachines
 
     def draw = @random.rand(2**64)
 
-    # Decide under the lock: the block runs native calls with the clock read
-    # inside it and answers the lifecycle events replaying the Breaker's
-    # answers. The machine moves under the lock, and a transition is stored
+    # Sample the configurable clock before locking; it can call back into
+    # the circuit. Clamp the sample against the latest instant under the lock.
+    # The machine moves under the lock, and a transition is stored
     # for other circuits of this name (unless it was adopted from them); the
     # hooks the transitions queued run once the lock is released.
     def decide(share: true)
+      sampled_at = @clock.call
       transitions = @mutex.synchronize do
         @pending = []
-        events = Array(yield([@clock.call, @breaker.latest].max))
+        events = Array(yield([sampled_at, @breaker.latest].max))
         events.each { |event| __send__(:"#{event}!") }
         check_agreement(events)
         publish if share && !events.empty?
