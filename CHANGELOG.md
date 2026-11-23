@@ -6,6 +6,13 @@
 
 * Restore shared circuit state after state machine initialization.
 
+## [0.30.1](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.30.0...breaker_machines/v0.30.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* sample breaker clocks outside the circuit lock ([9f7ec88](https://github.com/seuros/breaker_machines/commit/9f7ec88da8e28e8a372e4b078c27631631b7c9d1))
+
 ## [0.30.0](https://github.com/seuros/breaker_machines/compare/breaker_machines/v0.29.0...breaker_machines/v0.30.0) (2026-11-17)
 
 
